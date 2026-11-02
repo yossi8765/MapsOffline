@@ -22,6 +22,10 @@ Tauri 2 + Rust · React + MapLibre GL · PMTiles · SQLite FTS5.
 
 מורידים את `MapsOffline_<גרסה>_x64-setup.exe` מעמוד ה-Releases, מתקינים, ובלשונית **נתונים** לוחצים "עדכן הכול" (או מייבאים חבילת ‎.mapsdata שיוצאה במחשב מחובר). דרוש WebView2 (מובנה ב-Windows 10/11 מעודכנים).
 
+## גרסה ניידת (בלי התקנה)
+
+`MapsOffline-portable.zip` מכיל את `MapsOffline.exe` ואת הסמן `portable.txt`. מחלצים לכל תיקייה (גם דיסק-און-קי) ומריצים; הנתונים, ההגדרות וההיסטוריה נשמרים בתיקיית `data` לצד הקובץ ולא ב-%APPDATA%. דרוש WebView2 במחשב (מובנה ב-Windows 10/11 מעודכנים).
+
 ## פיתוח
 
 ```

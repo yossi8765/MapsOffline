@@ -29,9 +29,18 @@ impl DataPaths {
     }
 
     /// Default data dir: %APPDATA%\MapsOffline\data (falls back to ./data).
+    ///
+    /// Portable mode: when a `portable.txt` marker or a `data` folder sits next to the executable,
+    /// everything (data, settings, history) lives in that `data` folder, so the program can run
+    /// from a USB stick without installation.
     pub fn default_root() -> PathBuf {
         if let Ok(p) = std::env::var("MAPSOFFLINE_DATA_DIR") {
             return PathBuf::from(p);
+        }
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            if dir.join("portable.txt").exists() || dir.join("data").is_dir() {
+                return dir.join("data");
+            }
         }
         dirs::config_dir()
             .map(|d| d.join("MapsOffline").join("data"))
