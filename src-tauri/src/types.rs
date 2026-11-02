@@ -359,6 +359,25 @@ fn default_fav_kind() -> String {
     "address".to_string()
 }
 
+/// Result of the in-app update check (see `app_update.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdate {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+    pub page_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portable_url: Option<String>,
+    /// Release notes (Markdown as published).
+    pub notes: String,
+    pub checked_iso: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MyLocation {
@@ -574,6 +593,9 @@ pub struct Settings {
     /// Default for the route panel: avoid toll roads.
     #[serde(default = "default_true")]
     pub avoid_tolls: bool,
+    /// Look for a newer program version at startup (once a day).
+    #[serde(default = "default_true")]
+    pub auto_check_app_updates: bool,
     /// Default for the route panel: "none" | "a" (Area A only) | "ab" (Areas A and B).
     #[serde(default = "default_avoid_areas")]
     pub avoid_areas: String,
@@ -633,6 +655,7 @@ impl Default for Settings {
             routing_mode: default_routing_mode(),
             osrm_url: default_osrm_url(),
             transit_api_url: default_transit_api_url(),
+            auto_check_app_updates: true,
             avoid_tolls: true,
             avoid_areas: default_avoid_areas(),
             avoid_motorways: false,

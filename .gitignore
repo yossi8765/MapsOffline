@@ -32,3 +32,4 @@ src-tauri/target/
 .terrainlog.txt
 .buildlog.txt
 .poi-preview.html
+.vitelog.txt

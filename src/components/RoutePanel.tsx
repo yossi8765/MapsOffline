@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Bike, Bus, Car, ChevronDown, Circle, Footprints, MapPin, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Bike, Bus, Car, ChevronDown, Circle, Footprints, MapPin, Plus, SlidersHorizontal, Trash2, X, Route } from "lucide-react";
 import clsx from "clsx";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -26,7 +26,7 @@ export function RoutePanel() {
   const routes = useStore((s) => s.routes);
   const loading = useStore((s) => s.routeLoading);
   const error = useStore((s) => s.routeError);
-  const { setWaypoint, addVia, removeWaypoint, moveWaypoint, swapEnds, setMode, setTime, setAvoid, setAlternativesCount, computeRoute, clearRoute } =
+  const { setWaypoint, addVia, removeWaypoint, moveWaypoint, swapEnds, setMode, setTime, setAvoid, setAlternativesCount, computeRoute, clearRoute, optimizeOrder } =
     useStore.getState();
   const [showOptions, setShowOptions] = useState(false);
 
@@ -99,6 +99,11 @@ export function RoutePanel() {
         <button className="btn btn-ghost btn-sm text-muted" onClick={() => addVia()} disabled={n >= 7}>
           <Plus size={14} /> {t("addVia")}
         </button>
+        {n >= 3 && canCompute && mode !== "transit" && (
+          <button className="btn btn-ghost btn-sm text-muted" onClick={() => void optimizeOrder(true)} disabled={loading} title={t("shortestOrderHint")}>
+            <Route size={14} /> {t("shortestOrder")}
+          </button>
+        )}
         <div className="flex-1" />
         {(routes.length > 0 || waypoints.some(Boolean)) && (
           <button className="btn btn-ghost btn-sm text-muted" onClick={clearRoute}>

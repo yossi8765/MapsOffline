@@ -2,6 +2,7 @@
 //! Public API used by `commands.rs` and `data/`. Implemented in submodules.
 
 pub mod alternatives;
+pub mod order;
 pub mod areas;
 pub mod astar;
 pub mod graph;

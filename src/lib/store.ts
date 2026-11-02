@@ -14,6 +14,7 @@ import {
   type LineRef,
   type LineShape,
   type MyLocation,
+  type AppUpdate,
   type GeoResult,
   type HistoryItem,
   type LonLat,
@@ -83,6 +84,7 @@ const DEFAULT_SETTINGS: Settings = {
   osrmUrl: "https://routing.openstreetmap.de",
   transitApiUrl: "https://api.transitous.org",
   avoidTolls: true,
+  autoCheckAppUpdates: true,
   avoidAreas: "ab",
   avoidMotorways: false,
   avoidFerries: false,
@@ -163,6 +165,9 @@ interface State {
   /** Last fix of "my location" (map dot + search option). */
   myLocation: (MyLocation & { at: number }) | null;
   locating: boolean;
+  appUpdate: AppUpdate | null;
+  appUpdateBusy: "check" | "download" | null;
+  appUpdateProgress: { done: number; total: number; message: string } | null;
   /** The OS reports a network connection (navigator.onLine); gates online-only menu items. */
   online: boolean;
   history: HistoryItem[];
@@ -225,6 +230,12 @@ interface Actions {
   showLine: (f: Favorite) => Promise<void>;
   /** Ask the OS for the position (system consent dialog on first use); flies there when `fly`. */
   locate: (fly?: boolean) => Promise<MyLocation | null>;
+  /** Ask GitLab for a newer signed release; `quiet` = startup check (toast only when newer). */
+  checkAppUpdate: (quiet?: boolean) => Promise<void>;
+  /** Download, verify, start the installer and quit. */
+  installAppUpdate: () => Promise<void>;
+  /** Reorder the via stops for the shortest trip (origin fixed; destination fixed when `fixedEnd`). */
+  optimizeOrder: (fixedEnd: boolean) => Promise<void>;
   clearLine: () => void;
   loadHistory: () => Promise<void>;
   addHistory: (kind: "search" | "route", label: string, payload: unknown) => Promise<void>;
@@ -282,6 +293,9 @@ export const useStore = create<State & Actions>((set, get) => ({
   linePreview: null,
   myLocation: null,
   locating: false,
+  appUpdate: null,
+  appUpdateBusy: null,
+  appUpdateProgress: null,
   online: typeof navigator !== "undefined" ? navigator.onLine : false,
   history: [],
 
@@ -694,6 +708,56 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
   },
   clearLine: () => set({ linePreview: null }),
+  checkAppUpdate: async (quiet = false) => {
+    const t = get().t;
+    set({ appUpdateBusy: "check" });
+    try {
+      const u = await api.appUpdateCheck();
+      set({ appUpdate: u });
+      if (u.available && quiet) get().toast("info", `${t("updateAvailableToast")} ${u.latest}`);
+    } catch (e) {
+      const msg = errorText(e);
+      set({ appUpdate: { current: get().appVersion ?? "", latest: "", available: false, pageUrl: "", notes: "", checkedIso: new Date().toISOString(), error: msg } });
+      if (!quiet) get().toastError(e);
+    } finally {
+      set({ appUpdateBusy: null });
+    }
+  },
+  installAppUpdate: async () => {
+    const t = get().t;
+    set({ appUpdateBusy: "download", appUpdateProgress: { done: 0, total: 0, message: "" } });
+    try {
+      const path = await api.appUpdateDownload();
+      set({ appUpdateProgress: { done: 1, total: 1, message: t("updateStarting") } });
+      await api.appUpdateInstall(path);
+    } catch (e) {
+      get().toastError(e);
+      set({ appUpdateBusy: null, appUpdateProgress: null });
+    }
+  },
+  optimizeOrder: async (fixedEnd) => {
+    const s = get();
+    const pts = s.waypoints;
+    if (pts.some((p) => !p) || pts.length < 3) return;
+    const req: RouteRequest = {
+      waypoints: pts.map((p) => ({ lon: p!.lon, lat: p!.lat, name: p!.label })),
+      mode: s.mode,
+      time: { kind: "now" },
+      avoid: s.avoid,
+      alternatives: 0,
+    };
+    set({ routeLoading: true });
+    try {
+      const order = await api.optimizeOrder(req, fixedEnd);
+      const changed = order.some((o, i) => o !== i);
+      set({ waypoints: order.map((i) => pts[i]) });
+      if (!changed) get().toast("info", get().t("orderAlreadyBest"));
+      await get().computeRoute();
+    } catch (e) {
+      set({ routeLoading: false });
+      get().toastError(e);
+    }
+  },
   locate: async (fly = true) => {
     const t = get().t;
     set({ locating: true });

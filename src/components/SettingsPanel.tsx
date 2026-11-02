@@ -1,5 +1,6 @@
+import clsx from "clsx";
 import { useState } from "react";
-import { FolderOpen, RotateCcw } from "lucide-react";
+import { FolderOpen, RotateCcw, Download, RefreshCw } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -15,6 +16,10 @@ export function SettingsPanel() {
   };
   const settings = useStore((s) => s.settings);
   const version = useStore((s) => s.appVersion);
+  const appUpdate = useStore((s) => s.appUpdate);
+  const updateBusy = useStore((s) => s.appUpdateBusy);
+  const updateProgress = useStore((s) => s.appUpdateProgress);
+  const { checkAppUpdate, installAppUpdate } = useStore.getState();
   const update = useStore((s) => s.updateSettings);
 
   const chooseDir = async () => {
@@ -148,6 +153,47 @@ export function SettingsPanel() {
           {t("appName")} {version && <span className="text-subtle font-normal num">v{version}</span>}
         </div>
         <p className="m-0 text-muted">{t("aboutText")}</p>
+        <div className="group-list mt-2">
+          <Toggle label={t("autoCheckAppUpdates")} checked={settings.autoCheckAppUpdates} onChange={(v) => void update({ autoCheckAppUpdates: v })} />
+          <div className="row gap-2 flex-wrap">
+            <button className="btn btn-sm" disabled={!!updateBusy} onClick={() => void checkAppUpdate(false)}>
+              <RefreshCw size={14} strokeWidth={1.75} className={clsx(updateBusy === "check" && "animate-spin")} />
+              {updateBusy === "check" ? t("checking") : t("checkAppUpdates")}
+            </button>
+            {appUpdate?.available && !updateBusy && (
+              <button className="btn btn-sm btn-primary" onClick={() => void installAppUpdate()}>
+                <Download size={14} strokeWidth={2} /> {t("installUpdate")} {appUpdate.latest}
+              </button>
+            )}
+            {appUpdate?.available && (
+              <a className="text-xs text-accent underline-offset-2 hover:underline" href={appUpdate.pageUrl} target="_blank" rel="noreferrer">
+                {t("releaseNotes")}
+              </a>
+            )}
+          </div>
+          {appUpdate && !updateBusy && (
+            <div className="px-3 py-2 text-xs">
+              {appUpdate.error ? (
+                <span className="text-danger">{t("checkFailed")}: {appUpdate.error}</span>
+              ) : appUpdate.available ? (
+                <span className="text-fg">{t("updateAvailableToast")} <span className="num">{appUpdate.latest}</span> ({t("installedVersion")} <span className="num">{appUpdate.current}</span>)</span>
+              ) : (
+                <span className="text-muted">{t("appUpToDate")} <span className="num">{appUpdate.current}</span></span>
+              )}
+            </div>
+          )}
+          {updateBusy === "download" && updateProgress && (
+            <div className="px-3 py-2 text-xs">
+              <div className="flex justify-between gap-2 mb-1.5">
+                <span className="truncate text-muted">{updateProgress.message || t("downloadingUpdate")}</span>
+                {updateProgress.total > 0 && <span className="num shrink-0">{Math.min(100, Math.round((updateProgress.done / updateProgress.total) * 100))}%</span>}
+              </div>
+              <div className="h-1 rounded-full bg-surface-2 overflow-hidden">
+                <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300", updateProgress.total === 0 && "animate-pulse w-1/3")} style={updateProgress.total > 0 ? { width: `${Math.min(100, (updateProgress.done / updateProgress.total) * 100)}%` } : undefined} />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

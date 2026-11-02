@@ -5,6 +5,7 @@ pub mod geo;
 pub mod geocode;
 pub mod history;
 pub mod location;
+pub mod app_update;
 pub mod online;
 pub mod paths;
 pub mod routing;
@@ -48,6 +49,10 @@ pub fn run() {
             commands::satellite_path,
             commands::terrain_path,
             commands::locate,
+            commands::app_update_check,
+            commands::app_update_download,
+            commands::app_update_install,
+            commands::optimize_order,
             commands::elevation_profile,
             commands::data_update,
             commands::data_check,

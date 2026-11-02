@@ -1,6 +1,6 @@
 [package]
 name = "mapsoffline"
-version = "1.0.0"
+version = "1.1.0"
 description = "MapsOffline - offline navigation and maps for Israel"
 authors = ["MapsOffline"]
 edition = "2021"
@@ -51,6 +51,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 # Decoding Terrarium DEM tiles for elevation profiles (decoder only is used; the encoder only in tests).
 png = "0.17"
+# In-app update: Ed25519 signature of the release checksum list + SHA-256 of the download.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # WinRT Geolocator for "my location" (system consent dialog, no browser prompt).

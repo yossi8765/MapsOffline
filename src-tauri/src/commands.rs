@@ -365,6 +365,93 @@ pub fn satellite_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
     Ok(p.exists().then(|| p.display().to_string()))
 }
 
+// ---------------------------------------------------------------- program updates
+
+/// Newest signed release on GitLab versus the running version (does not download).
+#[tauri::command]
+pub async fn app_update_check() -> R<crate::types::AppUpdate> {
+    tauri::async_runtime::spawn_blocking(|| crate::app_update::check().map_err(err)).await.map_err(err)?
+}
+
+/// Download + verify the installer of the newest signed release. Progress on `app-update-progress`.
+#[tauri::command]
+pub async fn app_update_download(app: AppHandle, state: State<'_, Arc<AppState>>) -> R<String> {
+    let st = state.inner().clone();
+    if st.updating.swap(true, Ordering::SeqCst) {
+        return Err("UPDATE_RUNNING".into());
+    }
+    st.cancel.reset();
+    let st2 = st.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let progress = |phase: ProgressPhase, done: u64, total: u64, msg: &str| -> bool {
+            let _ = app.emit("app-update-progress", DataProgress { component: DataComponent::Tiles, phase, done, total, message: msg.to_string() });
+            !st2.cancel.is_cancelled()
+        };
+        let r = crate::app_update::download(&progress, &st2.cancel).map(|p| p.display().to_string()).map_err(err);
+        st2.updating.store(false, Ordering::SeqCst);
+        r
+    })
+    .await
+    .map_err(err)?;
+    res
+}
+
+/// Start the verified installer and quit, so the installer can replace the running program.
+#[tauri::command]
+pub fn app_update_install(app: AppHandle, path: String) -> R<()> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.starts_with(crate::app_update::update_dir()) || !p.exists() {
+        return Err("UPDATE_FILE_INVALID".into());
+    }
+    crate::app_update::launch_installer(&p).map_err(err)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------- stop order optimisation
+
+/// Shortest visiting order of the request's waypoints by local travel time (origin fixed;
+/// destination fixed when `fixed_end`). Returns the new order as indices into `req.waypoints`.
+#[tauri::command]
+pub async fn optimize_order(state: State<'_, Arc<AppState>>, req: RouteRequest, fixed_end: bool) -> R<Vec<usize>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> R<Vec<usize>> {
+        let n = req.waypoints.len();
+        if n < 3 {
+            return Ok((0..n).collect());
+        }
+        if n > 10 {
+            return Err("TOO_MANY_WAYPOINTS".into());
+        }
+        if req.mode == Mode::Transit {
+            return Err("ORDER_NOT_FOR_TRANSIT".into());
+        }
+        let g = st.graph().map_err(err)?;
+        // pairwise travel times (seconds); unreachable = very large
+        let mut cost = vec![vec![f64::INFINITY; n]; n];
+        for a in 0..n {
+            for b in 0..n {
+                if a == b {
+                    cost[a][b] = 0.0;
+                    continue;
+                }
+                let sub = RouteRequest { waypoints: vec![req.waypoints[a].clone(), req.waypoints[b].clone()], alternatives: 0, ..req.clone() };
+                if let Ok(resp) = g.route(&sub) {
+                    if let Some(r) = resp.routes.first() {
+                        cost[a][b] = r.duration_sec as f64;
+                    }
+                }
+            }
+        }
+        Ok(crate::routing::order::best_order(&cost, fixed_end))
+    })
+    .await
+    .map_err(err)?
+}
+
 /// Current position through the Windows location service (system consent dialog on first use).
 #[tauri::command]
 pub async fn locate() -> R<crate::types::MyLocation> {

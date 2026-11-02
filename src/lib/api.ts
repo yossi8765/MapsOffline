@@ -195,6 +195,19 @@ export interface LineRef {
   color?: string;
 }
 
+/** In-app update check result (signed GitLab release vs the running version). */
+export interface AppUpdate {
+  current: string;
+  latest: string;
+  available: boolean;
+  pageUrl: string;
+  setupUrl?: string;
+  portableUrl?: string;
+  notes: string;
+  checkedIso: string;
+  error?: string;
+}
+
 export interface MyLocation {
   lon: number;
   lat: number;
@@ -320,6 +333,8 @@ export interface Settings {
   routingMode: "auto" | "online" | "offline";
   osrmUrl: string;
   transitApiUrl: string;
+  /** Look for a newer program version at startup (once a day). */
+  autoCheckAppUpdates: boolean;
   /** Default for the route panel: avoid toll roads. */
   avoidTolls: boolean;
   /** Default for the route panel: which PA areas are forbidden. */
@@ -398,6 +413,14 @@ export const api = {
   terrainPath: () => invoke<string | null>("terrain_path"),
   /** Current position via the Windows location service; LOCATION_DENIED / LOCATION_UNAVAILABLE. */
   locate: () => invoke<MyLocation>("locate"),
+  appUpdateCheck: () => invoke<AppUpdate>("app_update_check"),
+  /** Downloads + verifies the newest signed installer; resolves to its path. Progress on `app-update-progress`. */
+  appUpdateDownload: () => invoke<string>("app_update_download"),
+  /** Starts the verified installer and quits the program. */
+  appUpdateInstall: (path: string) => invoke<void>("app_update_install", { path }),
+  onAppUpdateProgress: (cb: (p: DataProgress) => void) => listen<DataProgress>("app-update-progress", (e) => cb(e.payload)),
+  /** Shortest visiting order of the request's waypoints (indices); origin fixed, destination fixed when `fixedEnd`. */
+  optimizeOrder: (req: RouteRequest, fixedEnd: boolean) => invoke<number[]>("optimize_order", { req, fixedEnd }),
   /** Elevation (m) at each point from the installed DEM; null outside it. NO_TERRAIN_DATA when not installed. */
   elevationProfile: (points: LonLat[]) => invoke<(number | null)[]>("elevation_profile", { points }),
   dataUpdate: (components: DataComponent[]) => invoke<void>("data_update", { components }),

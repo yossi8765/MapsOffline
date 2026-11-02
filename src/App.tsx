@@ -24,6 +24,29 @@ export default function App() {
     let unProg: (() => void) | undefined;
     let unUpd: (() => void) | undefined;
     api.onDataProgress((p) => useStore.getState().setProgress(p)).then((u) => (unProg = u)).catch(() => {});
+    let unAppProg: (() => void) | undefined;
+    api
+      .onAppUpdateProgress((p) => useStore.setState({ appUpdateProgress: { done: p.done, total: p.total, message: p.message } }))
+      .then((u) => (unAppProg = u))
+      .catch(() => {});
+    // program update: once a day, 15 s after start, only when the setting allows it
+    const timer = window.setTimeout(() => {
+      const s = useStore.getState();
+      if (!s.settings.autoCheckAppUpdates || !navigator.onLine) return;
+      let last = 0;
+      try {
+        last = Number(localStorage.getItem("mapsoffline.lastUpdateCheck") || 0);
+      } catch {
+        /* ignore */
+      }
+      if (Date.now() - last < 24 * 3600_000) return;
+      try {
+        localStorage.setItem("mapsoffline.lastUpdateCheck", String(Date.now()));
+      } catch {
+        /* ignore */
+      }
+      void s.checkAppUpdate(true);
+    }, 15_000);
     api
       .onDataUpdated(() => {
         const st = useStore.getState();
@@ -35,6 +58,8 @@ export default function App() {
     return () => {
       unProg?.();
       unUpd?.();
+      unAppProg?.();
+      window.clearTimeout(timer);
     };
   }, []);
 
