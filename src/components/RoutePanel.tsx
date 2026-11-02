@@ -95,18 +95,18 @@ export function RoutePanel() {
           </button>
         </div>
       </div>
-      <div className="flex items-center gap-2 -mt-2 -mx-1">
-        <button className="btn btn-ghost btn-sm text-muted" onClick={() => addVia()} disabled={n >= 7}>
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-0 -mt-2 -mx-1">
+        <button className="btn btn-ghost btn-sm text-muted shrink-0" onClick={() => addVia()} disabled={n >= 7}>
           <Plus size={14} /> {t("addVia")}
         </button>
         {n >= 3 && canCompute && mode !== "transit" && (
-          <button className="btn btn-ghost btn-sm text-muted" onClick={() => void optimizeOrder(false)} disabled={loading} title={t("shortestOrderHint")}>
+          <button className="btn btn-ghost btn-sm text-muted shrink-0" onClick={() => void optimizeOrder(false)} disabled={loading} title={t("shortestOrderHint")}>
             <Route size={14} /> {t("shortestOrder")}
           </button>
         )}
         <div className="flex-1" />
         {(routes.length > 0 || waypoints.some(Boolean)) && (
-          <button className="btn btn-ghost btn-sm text-muted" onClick={clearRoute}>
+          <button className="btn btn-ghost btn-sm text-muted shrink-0" onClick={clearRoute}>
             <Trash2 size={14} /> {t("clearRoute")}
           </button>
         )}
