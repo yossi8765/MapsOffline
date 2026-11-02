@@ -3,6 +3,7 @@
 //! * `build` creates the index (places / streets / addresses / pois).
 //! * `open` opens it read-only; `search` and `reverse` answer queries.
 mod builder;
+pub use builder::SCHEMA_VERSION;
 pub mod categories;
 pub mod norm;
 

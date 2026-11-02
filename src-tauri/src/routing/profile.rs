@@ -171,7 +171,7 @@ impl Profile {
                     match class {
                         Class::Primary | Class::Secondary => k *= if f & flags::SIDEWALK != 0 { 1.0 } else { 1.15 },
                         Class::Tertiary => k *= 1.05,
-                        Class::Trunk => k *= 1.6,
+                        Class::Trunk => k *= if f & flags::SIDEWALK != 0 { 1.05 } else { 1.4 },
                         Class::Motorway => k *= 3.0,
                         Class::Track => k *= 1.1,
                         _ => {}

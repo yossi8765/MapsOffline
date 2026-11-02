@@ -12,7 +12,7 @@ use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use super::norm::{canon, housenumber_key, index_tokens};
 use crate::types::{ProgressFn, ProgressPhase};
 
-pub(crate) const SCHEMA_VERSION: &str = "3";
+pub const SCHEMA_VERSION: &str = "3";
 const COS_LAT: f64 = 0.8526; // cos(31.5 deg): good enough for Israel
 
 // ------------------------------------------------------------------ tag classification

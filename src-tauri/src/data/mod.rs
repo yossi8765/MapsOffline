@@ -91,6 +91,17 @@ impl Cancel {
 
 pub type Emit = Arc<dyn Fn(DataProgress) + Send + Sync>;
 
+/// Manifest version of a built component: the source's version plus the builder revision, so a
+/// changed build rule (e.g. pedestrian access) shows up as an available update.
+pub fn build_tag(c: DataComponent, source_version: &str) -> String {
+    match c {
+        DataComponent::Routing => format!("{source_version} g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV),
+        DataComponent::Geocode => format!("{source_version} s{}", crate::geocode::SCHEMA_VERSION),
+        DataComponent::Transit => format!("{source_version} t{}", crate::transit::model::VERSION),
+        _ => source_version.to_string(),
+    }
+}
+
 /// Status of files on disk (does not know about in-memory state).
 pub fn status(paths: &DataPaths) -> DataStatus {
     let m = manifest::Manifest::load(paths);
@@ -141,7 +152,10 @@ pub fn check(paths: &DataPaths) -> DataCheck {
         comps
             .iter()
             .map(|&c| match &remote {
-                Ok(rv) => UpdateCheck { available: local(c).is_none() || rv.is_some() && *rv != local(c), remote_version: rv.clone(), error: None },
+                Ok(rv) => {
+                    let expected = rv.as_ref().map(|r| build_tag(c, r));
+                    UpdateCheck { available: local(c).is_none() || expected.is_some() && expected != local(c), remote_version: expected, error: None }
+                }
                 Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
             })
             .collect()
@@ -322,7 +336,7 @@ pub fn update(
                 Ok(ver) => {
                     let rep = Reporter::new(&emit, &[c], cancel);
                     let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
-                    fin.finish(c, f(&progress).map(|()| ver.clone()));
+                    fin.finish(c, f(&progress).map(|()| ver.as_deref().map(|v| build_tag(c, v))));
                 }
             }
         };

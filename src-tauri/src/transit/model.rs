@@ -516,6 +516,18 @@ pub fn search_stops(t: &Transit, query: &str, near: Option<LonLat>, limit: usize
         hits.push((score, d, i));
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.total_cmp(&b.1)));
+    // The feed lists some stops several times (one record per platform / per operator feed)
+    // with the same code and name: show each stop once, keeping its best-scored record.
+    let mut seen: Vec<(String, String)> = Vec::new();
+    hits.retain(|&(_, _, i)| {
+        let st = &t.stops[i as usize];
+        let key = (t.s(st.code).to_string(), if t.s(st.code).is_empty() { t.s(st.name).to_string() } else { String::new() });
+        if seen.contains(&key) {
+            return false;
+        }
+        seen.push(key);
+        true
+    });
     hits.truncate(limit);
     hits.into_iter()
         .map(|(score, d, i)| {

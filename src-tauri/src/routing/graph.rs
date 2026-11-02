@@ -25,6 +25,9 @@ use crate::types::{LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOGR";
 pub const VERSION: u32 = 4;
+/// Revision of the build rules (access, costs) for the same file format: bumping it makes the
+/// update check offer a rebuild of graph.bin (see `data::build_tag`).
+pub const BUILD_REV: u32 = 2;
 const END_MAGIC: &[u8; 4] = b"END!";
 
 pub const NO_NAME: u32 = u32::MAX;
@@ -1068,6 +1071,8 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     let mut surface = None;
     let mut tracktype = None;
     let mut sidewalk = None;
+    let mut sidewalk_none = false;
+    let mut motorroad = false;
     let mut cycleway_any = false;
     let mut area = false;
     for (k, v) in tags {
@@ -1095,8 +1100,11 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
             "sidewalk" | "sidewalk:both" | "sidewalk:left" | "sidewalk:right" => {
                 if v != "no" && v != "none" && v != "separate" {
                     sidewalk = Some(v)
+                } else if v == "no" || v == "none" {
+                    sidewalk_none = true
                 }
             }
+            "motorroad" | "expressway" => motorroad = motorroad || v == "yes",
             "cycleway" | "cycleway:left" | "cycleway:right" | "cycleway:both" => {
                 if v != "no" && v != "none" && v != "separate" {
                     cycleway_any = true
@@ -1166,7 +1174,10 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
         Some(v) if yes(v) => true,
         _ => match class {
             Class::Motorway => false,
-            Class::Trunk => sidewalk.is_some(),
+            // Israeli urban trunk roads (route 90 through Tiberias, Jaffa road in Haifa…) rarely
+            // carry a sidewalk tag although they have one; only an explicit "no sidewalk",
+            // motorroad/expressway or access=no keeps pedestrians off
+            Class::Trunk => sidewalk.is_some() || (!sidewalk_none && !motorroad && !access_no),
             Class::Cycleway => true,
             _ => !access_no,
         },
