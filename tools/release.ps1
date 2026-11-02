@@ -52,7 +52,7 @@ $dist = Join-Path $root "dist"
 if (-not $NoBuild -and -not $SignOnly) {
     Write-Host "building..." -ForegroundColor Cyan
     if (Test-Path $exe) { Move-Item $exe "$exe.old" -Force -ErrorAction SilentlyContinue }
-    & pnpm tauri build 2>&1 | Select-String -Pattern "error|Finished" | ForEach-Object { $_.Line }
+    cmd /c "pnpm tauri build 2>&1" | Select-String -Pattern "error|Finished" | ForEach-Object { $_.Line }
     Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
 }
 if (-not (Test-Path $setup)) { Fail "installer not found: $setup" }
@@ -85,7 +85,7 @@ $sums = Join-Path $dist "SHA256SUMS"
 [System.IO.File]::WriteAllText($sums, ($lines -join "`n") + "`n", (New-Object System.Text.UTF8Encoding $false))
 $sig = Join-Path $dist "SHA256SUMS.sig"
 & $openssl pkeyutl -sign -inkey $key -rawin -in $sums -out $sig
-$verify = & $openssl pkeyutl -verify -pubin -inkey $pubPem -rawin -in $sums -sigfile $sig 2>&1
+$verify = cmd /c "`"$openssl`" pkeyutl -verify -pubin -inkey `"$pubPem`" -rawin -in `"$sums`" -sigfile `"$sig`" 2>&1"
 if ($LASTEXITCODE -ne 0 -or "$verify" -notmatch "Success") { Fail "signature verification failed: $verify" }
 Remove-Item $pubDer, $pubPem -Force -ErrorAction SilentlyContinue
 Write-Host "SHA256SUMS written and signed (verified)" -ForegroundColor Green
@@ -106,13 +106,13 @@ $notesOut = Join-Path $dist "release-notes-$version.md"
 
 # --- git tag + publish
 if ($Replace) {
-    & glab release delete $tag -y 2>$null | Out-Null
-    & git tag -d $tag 2>$null | Out-Null
-    & git push origin ":refs/tags/$tag" 2>$null | Out-Null
+    cmd /c "glab release delete $tag -y 2>nul" | Out-Null
+    cmd /c "git tag -d $tag 2>nul" | Out-Null
+    cmd /c "git push origin :refs/tags/$tag 2>nul" | Out-Null
 }
 $exists = & git tag -l $tag
 if (-not $exists) { & git tag -a $tag -m "MapsOffline $version" }
-& git push origin $tag 2>&1 | Out-Null
+cmd /c "git push origin $tag 2>nul" | Out-Null
 $assets = @(
     "$dist\MapsOffline_${version}_x64-setup.exe#MapsOffline_${version}_x64-setup.exe (מתקין)#package",
     "$dist\MapsOffline-setup.exe#MapsOffline-setup.exe (מתקין, שם קבוע)#package",

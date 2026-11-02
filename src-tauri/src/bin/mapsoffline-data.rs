@@ -116,6 +116,10 @@ enum Cmd {
     Elev {
         at: Vec<String>,
     },
+    /// Ask GitLab for the newest signed program release (the in-app update check)
+    AppCheck,
+    /// Download + verify the newest signed installer into the update folder (does not run it)
+    AppDownload,
     /// Measure load / query latencies on the installed data (use --release)
     Bench {
         #[arg(long, default_value_t = 5)]
@@ -318,6 +322,24 @@ fn main() -> anyhow::Result<()> {
                         println!("  -> {} [{} -> {}] {} min, {} departures: {} ...", d.headsign, d.from_stop, d.to_stop, d.duration_sec / 60, d.departures.len(), times.join(" "));
                     }
                 }
+            }
+        }
+        Cmd::AppCheck => {
+            let t0 = std::time::Instant::now();
+            let u = mapsoffline_lib::app_update::check()?;
+            println!("current {} latest {} available={} setup={:?} in {:?}", u.current, u.latest, u.available, u.setup_url, t0.elapsed());
+        }
+        Cmd::AppDownload => {
+            let progress = |ph: ProgressPhase, d: u64, t: u64, m: &str| -> bool {
+                if t > 0 && d % (1 << 20) < 65536 || t == 0 {
+                    eprintln!("[{ph:?}] {} / {} MB {m}", d >> 20, t >> 20);
+                }
+                true
+            };
+            let cancel = Cancel::default();
+            match mapsoffline_lib::app_update::download(&progress, &cancel) {
+                Ok(p) => println!("verified installer at {}", p.display()),
+                Err(e) => println!("download refused: {e:#}"),
             }
         }
         Cmd::Elev { at } => {
