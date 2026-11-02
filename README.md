@@ -26,6 +26,10 @@ Tauri 2 + Rust · React + MapLibre GL · PMTiles · SQLite FTS5.
 
 `MapsOffline-portable.zip` מכיל את `MapsOffline.exe` ואת הסמן `portable.txt`. מחלצים לכל תיקייה (גם דיסק-און-קי) ומריצים; הנתונים, ההגדרות וההיסטוריה נשמרים בתיקיית `data` לצד הקובץ ולא ב-%APPDATA%. דרוש WebView2 במחשב (מובנה ב-Windows 10/11 מעודכנים).
 
+## עדכונים
+
+התוכנה בודקת פעם ביום (ואפשר ידנית בהגדרות ← אודות) אם יש גרסה חדשה ב-GitLab, ומתקינה רק שחרור שחתום במפתח הפרויקט. פרסום גרסה: `.\tools\release.ps1` (ראו `docs/SPEC.md`).
+
 ## פיתוח
 
 ```

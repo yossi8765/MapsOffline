@@ -62,6 +62,11 @@ public/fonts, public/sprites   offline glyphs/sprites for MapLibre
 - `locate() -> MyLocation {lon, lat, accuracyM}` – WinRT `Geolocator` (`src/location.rs`, `windows` crate, Windows consent dialog); store `myLocation`, SearchBox row type `me`, map layers `my-location-*`.
 - `settings_get / settings_set`
 
+## Program updates & releases
+- `app_update_check / app_update_download / app_update_install` (`src-tauri/src/app_update.rs`, ported from the RAF design): the GitLab release list is the only source; a release counts only when its `SHA256SUMS` (first line `# version X.Y.Z`, must equal the tag and be newer than the running version) is signed by the Ed25519 key whose public half is `PUBLIC_KEY_HEX`; the installer is downloaded to `%LOCALAPPDATA%\MapsOffline\update`, SHA-256-checked against the signed list, started, and the app exits. Progress event `app-update-progress`. Startup check once a day when `settings.autoCheckAppUpdates`.
+- Publish with `.\tools\release.ps1` (`-NoBuild`, `-Replace` to overwrite an existing tag/release, `-SignOnly`): builds, packs `MapsOffline-portable.zip`, writes + signs `SHA256SUMS`, appends the checksum table to `release-notes.md`, tags, and creates the GitLab release with the stable asset names `MapsOffline-setup.exe` / `MapsOffline-portable.zip` (permalink/latest). Private key: `%USERPROFILE%\.mapsoffline-signing\mapsoffline-release-ed25519.pem` – never in the repo.
+- `optimize_order(req, fixedEnd) -> number[]` (`routing/order.rs`, Held–Karp over local travel times; origin fixed, destination fixed when asked; car/foot/bike only).
+
 ## Installer
 NSIS strings for Hebrew come from `src-tauri/nsis/Hebrew.nsh` (`bundle.windows.nsis.customLanguageFiles`): the Tauri CLI's embedded Hebrew file was not emitted (only English.nsh landed in `target/release/nsis/x64`), leaving the reinstall page, the "app is running" box and the desktop-shortcut checkbox blank. Keep every `LangString` key of the bundler's English.nsh in it.
 
