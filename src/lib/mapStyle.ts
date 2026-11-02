@@ -1,5 +1,5 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
-import type { LayerSpecification, StyleSpecification } from "maplibre-gl";
+import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from "maplibre-gl";
 
 export const ISRAEL_BBOX: [number, number, number, number] = [34.2, 29.45, 35.95, 33.35];
 export const MAX_BOUNDS: [[number, number], [number, number]] = [
@@ -92,16 +92,26 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
   // Road numbers: the stock shields are tiny (8 px) and sparse; make them readable at every
   // zoom and place them before the street names so they win collisions.
+  // Israeli colour code by road class: 1-digit national roads blue, 2-digit regional red,
+  // 3-digit local green, longer numbers grey. The shield images are drawn on demand by
+  // MapView (`styleimagemissing`), see `shieldImage()`.
   const shields = ls.find((l) => l.id === "roads_shields");
   if (shields && shields.type === "symbol") {
     shields.minzoom = 7;
+    const n: ExpressionSpecification = ["length", ["get", "shield_text"]];
     shields.layout = {
       ...shields.layout,
-      "text-size": ["interpolate", ["linear"], ["zoom"], 7, 9, 11, 11, 15, 13],
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.9, 11, 1.1, 15, 1.3],
+      "icon-image": ["concat", "shield-", ["case", ["<=", n, 1], "blue", ["<=", n, 2], "red", ["<=", n, 3], "green", "grey"], "-", n],
+      "text-field": ["get", "shield_text"],
+      "text-font": ["Noto Sans Medium"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 7, 10, 11, 12, 15, 14],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.83, 11, 1, 15, 1.17],
+      "text-offset": [0, 0.05],
       "symbol-spacing": 160,
       "text-padding": 1,
+      "icon-allow-overlap": false,
     };
+    shields.paint = { "text-color": "#ffffff", "text-halo-width": 0 };
   }
   if (o.buildings3d) {
     const idx = ls.findIndex((l) => l.id === "buildings");

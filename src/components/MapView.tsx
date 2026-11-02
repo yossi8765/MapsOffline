@@ -274,6 +274,31 @@ async function loadPoiIcons(map: maplibregl.Map, dark: boolean): Promise<void> {
   );
 }
 
+/** Road-number shield `shield-<colour>-<chars>`: rounded rectangle in the class colour with a
+ * white border, sized for `chars` digits at the 12 px label (icon-size 1 = zoom 11). */
+function shieldImage(name: string): ImageData | null {
+  const m = /^shield-(blue|red|green|grey)-(\d+)$/.exec(name);
+  if (!m) return null;
+  const fill = { blue: "#1d5fd1", red: "#c62828", green: "#1e7f3c", grey: "#4b5563" }[m[1] as "blue" | "red" | "green" | "grey"];
+  const chars = Math.max(1, Math.min(6, Number(m[2])));
+  const w = 10 + 7.5 * chars;
+  const h = 17;
+  const dpr = Math.max(1, Math.min(4, Math.ceil(window.devicePixelRatio || 1)));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(w * dpr);
+  canvas.height = Math.ceil(h * dpr);
+  const c = canvas.getContext("2d")!;
+  c.scale(dpr, dpr);
+  c.beginPath();
+  c.roundRect(0.5, 0.5, w - 1, h - 1, 3.5);
+  c.fillStyle = fill;
+  c.fill();
+  c.lineWidth = 1.5;
+  c.strokeStyle = "#ffffff";
+  c.stroke();
+  return c.getImageData(0, 0, canvas.width, canvas.height);
+}
+
 /** "My location": accuracy disc (metres, scaled with zoom) + blue dot. */
 function addMyLocationLayers(map: maplibregl.Map) {
   const empty = { type: "FeatureCollection", features: [] } as FeatureCollection;
@@ -567,6 +592,10 @@ export function MapView() {
       });
       setMapReady(true);
       syncRoutes(map);
+    });
+    map.on("styleimagemissing", (e) => {
+      const img = shieldImage(e.id);
+      if (img && !map.hasImage(e.id)) map.addImage(e.id, img, { pixelRatio: Math.max(1, Math.min(4, Math.ceil(window.devicePixelRatio || 1))) });
     });
     map.on("error", (e) => {
       // Missing glyph/sprite/tile errors should not spam the console.
