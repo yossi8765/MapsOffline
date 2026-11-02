@@ -77,6 +77,18 @@ export function SettingsPanel() {
         </div>
       </Section>
 
+      <Section title={t("dataTitle")} hint={t("satQualityHint")}>
+        <Row label={t("satelliteQuality")}>
+          <div className="seg seg-sm seg-fit">
+            {(["low", "medium", "high"] as const).map((q) => (
+              <button key={q} aria-pressed={settings.satelliteQuality === q} onClick={() => void update({ satelliteQuality: q })}>
+                <span>{t(q === "low" ? "satQualityLow" : q === "medium" ? "satQualityMedium" : "satQualityHigh")}</span>
+              </button>
+            ))}
+          </div>
+        </Row>
+      </Section>
+
       <Section title={t("navigation")} hint={t("avoidAreasHint")}>
         <Toggle label={t("avoidTollsDefault")} checked={settings.avoidTolls} onChange={(v) => void update({ avoidTolls: v })} />
         <Toggle label={t("avoidMotorwaysDefault")} checked={settings.avoidMotorways} onChange={(v) => void update({ avoidMotorways: v })} />

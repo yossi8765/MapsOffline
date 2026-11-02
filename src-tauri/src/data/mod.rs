@@ -153,8 +153,10 @@ pub fn check(paths: &DataPaths) -> DataCheck {
         let sat = s.spawn(|| match download::http_client().and_then(|c| satellite::latest_layer(&c)) {
             // an archive full of content-filter placeholders counts as not installed
             Ok(layer) => {
+                let quality = crate::state::load_settings(paths).satellite_quality;
+                let expected = satellite::archive_version(&layer, &quality);
                 let damaged = paths.satellite_file().exists() && satellite::verify(&paths.satellite_file(), true).is_err();
-                UpdateCheck { available: damaged || local(DataComponent::Satellite).as_deref() != Some(layer.as_str()), remote_version: Some(layer), error: None }
+                UpdateCheck { available: damaged || !satellite::version_matches(local(DataComponent::Satellite).as_deref(), &layer, &quality), remote_version: Some(expected), error: None }
             }
             Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
         });

@@ -335,6 +335,8 @@ export interface Settings {
   transitApiUrl: string;
   /** Look for a newer program version at startup (once a day). */
   autoCheckAppUpdates: boolean;
+  /** Satellite imagery detail: low (zoom 12), medium (13), high (14 = native 10 m). */
+  satelliteQuality: "low" | "medium" | "high";
   /** Default for the route panel: avoid toll roads. */
   avoidTolls: boolean;
   /** Default for the route panel: which PA areas are forbidden. */

@@ -24,6 +24,29 @@ use crate::types::{ProgressFn, ProgressPhase};
 
 const BASE: &str = "https://tiles.maps.eox.at/wmts/1.0.0/";
 pub const MAX_ZOOM: u8 = 14;
+
+/// Max zoom for the chosen quality setting (see `Settings::satellite_quality`).
+pub fn quality_zoom(q: &str) -> u8 {
+    match q {
+        "low" => 12,
+        "medium" => 13,
+        _ => MAX_ZOOM,
+    }
+}
+
+/// Manifest version of the satellite archive: mosaic year + detail level.
+pub fn archive_version(layer: &str, quality: &str) -> String {
+    format!("{layer} z{}", quality_zoom(quality))
+}
+
+/// Is the installed version (manifest) what the current setting expects? Archives written before
+/// the quality setting existed are full-detail and carry the bare layer name.
+pub fn version_matches(installed: Option<&str>, layer: &str, quality: &str) -> bool {
+    match installed {
+        Some(v) => v == archive_version(layer, quality) || (quality_zoom(quality) == MAX_ZOOM && v == layer),
+        None => false,
+    }
+}
 const WORKERS: usize = 12;
 const FIRST_YEAR: i32 = 2018;
 const ATTRIBUTION: &str = "Sentinel-2 cloudless by EOX IT Services GmbH (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data";
@@ -856,17 +879,19 @@ pub fn update_satellite(
     let client = http_client()?;
     let layer = latest_layer(&client)?;
 
+    let quality = crate::state::load_settings(paths).satellite_quality;
+    let version = archive_version(&layer, &quality);
     let dest = paths.satellite_file();
     let m = super::manifest::Manifest::load(paths);
-    if dest.exists() && m.entry(crate::types::DataComponent::Satellite).and_then(|e| e.version.as_deref()) == Some(layer.as_str()) && verify(&dest, true).is_ok() {
+    if dest.exists() && version_matches(m.entry(crate::types::DataComponent::Satellite).and_then(|e| e.version.as_deref()), &layer, &quality) && verify(&dest, true).is_ok() {
         progress(ProgressPhase::Processing, 1, 1, "תצלום הלוויין כבר מעודכן");
-        return Ok(Some(layer));
+        return Ok(Some(version));
     }
     let url = |z: u8, x: u32, y: u32| tile_url(&layer, z, x, y);
     let spec = RasterSpec {
         label: "תצלום לוויין",
         url: &url,
-        max_zoom: MAX_ZOOM,
+        max_zoom: quality_zoom(&quality),
         skip_sea: true,
         tile_type: 3,
         placeholders: true,
@@ -874,10 +899,10 @@ pub fn update_satellite(
         attribution: ATTRIBUTION.to_string(),
         bbox: BBOX_ISRAEL,
     };
-    let skipped = download_raster(&dest, &layer, &spec, &client, progress, cancel)?;
-    // a partial archive gets a version that never equals the server's, so "check updates"
+    let skipped = download_raster(&dest, &version, &spec, &client, progress, cancel)?;
+    // a partial archive gets a version that never equals the expected one, so "check updates"
     // keeps offering the download until every tile is in
-    Ok(Some(if skipped > 0 { format!("{layer} (חסרים {skipped} אריחים)") } else { layer }))
+    Ok(Some(if skipped > 0 { format!("{version} (חסרים {skipped} אריחים)") } else { version }))
 }
 
 #[cfg(test)]

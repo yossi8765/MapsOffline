@@ -85,6 +85,7 @@ const DEFAULT_SETTINGS: Settings = {
   transitApiUrl: "https://api.transitous.org",
   avoidTolls: true,
   autoCheckAppUpdates: true,
+  satelliteQuality: "high",
   avoidAreas: "ab",
   avoidMotorways: false,
   avoidFerries: false,

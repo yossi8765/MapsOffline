@@ -596,6 +596,9 @@ pub struct Settings {
     /// Look for a newer program version at startup (once a day).
     #[serde(default = "default_true")]
     pub auto_check_app_updates: bool,
+    /// Satellite imagery detail: "low" (zoom 12, ~40 m/px), "medium" (13), "high" (14, the sensor's 10 m).
+    #[serde(default = "default_sat_quality")]
+    pub satellite_quality: String,
     /// Default for the route panel: "none" | "a" (Area A only) | "ab" (Areas A and B).
     #[serde(default = "default_avoid_areas")]
     pub avoid_areas: String,
@@ -625,6 +628,10 @@ pub fn default_routing_mode() -> String {
 pub fn default_osrm_url() -> String {
     "https://routing.openstreetmap.de".into()
 }
+fn default_sat_quality() -> String {
+    "high".into()
+}
+
 pub fn default_transit_api_url() -> String {
     "https://api.transitous.org".into()
 }
@@ -656,6 +663,7 @@ impl Default for Settings {
             osrm_url: default_osrm_url(),
             transit_api_url: default_transit_api_url(),
             auto_check_app_updates: true,
+            satellite_quality: "high".into(),
             avoid_tolls: true,
             avoid_areas: default_avoid_areas(),
             avoid_motorways: false,

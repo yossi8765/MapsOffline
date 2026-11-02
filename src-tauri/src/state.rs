@@ -194,7 +194,7 @@ impl AppState {
     }
 }
 
-fn load_settings(paths: &DataPaths) -> Settings {
+pub fn load_settings(paths: &DataPaths) -> Settings {
     std::fs::read(paths.settings_file())
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
