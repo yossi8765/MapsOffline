@@ -158,10 +158,10 @@ export function DataPanel() {
               onPause={(p) => void pauseUpdate(p)}
               extra={
                 c === "satellite" ? (
-                  <label className="flex items-center gap-2 text-xs text-muted mt-1.5">
-                    <span className="shrink-0">{t("satelliteQuality")}</span>
+                  <label className="flex flex-col gap-1 text-xs text-muted mt-1.5">
+                    <span>{t("satelliteQuality")}</span>
                     <select
-                      className="input h-7 !py-0 text-xs w-auto"
+                      className="input h-8 !py-0 text-xs w-full min-w-0"
                       value={satelliteQuality}
                       disabled={updating}
                       onChange={(e) => {
