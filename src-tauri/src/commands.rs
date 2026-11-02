@@ -154,6 +154,18 @@ pub fn route_hybrid(st: &AppState, req: &RouteRequest, settings: &Settings) -> R
                         t.fill_stop_codes(&mut resp.routes);
                     }
                 }
+                // OSRM's foot / bike profiles keep off Israeli urban trunk roads and detour for
+                // hours; when the local engine is clearly shorter, trust it instead.
+                if matches!(req.mode, Mode::Foot | Mode::Bike) {
+                    if let (Some(online), Ok(local)) = (resp.routes.first().map(|r| r.duration_sec), route_offline(st, req)) {
+                        if let Some(l) = local.routes.first() {
+                            if (l.duration_sec as f64) < online as f64 * 0.7 {
+                                log::info!("online {:?} route {}s vs local {}s: using local", req.mode, online, l.duration_sec);
+                                return Ok(local);
+                            }
+                        }
+                    }
+                }
                 return Ok(resp);
             }
             Err(e) => {

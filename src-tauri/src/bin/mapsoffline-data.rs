@@ -243,6 +243,16 @@ fn main() -> anyhow::Result<()> {
                         if r.routes.is_empty() {
                             eprintln!("all online routes enter avoided territories; using local routing");
                             None
+                        } else if matches!(req.mode, Mode::Foot | Mode::Bike) && {
+                            let local = graph.as_ref().map(|g| g.route(&req));
+                            if let Some(Err(e)) = &local {
+                                eprintln!("local comparison route failed: {e:#}");
+                            }
+                            local.and_then(|l| l.ok()).and_then(|l| l.routes.first().map(|x| x.duration_sec)).is_some_and(|ld| (ld as f64) < r.routes[0].duration_sec as f64 * 0.7)
+                        } {
+                            // same rule as commands::route_hybrid: OSRM's foot/bike profiles detour around trunk roads
+                            eprintln!("online {:?} route is far longer than the local one; using local routing", req.mode);
+                            None
                         } else {
                             Some(r)
                         }

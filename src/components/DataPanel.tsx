@@ -35,7 +35,8 @@ export function DataPanel() {
   const lang = useStore((s) => s.settings.language);
   const check = useStore((s) => s.dataCheck);
   const checking = useStore((s) => s.checkingUpdates);
-  const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, toastError } = useStore.getState();
+  const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, toastError, updateSettings } = useStore.getState();
+  const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
   const updating = !!status?.updating;
   const paused = !!status?.paused;
   const present = DATA_COMPONENTS.filter((c) => status?.[c]?.present);
@@ -155,6 +156,25 @@ export function DataPanel() {
               onUpdate={() => void startUpdate([c])}
               onCancel={() => void cancelUpdate(c)}
               onPause={(p) => void pauseUpdate(p)}
+              extra={
+                c === "satellite" ? (
+                  <label className="flex items-center gap-2 text-xs text-muted mt-1.5">
+                    <span className="shrink-0">{t("satelliteQuality")}</span>
+                    <select
+                      className="input h-7 !py-0 text-xs w-auto"
+                      value={satelliteQuality}
+                      disabled={updating}
+                      onChange={(e) => {
+                        void updateSettings({ satelliteQuality: e.target.value as "low" | "medium" | "high" }).then(() => checkUpdates(true));
+                      }}
+                    >
+                      <option value="low">{t("satQualityLowOpt")}</option>
+                      <option value="medium">{t("satQualityMediumOpt")}</option>
+                      <option value="high">{t("satQualityHighOpt")}</option>
+                    </select>
+                  </label>
+                ) : undefined
+              }
             />
           ))}
         </div>
@@ -253,6 +273,7 @@ function ComponentCard({
   onUpdate,
   onCancel,
   onPause,
+  extra,
 }: {
   id: DataComponent;
   st?: ComponentStatus;
@@ -264,6 +285,8 @@ function ComponentCard({
   onUpdate: () => void;
   onCancel: () => void;
   onPause: (paused: boolean) => void;
+  /** Extra controls under the description (satellite quality). */
+  extra?: React.ReactNode;
 }) {
   const t = useT();
   const m = META[id];
@@ -297,6 +320,7 @@ function ComponentCard({
             )}
           </div>
           <div className="text-xs text-muted mt-0.5">{t(m.desc)}</div>
+          {extra}
           {st?.present && (
             <div className="text-xs text-subtle mt-1 truncate num" title={st.version ? `${t("version")}: ${st.version}` : undefined}>
               <bdi dir="ltr">{fmtBytes(st.sizeBytes)}</bdi>
