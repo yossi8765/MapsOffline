@@ -337,6 +337,7 @@ pub fn data_status(state: State<'_, Arc<AppState>>) -> R<DataStatus> {
     s.transit.loaded = state.transit.read().is_some();
     s.geocode.loaded = state.geocoder_loaded();
     s.tiles.loaded = s.tiles.present;
+    s.world.loaded = s.world.present;
     s.satellite.loaded = s.satellite.present;
     s.terrain.loaded = s.terrain.present;
     s.updating = state.updating.load(Ordering::Relaxed);
@@ -355,6 +356,13 @@ pub async fn data_check(state: State<'_, Arc<AppState>>) -> R<crate::types::Data
 #[tauri::command]
 pub fn tiles_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
     let p = state.paths().tiles_file();
+    Ok(p.exists().then(|| p.display().to_string()))
+}
+
+/// Absolute path of the world basemap archive, if installed.
+#[tauri::command]
+pub fn world_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
+    let p = state.paths().world_file();
     Ok(p.exists().then(|| p.display().to_string()))
 }
 

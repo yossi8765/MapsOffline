@@ -112,6 +112,7 @@ pub fn status(paths: &DataPaths) -> DataStatus {
     DataStatus {
         dir: paths.root.display().to_string(),
         tiles: comp(DataComponent::Tiles),
+        world: comp(DataComponent::World),
         satellite: comp(DataComponent::Satellite),
         terrain: comp(DataComponent::Terrain),
         routing: comp(DataComponent::Routing),
@@ -145,9 +146,13 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             })
             .collect()
     };
-    let (tiles, sat, dem, osm, gtfs) = std::thread::scope(|s| {
+    let (tiles, world, sat, dem, osm, gtfs) = std::thread::scope(|s| {
         let t = s.spawn(|| match download::http_client().and_then(|c| tiles::latest_build_key(&c)) {
             Ok(key) => UpdateCheck { available: tiles::build_is_stale(tiles::installed_build(paths).as_deref(), &key), remote_version: Some(key), error: None },
+            Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+        });
+        let world = s.spawn(|| match download::http_client().and_then(|c| tiles::latest_build_key(&c)) {
+            Ok(key) => UpdateCheck { available: tiles::build_is_stale(tiles::Extract::world(paths).installed_build().as_deref(), &key), remote_version: Some(key), error: None },
             Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
         });
         let sat = s.spawn(|| match download::http_client().and_then(|c| satellite::latest_layer(&c)) {
@@ -169,12 +174,13 @@ pub fn check(paths: &DataPaths) -> DataCheck {
         });
         let o = s.spawn(|| source_check(PBF_URL, &[DataComponent::Routing, DataComponent::Geocode]));
         let g = s.spawn(|| source_check(GTFS_URL, &[DataComponent::Transit]));
-        (t.join().unwrap_or_default(), sat.join().unwrap_or_default(), dem.join().unwrap_or_default(), o.join().unwrap_or_default(), g.join().unwrap_or_default())
+        (t.join().unwrap_or_default(), world.join().unwrap_or_default(), sat.join().unwrap_or_default(), dem.join().unwrap_or_default(), o.join().unwrap_or_default(), g.join().unwrap_or_default())
     });
     let mut osm = osm.into_iter();
     DataCheck {
         checked_iso: chrono::Local::now().to_rfc3339(),
         tiles,
+        world,
         satellite: sat,
         terrain: dem,
         routing: osm.next().unwrap_or_default(),
@@ -272,7 +278,7 @@ pub fn update(
     std::thread::scope(|s| {
         // --- self-contained jobs: download + finalize in one go
         type Job = fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>;
-        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job)] {
+        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job)] {
             if !wants(c) {
                 continue;
             }

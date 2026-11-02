@@ -466,6 +466,7 @@ pub struct LineShape {
 #[serde(rename_all = "snake_case")]
 pub enum DataComponent {
     Tiles,
+    World,
     Satellite,
     Terrain,
     Routing,
@@ -474,8 +475,9 @@ pub enum DataComponent {
 }
 
 impl DataComponent {
-    pub const ALL: [DataComponent; 6] = [
+    pub const ALL: [DataComponent; 7] = [
         DataComponent::Tiles,
+        DataComponent::World,
         DataComponent::Satellite,
         DataComponent::Terrain,
         DataComponent::Routing,
@@ -516,6 +518,7 @@ pub struct UpdateCheck {
 pub struct DataCheck {
     pub checked_iso: String,
     pub tiles: UpdateCheck,
+    pub world: UpdateCheck,
     pub satellite: UpdateCheck,
     pub terrain: UpdateCheck,
     pub routing: UpdateCheck,
@@ -528,6 +531,7 @@ pub struct DataCheck {
 pub struct DataStatus {
     pub dir: String,
     pub tiles: ComponentStatus,
+    pub world: ComponentStatus,
     pub satellite: ComponentStatus,
     pub terrain: ComponentStatus,
     pub routing: ComponentStatus,
@@ -599,6 +603,12 @@ pub struct Settings {
     /// Satellite imagery detail: "low" (zoom 12, ~40 m/px), "medium" (13), "high" (14, the sensor's 10 m).
     #[serde(default = "default_sat_quality")]
     pub satellite_quality: String,
+    /// Open the map where it was last left.
+    #[serde(default = "default_true")]
+    pub remember_map_view: bool,
+    /// Accent colour of the light theme: "blue" | "green" | "purple" | "orange" | "teal" | "rose" | "slate".
+    #[serde(default = "default_accent")]
+    pub accent: String,
     /// Default for the route panel: "none" | "a" (Area A only) | "ab" (Areas A and B).
     #[serde(default = "default_avoid_areas")]
     pub avoid_areas: String,
@@ -628,6 +638,10 @@ pub fn default_routing_mode() -> String {
 pub fn default_osrm_url() -> String {
     "https://routing.openstreetmap.de".into()
 }
+fn default_accent() -> String {
+    "blue".into()
+}
+
 fn default_sat_quality() -> String {
     "high".into()
 }
@@ -664,6 +678,8 @@ impl Default for Settings {
             transit_api_url: default_transit_api_url(),
             auto_check_app_updates: true,
             satellite_quality: "high".into(),
+            remember_map_view: true,
+            accent: "blue".into(),
             avoid_tolls: true,
             avoid_areas: default_avoid_areas(),
             avoid_motorways: false,

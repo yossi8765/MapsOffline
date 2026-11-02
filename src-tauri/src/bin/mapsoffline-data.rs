@@ -30,6 +30,8 @@ enum Cmd {
         #[arg(long)]
         tiles: bool,
         #[arg(long)]
+        world: bool,
+        #[arg(long)]
         satellite: bool,
         #[arg(long)]
         terrain: bool,
@@ -142,10 +144,13 @@ fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
 
     match cli.cmd {
-        Cmd::Build { all, tiles, satellite, terrain, routing, geocode, transit } => {
+        Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit } => {
             let mut comps = vec![];
             if all || tiles {
                 comps.push(DataComponent::Tiles);
+            }
+            if all || world {
+                comps.push(DataComponent::World);
             }
             if all || satellite {
                 comps.push(DataComponent::Satellite);

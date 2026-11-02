@@ -270,8 +270,8 @@ export interface LineShape {
 }
 
 // ------------------------------------------------------------- data
-export type DataComponent = "tiles" | "satellite" | "terrain" | "routing" | "geocode" | "transit";
-export const DATA_COMPONENTS: DataComponent[] = ["tiles", "satellite", "terrain", "routing", "geocode", "transit"];
+export type DataComponent = "tiles" | "world" | "satellite" | "terrain" | "routing" | "geocode" | "transit";
+export const DATA_COMPONENTS: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit"];
 
 export interface ComponentStatus {
   present: boolean;
@@ -290,6 +290,7 @@ export interface UpdateCheck {
 export interface DataCheck {
   checkedIso: string;
   tiles: UpdateCheck;
+  world: UpdateCheck;
   satellite: UpdateCheck;
   terrain: UpdateCheck;
   routing: UpdateCheck;
@@ -302,6 +303,7 @@ export interface DataStatus {
   /** The running update is paused. */
   paused: boolean;
   tiles: ComponentStatus;
+  world: ComponentStatus;
   satellite: ComponentStatus;
   terrain: ComponentStatus;
   routing: ComponentStatus;
@@ -337,6 +339,10 @@ export interface Settings {
   autoCheckAppUpdates: boolean;
   /** Satellite imagery detail: low (zoom 12), medium (13), high (14 = native 10 m). */
   satelliteQuality: "low" | "medium" | "high";
+  /** Open the map where it was last left. */
+  rememberMapView: boolean;
+  /** Accent colour of the light theme. */
+  accent: "blue" | "green" | "purple" | "orange" | "teal" | "rose" | "slate";
   /** Default for the route panel: avoid toll roads. */
   avoidTolls: boolean;
   /** Default for the route panel: which PA areas are forbidden. */
@@ -412,6 +418,7 @@ export const api = {
   dataStatus: () => invoke<DataStatus>("data_status"),
   tilesPath: () => invoke<string | null>("tiles_path"),
   satellitePath: () => invoke<string | null>("satellite_path"),
+  worldPath: () => invoke<string | null>("world_path"),
   terrainPath: () => invoke<string | null>("terrain_path"),
   /** Current position via the Windows location service; LOCATION_DENIED / LOCATION_UNAVAILABLE. */
   locate: () => invoke<MyLocation>("locate"),

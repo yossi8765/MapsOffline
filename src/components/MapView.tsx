@@ -491,6 +491,7 @@ export function MapView() {
   const tilesUrl = useStore((s) => s.tilesUrl);
   const satelliteUrl = useStore((s) => s.satelliteUrl);
   const terrainUrl = useStore((s) => s.terrainUrl);
+  const worldUrl = useStore((s) => s.worldUrl);
   const tilesTick = useStore((s) => s.tilesTick);
   const layers = useStore((s) => s.layers);
   const theme = useStore((s) => s.settings.theme);
@@ -513,11 +514,21 @@ export function MapView() {
     if (!containerRef.current || mapRef.current) return;
     ensureProtocol();
     const st = useStore.getState();
+    // last map view (when the setting allows it; mirrored in localStorage for this early read)
+    let start: { center: LonLat; zoom: number } = { center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM };
+    try {
+      if (localStorage.getItem("mapsoffline.rememberView") !== "0") {
+        const saved = JSON.parse(localStorage.getItem("mapsoffline.lastView") || "null") as { lon: number; lat: number; zoom: number } | null;
+        if (saved && Number.isFinite(saved.lon) && Number.isFinite(saved.lat) && Number.isFinite(saved.zoom)) start = { center: [saved.lon, saved.lat], zoom: saved.zoom };
+      }
+    } catch {
+      /* ignore */
+    }
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
+      style: buildStyle({ tilesUrl: st.tilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
+      center: start.center,
+      zoom: start.zoom,
       maxZoom: 20,
       minZoom: 5,
       maxBounds: MAX_BOUNDS,
@@ -593,6 +604,18 @@ export function MapView() {
       setMapReady(true);
       syncRoutes(map);
     });
+    let viewTimer: ReturnType<typeof setTimeout> | undefined;
+    map.on("moveend", () => {
+      if (viewTimer) clearTimeout(viewTimer);
+      viewTimer = setTimeout(() => {
+        try {
+          const c = map.getCenter();
+          localStorage.setItem("mapsoffline.lastView", JSON.stringify({ lon: c.lng, lat: c.lat, zoom: map.getZoom() }));
+        } catch {
+          /* ignore */
+        }
+      }, 400);
+    });
     map.on("styleimagemissing", (e) => {
       const img = shieldImage(e.id);
       if (img && !map.hasImage(e.id)) map.addImage(e.id, img, { pixelRatio: Math.max(1, Math.min(4, Math.ceil(window.devicePixelRatio || 1))) });
@@ -613,11 +636,14 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
+    const style = buildStyle({ tilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tilesUrl, satelliteUrl, terrainUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
+    // with a world basemap the map may leave Israel and zoom out to the planet
+    map.setMaxBounds(worldUrl ? null : MAX_BOUNDS);
+    map.setMinZoom(worldUrl ? 1 : 5);
+  }, [tilesUrl, satelliteUrl, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.

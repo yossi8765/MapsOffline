@@ -673,6 +673,14 @@
   }
 }
 
+/* ---------- accent colour of the light theme (Settings → appearance) ---------- */
+:root[data-accent="green"]:not([data-theme="dark"]) { --accent: #15803d; --accent-hover: #166534; --accent-solid: #15803d; --accent-solid-hover: #166534; --accent-soft: rgba(21, 128, 61, 0.1); }
+:root[data-accent="purple"]:not([data-theme="dark"]) { --accent: #6d28d9; --accent-hover: #5b21b6; --accent-solid: #6d28d9; --accent-solid-hover: #5b21b6; --accent-soft: rgba(109, 40, 217, 0.1); }
+:root[data-accent="orange"]:not([data-theme="dark"]) { --accent: #c2410c; --accent-hover: #9a3412; --accent-solid: #c2410c; --accent-solid-hover: #9a3412; --accent-soft: rgba(194, 65, 12, 0.1); }
+:root[data-accent="teal"]:not([data-theme="dark"]) { --accent: #0f766e; --accent-hover: #115e59; --accent-solid: #0f766e; --accent-solid-hover: #115e59; --accent-soft: rgba(15, 118, 110, 0.1); }
+:root[data-accent="rose"]:not([data-theme="dark"]) { --accent: #be123c; --accent-hover: #9f1239; --accent-solid: #be123c; --accent-solid-hover: #9f1239; --accent-soft: rgba(190, 18, 60, 0.1); }
+:root[data-accent="slate"]:not([data-theme="dark"]) { --accent: #334155; --accent-hover: #1e293b; --accent-solid: #334155; --accent-solid-hover: #1e293b; --accent-soft: rgba(51, 65, 85, 0.1); }
+
 /* ---------- maplibre ---------- */
 .maplibregl-ctrl-top-left,
 .maplibregl-ctrl-top-right {

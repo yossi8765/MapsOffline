@@ -86,6 +86,8 @@ const DEFAULT_SETTINGS: Settings = {
   avoidTolls: true,
   autoCheckAppUpdates: true,
   satelliteQuality: "high",
+  rememberMapView: true,
+  accent: "blue",
   avoidAreas: "ab",
   avoidMotorways: false,
   avoidFerries: false,
@@ -155,6 +157,7 @@ interface State {
   tilesUrl: string | null;
   satelliteUrl: string | null;
   terrainUrl: string | null;
+  worldUrl: string | null;
   /** The tiles path has been queried at least once (the "no map" card waits for it). */
   tilesChecked: boolean;
   tilesTick: number;
@@ -287,6 +290,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   tilesUrl: null,
   satelliteUrl: null,
   terrainUrl: null,
+  worldUrl: null,
   tilesChecked: false,
   tilesTick: 0,
 
@@ -338,6 +342,11 @@ export const useStore = create<State & Actions>((set, get) => ({
     try {
       const s = await api.settingsGet();
       const merged = { ...DEFAULT_SETTINGS, ...s };
+      try {
+        localStorage.setItem("mapsoffline.rememberView", merged.rememberMapView ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
       set({
         settings: merged,
         settingsLoaded: true,
@@ -363,6 +372,13 @@ export const useStore = create<State & Actions>((set, get) => ({
   updateSettings: async (patch) => {
     const next = { ...get().settings, ...patch };
     set({ settings: next });
+    if (patch.rememberMapView !== undefined) {
+      try {
+        localStorage.setItem("mapsoffline.rememberView", patch.rememberMapView ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+    }
     if (NAV_SETTING_KEYS.some((k) => patch[k] !== undefined)) {
       set({ avoid: { ...get().avoid, ...avoidDefaults(next) } });
       void get().computeRoute();
@@ -576,15 +592,15 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
   refreshTiles: async () => {
     try {
-      const [p, sp, tp] = await Promise.all([api.tilesPath(), api.satellitePath().catch(() => null), api.terrainPath().catch(() => null)]);
+      const [p, sp, tp, wp] = await Promise.all([api.tilesPath(), api.satellitePath().catch(() => null), api.terrainPath().catch(() => null), api.worldPath().catch(() => null)]);
       // A fresh query string per refresh: the pmtiles protocol caches archive headers and
       // directories per URL, so a replaced file must get a new URL or stale tiles keep showing.
       const bust = `?v=${Date.now()}`;
       const url = p ? convertFileSrc(p) + bust : null;
-      set((s) => ({ tilesUrl: url, satelliteUrl: sp ? convertFileSrc(sp) + bust : null, terrainUrl: tp ? convertFileSrc(tp) + bust : null, tilesChecked: true, tilesTick: s.tilesTick + 1 }));
+      set((s) => ({ tilesUrl: url, satelliteUrl: sp ? convertFileSrc(sp) + bust : null, terrainUrl: tp ? convertFileSrc(tp) + bust : null, worldUrl: wp ? convertFileSrc(wp) + bust : null, tilesChecked: true, tilesTick: s.tilesTick + 1 }));
     } catch (e) {
       console.warn("tiles_path failed", e);
-      set({ tilesUrl: null, satelliteUrl: null, terrainUrl: null, tilesChecked: true });
+      set({ tilesUrl: null, satelliteUrl: null, terrainUrl: null, worldUrl: null, tilesChecked: true });
     }
   },
   setProgress: (p) => {

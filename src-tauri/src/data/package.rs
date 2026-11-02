@@ -35,8 +35,8 @@ pub struct PackageInfo {
 /// Files that make up one component, as paths relative to the data root.
 fn component_files(paths: &DataPaths, c: DataComponent) -> Vec<PathBuf> {
     let mut v = vec![paths.component_file(c)];
-    if c == DataComponent::Tiles {
-        v.push(super::download::meta_path(&paths.tiles_file()));
+    if matches!(c, DataComponent::Tiles | DataComponent::World) {
+        v.push(super::download::meta_path(&paths.component_file(c)));
     }
     v
 }
@@ -51,6 +51,7 @@ fn component_of(name: &str) -> Option<DataComponent> {
     let dir = name.split('/').next()?;
     match dir {
         "tiles" => Some(DataComponent::Tiles),
+        "world" => Some(DataComponent::World),
         "satellite" => Some(DataComponent::Satellite),
         "terrain" => Some(DataComponent::Terrain),
         "routing" => Some(DataComponent::Routing),
@@ -87,7 +88,7 @@ fn copy_with_progress<R: Read, W: Write>(
 /// PMTiles archives are already compressed inside (vector tiles gzip, imagery JPEG) and go in stored.
 fn compression_for(c: DataComponent) -> CompressionMethod {
     match c {
-        DataComponent::Tiles | DataComponent::Satellite | DataComponent::Terrain => CompressionMethod::Stored,
+        DataComponent::Tiles | DataComponent::World | DataComponent::Satellite | DataComponent::Terrain => CompressionMethod::Stored,
         DataComponent::Routing | DataComponent::Geocode | DataComponent::Transit => CompressionMethod::Deflated,
     }
 }

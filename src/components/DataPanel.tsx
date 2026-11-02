@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bus, Download, FolderOpen, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
+import { Bus, Download, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,7 @@ import { fmtBytes, fmtDateTime } from "../lib/format";
 
 const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc: I18nKey }> = {
   tiles: { icon: <Map size={16} strokeWidth={1.75} />, label: "compTiles", desc: "compTilesDesc" },
+  world: { icon: <Globe size={16} strokeWidth={1.75} />, label: "compWorld", desc: "compWorldDesc" },
   satellite: { icon: <Satellite size={16} strokeWidth={1.75} />, label: "compSatellite", desc: "compSatelliteDesc" },
   terrain: { icon: <Mountain size={16} strokeWidth={1.75} />, label: "compTerrain", desc: "compTerrainDesc" },
   routing: { icon: <Route size={16} strokeWidth={1.75} />, label: "compRouting", desc: "compRoutingDesc" },
@@ -44,7 +45,7 @@ export function DataPanel() {
   const selected = present.filter((c) => !excluded.includes(c));
   // Package size estimate: the PMTiles archives are stored as-is, the binary components deflate
   // to roughly these fractions (measured on real data).
-  const PACK_RATIO: Record<DataComponent, number> = { tiles: 1, satellite: 1, terrain: 1, routing: 0.5, geocode: 0.45, transit: 0.35 };
+  const PACK_RATIO: Record<DataComponent, number> = { tiles: 1, world: 1, satellite: 1, terrain: 1, routing: 0.5, geocode: 0.45, transit: 0.35 };
   const rawBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0), 0);
   const estimatedBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0) * PACK_RATIO[c], 0);
   // the map / imagery / elevation archives are already compressed inside and go in as they are
@@ -327,9 +328,9 @@ function ComponentCard({
         ) : (
           <button
             className={clsx("btn btn-sm shrink-0", chk?.available && "btn-primary")}
-            disabled={updating}
+            disabled={updating || (!!st?.present && !!chk && !chk.available && !chk.error)}
             onClick={onUpdate}
-            title={chk && !chk.available && !chk.error ? t("forceUpdateTitle") : undefined}
+            title={st?.present && chk && !chk.available && !chk.error ? t("upToDate") : undefined}
           >
             {t("update")}
           </button>

@@ -47,6 +47,7 @@ pub fn run() {
             commands::data_status,
             commands::tiles_path,
             commands::satellite_path,
+            commands::world_path,
             commands::terrain_path,
             commands::locate,
             commands::app_update_check,

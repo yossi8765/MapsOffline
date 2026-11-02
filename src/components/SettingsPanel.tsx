@@ -3,7 +3,7 @@ import { useState } from "react";
 import { FolderOpen, RotateCcw, Download, RefreshCw } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../lib/store";
-import { useT } from "../lib/i18n";
+import { useT, type I18nKey } from "../lib/i18n";
 import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
 
@@ -53,6 +53,23 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
+        <Row label={t("accentColor")}>
+          <div className="flex gap-1.5" role="radiogroup" aria-label={t("accentColor")}>
+            {(["blue", "green", "purple", "orange", "teal", "rose", "slate"] as const).map((a) => (
+              <button
+                key={a}
+                type="button"
+                role="radio"
+                aria-checked={settings.accent === a}
+                title={t(`accent_${a}` as I18nKey)}
+                aria-label={t(`accent_${a}` as I18nKey)}
+                className={clsx("w-6 h-6 rounded-full border-2 transition-transform duration-150 hover:scale-110", settings.accent === a ? "border-fg scale-110" : "border-transparent")}
+                style={{ background: ACCENT_SWATCH[a] }}
+                onClick={() => void update({ accent: a })}
+              />
+            ))}
+          </div>
+        </Row>
         <Row label={t("units")}>
           <div className="seg seg-sm seg-fit">
             <button aria-pressed={settings.units === "metric"} onClick={() => void update({ units: "metric" })}>
@@ -75,6 +92,10 @@ export function SettingsPanel() {
             ))}
           </div>
         </div>
+      </Section>
+
+      <Section title={t("startup")}>
+        <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
       </Section>
 
       <Section title={t("dataTitle")} hint={t("satQualityHint")}>
@@ -210,6 +231,8 @@ export function SettingsPanel() {
     </div>
   );
 }
+
+const ACCENT_SWATCH: Record<string, string> = { blue: "#1a66d9", green: "#15803d", purple: "#6d28d9", orange: "#c2410c", teal: "#0f766e", rose: "#be123c", slate: "#334155" };
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (

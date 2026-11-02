@@ -28,19 +28,46 @@ struct TilesMeta {
     maxzoom: u8,
 }
 
-fn sidecar(paths: &DataPaths) -> std::path::PathBuf {
-    download::meta_path(&paths.tiles_file())
+/// One extract of the Protomaps world build: the Israel map (bbox, zoom <= 15) or the minimal
+/// world basemap (whole planet, zoom <= 6, ~45 MB) that gives context outside Israel.
+pub struct Extract {
+    pub file: std::path::PathBuf,
+    /// None = the whole world
+    pub bbox: Option<[f64; 4]>,
+    pub maxzoom: u8,
+    pub label: &'static str,
 }
 
-/// Build key of the installed tiles ("YYYYMMDD.pmtiles"), if the file and its sidecar are intact.
-pub(crate) fn installed_build(paths: &DataPaths) -> Option<String> {
-    let tiles = paths.tiles_file();
-    if !tiles.exists() {
-        return None;
+pub const WORLD_BBOX: [f64; 4] = [-180.0, -85.0, 180.0, 85.0];
+pub const WORLD_MAX_ZOOM: u8 = 6;
+
+impl Extract {
+    pub fn israel(paths: &DataPaths) -> Self {
+        Self { file: paths.tiles_file(), bbox: Some(BBOX_ISRAEL), maxzoom: 15, label: "אריחי המפה" }
     }
-    let s = std::fs::read_to_string(sidecar(paths)).ok()?;
-    let m = serde_json::from_str::<TilesMeta>(&s).ok()?;
-    (m.bbox == BBOX_ISRAEL && verify_tiles(&tiles).is_ok()).then_some(m.version)
+    pub fn world(paths: &DataPaths) -> Self {
+        Self { file: paths.world_file(), bbox: None, maxzoom: WORLD_MAX_ZOOM, label: "מפת העולם" }
+    }
+    fn sidecar(&self) -> std::path::PathBuf {
+        download::meta_path(&self.file)
+    }
+    fn meta_bbox(&self) -> [f64; 4] {
+        self.bbox.unwrap_or(WORLD_BBOX)
+    }
+    /// Build key of the installed extract ("YYYYMMDD.pmtiles"), if the file and its sidecar are intact.
+    pub fn installed_build(&self) -> Option<String> {
+        if !self.file.exists() {
+            return None;
+        }
+        let s = std::fs::read_to_string(self.sidecar()).ok()?;
+        let m = serde_json::from_str::<TilesMeta>(&s).ok()?;
+        (m.bbox == self.meta_bbox() && m.maxzoom == self.maxzoom && verify_tiles(&self.file).is_ok()).then_some(m.version)
+    }
+}
+
+/// Build key of the installed Israel tiles.
+pub(crate) fn installed_build(paths: &DataPaths) -> Option<String> {
+    Extract::israel(paths).installed_build()
 }
 
 /// Protomaps publishes a new world build every day, but Israel changes little from one day to
@@ -195,12 +222,13 @@ fn run_extract(
     paths: &DataPaths,
     src: &str,
     tmp: &Path,
-    bbox: &str,
+    args: &[String],
+    label: &str,
     progress: ProgressFn,
     cancel: &Cancel,
 ) -> anyhow::Result<()> {
     let mut cmd = Command::new(paths.pmtiles_cli());
-    cmd.arg("extract").arg(src).arg(tmp).arg(bbox).arg("--maxzoom=15");
+    cmd.arg("extract").arg(src).arg(tmp).args(args);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -271,7 +299,7 @@ fn run_extract(
                     if p != last_pct || last_emit.elapsed() >= Duration::from_secs(2) {
                         last_pct = p;
                         last_emit = Instant::now();
-                        progress(ProgressPhase::Downloading, p, 100, &format!("אריחי המפה – {p}%"));
+                        progress(ProgressPhase::Downloading, p, 100, &format!("{label} – {p}%"));
                     }
                 } else if !line.is_empty() {
                     progress(ProgressPhase::Downloading, last_pct, 100, &line);
@@ -295,11 +323,15 @@ fn run_extract(
     Ok(())
 }
 
-pub fn update_tiles(
-    paths: &DataPaths,
-    progress: ProgressFn,
-    cancel: &Cancel,
-) -> anyhow::Result<Option<String>> {
+pub fn update_tiles(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
+    update_extract(paths, &Extract::israel(paths), progress, cancel)
+}
+
+pub fn update_world(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
+    update_extract(paths, &Extract::world(paths), progress, cancel)
+}
+
+fn update_extract(paths: &DataPaths, ex: &Extract, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
     paths.ensure_dirs()?;
     ensure_cli(paths, progress, cancel)?;
     if cancel.is_cancelled() {
@@ -310,29 +342,25 @@ pub fn update_tiles(
     let client = http_client()?;
     let key = latest_build_key(&client)?;
 
-    let tiles = paths.tiles_file();
-    if tiles.exists() {
-        if let Ok(s) = std::fs::read_to_string(sidecar(paths)) {
-            if let Ok(m) = serde_json::from_str::<TilesMeta>(&s) {
-                if m.version == key && m.bbox == BBOX_ISRAEL && verify_tiles(&tiles).is_ok() {
-                    progress(ProgressPhase::Processing, 1, 1, "המפה כבר מעודכנת");
-                    return Ok(Some(key));
-                }
-            }
-        }
+    if ex.installed_build().as_deref() == Some(key.as_str()) {
+        progress(ProgressPhase::Processing, 1, 1, "המפה כבר מעודכנת");
+        return Ok(Some(key));
     }
 
-    let tmp = tiles.with_extension("pmtiles.tmp");
+    let tmp = ex.file.with_extension("pmtiles.tmp");
     let _ = std::fs::remove_file(&tmp);
-    let b = BBOX_ISRAEL;
-    let bbox = format!("--bbox={},{},{},{}", b[0], b[1], b[2], b[3]);
+    let mut args: Vec<String> = Vec::new();
+    if let Some(b) = ex.bbox {
+        args.push(format!("--bbox={},{},{},{}", b[0], b[1], b[2], b[3]));
+    }
+    args.push(format!("--maxzoom={}", ex.maxzoom));
     let src = format!("{BUILD_BASE}{key}");
-    progress(ProgressPhase::Downloading, 0, 100, &format!("אריחי המפה, גרסה {key}"));
+    progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", ex.label));
 
     let mut last_err = None;
     let mut attempt = 0;
     while attempt < 3 {
-        match run_extract(paths, &src, &tmp, &bbox, progress, cancel) {
+        match run_extract(paths, &src, &tmp, &args, ex.label, progress, cancel) {
             Ok(()) => {
                 last_err = None;
                 break;
@@ -360,9 +388,9 @@ pub fn update_tiles(
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    atomic_replace(&tiles, &tmp)?;
-    let meta = TilesMeta { version: key.clone(), bbox: BBOX_ISRAEL, maxzoom: 15 };
-    std::fs::write(sidecar(paths), serde_json::to_vec_pretty(&meta)?)?;
+    atomic_replace(&ex.file, &tmp)?;
+    let meta = TilesMeta { version: key.clone(), bbox: ex.meta_bbox(), maxzoom: ex.maxzoom };
+    std::fs::write(ex.sidecar(), serde_json::to_vec_pretty(&meta)?)?;
     Ok(Some(key))
 }
 

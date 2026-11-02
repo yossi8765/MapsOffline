@@ -2,6 +2,7 @@
 //!
 //! %APPDATA%\MapsOffline\data\
 //!   tiles\israel.pmtiles
+//!   world\world.pmtiles
 //!   satellite\israel-s2.pmtiles
 //!   terrain\israel-dem.pmtiles
 //!   routing\graph.bin
@@ -51,6 +52,7 @@ impl DataPaths {
         for d in [
             self.root.clone(),
             self.tiles_dir(),
+            self.world_dir(),
             self.satellite_dir(),
             self.terrain_dir(),
             self.routing_dir(),
@@ -65,6 +67,9 @@ impl DataPaths {
 
     pub fn tiles_dir(&self) -> PathBuf {
         self.root.join("tiles")
+    }
+    pub fn world_dir(&self) -> PathBuf {
+        self.root.join("world")
     }
     pub fn satellite_dir(&self) -> PathBuf {
         self.root.join("satellite")
@@ -87,6 +92,9 @@ impl DataPaths {
 
     pub fn tiles_file(&self) -> PathBuf {
         self.tiles_dir().join("israel.pmtiles")
+    }
+    pub fn world_file(&self) -> PathBuf {
+        self.world_dir().join("world.pmtiles")
     }
     pub fn satellite_file(&self) -> PathBuf {
         self.satellite_dir().join("israel-s2.pmtiles")
@@ -125,6 +133,7 @@ impl DataPaths {
     pub fn component_file(&self, c: DataComponent) -> PathBuf {
         match c {
             DataComponent::Tiles => self.tiles_file(),
+            DataComponent::World => self.world_file(),
             DataComponent::Satellite => self.satellite_file(),
             DataComponent::Terrain => self.terrain_file(),
             DataComponent::Routing => self.graph_file(),

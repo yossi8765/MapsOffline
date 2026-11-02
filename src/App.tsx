@@ -89,6 +89,12 @@ export default function App() {
     };
   }, [theme]);
 
+  // accent colour (light theme only; the CSS ignores it in dark mode)
+  const accent = useStore((s) => s.settings.accent);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-accent", accent || "blue");
+  }, [accent]);
+
   // direction / lang
   useEffect(() => {
     document.documentElement.setAttribute("lang", lang);

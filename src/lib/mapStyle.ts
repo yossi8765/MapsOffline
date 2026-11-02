@@ -18,6 +18,8 @@ export interface StyleOptions {
   satellite: boolean;
   /** Raster-DEM PMTiles (Terrarium); hillshade and/or 3D terrain when installed. */
   terrainUrl: string | null;
+  /** Minimal world basemap (zoom 0–6) drawn under the Israel map for context outside it. */
+  worldUrl?: string | null;
   hillshade: boolean;
   terrain3d: boolean;
   /** Road-number shields (default on). */
@@ -33,6 +35,7 @@ function origin(): string {
 }
 
 export const SATELLITE_MAX_ZOOM = 14;
+export const WORLD_MAX_ZOOM = 6;
 export const TERRAIN_MAX_ZOOM = 12;
 const TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Mapzen terrain tiles</a>';
 const SATELLITE_ATTRIBUTION =
@@ -58,6 +61,19 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     sources: {},
     layers: [{ id: "background", type: "background", paint: { "background-color": flavor.background } }],
   };
+  // World basemap: its own source and a copy of the layer list, under the Israel layers; its
+  // labels stop at zoom 7 so they never duplicate the detailed map's labels.
+  let worldLayers: LayerSpecification[] = [];
+  if (o.worldUrl) {
+    base.sources.world = { type: "vector", url: `pmtiles://${o.worldUrl}`, maxzoom: WORLD_MAX_ZOOM, attribution: "" };
+    worldLayers = layers("world", flavor, { lang: o.lang })
+      .filter((l) => l.id !== "background" && l.id !== "pois")
+      .map((l) => {
+        const c = { ...l, id: `world-${l.id}` } as LayerSpecification;
+        if (c.type === "symbol") c.maxzoom = 7;
+        return c;
+      });
+  }
   const sat = o.satellite && !!o.satelliteUrl;
   if (sat) {
     base.sources.satellite = { type: "raster", url: `pmtiles://${o.satelliteUrl}`, tileSize: 256, maxzoom: SATELLITE_MAX_ZOOM, attribution: SATELLITE_ATTRIBUTION };
@@ -80,6 +96,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     },
   });
   if (!o.tilesUrl) {
+    base.layers.push(...worldLayers);
     if (sat) base.layers.push(satelliteLayer());
     if (dem && o.hillshade) base.layers.push(hillshadeLayer());
     return base;
@@ -159,9 +176,9 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   const bg = ls.find((l) => l.id === "background");
   if (bg && bg.type === "background") {
     bg.paint = { ...(bg.paint ?? {}), "background-color": flavor.water };
-    base.layers = ls;
+    base.layers = [bg, ...worldLayers, ...ls.filter((l) => l !== bg)];
   } else {
-    base.layers = [base.layers[0], ...ls];
+    base.layers = [base.layers[0], ...worldLayers, ...ls];
   }
   return base;
 }
