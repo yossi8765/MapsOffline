@@ -90,6 +90,19 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   };
   let ls: LayerSpecification[] = layers("protomaps", flavor, { lang: o.lang });
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
+  // Road numbers: the stock shields are tiny (8 px) and sparse; make them readable at every
+  // zoom and place them before the street names so they win collisions.
+  const shields = ls.find((l) => l.id === "roads_shields");
+  if (shields && shields.type === "symbol") {
+    shields.minzoom = 7;
+    shields.layout = {
+      ...shields.layout,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 7, 9, 11, 11, 15, 13],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.9, 11, 1.1, 15, 1.3],
+      "symbol-spacing": 160,
+      "text-padding": 1,
+    };
+  }
   if (o.buildings3d) {
     const idx = ls.findIndex((l) => l.id === "buildings");
     const b3d: LayerSpecification = {

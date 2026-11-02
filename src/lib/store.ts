@@ -161,6 +161,8 @@ interface State {
   /** Last fix of "my location" (map dot + search option). */
   myLocation: (MyLocation & { at: number }) | null;
   locating: boolean;
+  /** The OS reports a network connection (navigator.onLine); gates online-only menu items. */
+  online: boolean;
   history: HistoryItem[];
 }
 
@@ -277,6 +279,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   linePreview: null,
   myLocation: null,
   locating: false,
+  online: typeof navigator !== "undefined" ? navigator.onLine : false,
   history: [],
 
   // ---------------------------------------------------------------- ui

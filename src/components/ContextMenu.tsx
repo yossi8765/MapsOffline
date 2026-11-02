@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { Copy, Flag, Info, MapPin, Navigation, Star } from "lucide-react";
+import { Copy, ExternalLink, Flag, Info, MapPin, Navigation, Star } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { useStore, type ContextMenuState } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -35,6 +36,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     }
   };
 
+  const online = useStore((s) => s.online);
   const items = [
     {
       group: 0,
@@ -89,6 +91,24 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
         if (await copyText(point.label)) useStore.getState().toast("success", t("copied"));
       },
     },
+    ...(online
+      ? [
+          {
+            group: 2,
+            icon: <ExternalLink size={16} strokeWidth={1.75} />,
+            label: t("ctxOpenGoogle"),
+      run: async () => {
+        // Google's universal "search" URL centres the map on the exact coordinate with a pin
+        const q = `${state.lat.toFixed(6)},${state.lon.toFixed(6)}`;
+        try {
+          await openUrl(`https://www.google.com/maps/search/?api=1&query=${q}`);
+        } catch (e) {
+          useStore.getState().toastError(e);
+        }
+      },
+          },
+        ]
+      : []),
     {
       group: 2,
       icon: <Star size={16} strokeWidth={1.75} />,

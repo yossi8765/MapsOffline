@@ -38,6 +38,18 @@ export default function App() {
     };
   }, []);
 
+  // connectivity (gates online-only actions such as "open in Google Maps")
+  useEffect(() => {
+    const sync = () => useStore.setState({ online: navigator.onLine });
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    sync();
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+
   // theme
   useEffect(() => {
     const apply = () => document.documentElement.setAttribute("data-theme", resolveTheme(theme));
