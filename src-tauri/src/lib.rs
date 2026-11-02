@@ -6,6 +6,7 @@ pub mod geocode;
 pub mod history;
 pub mod location;
 pub mod app_update;
+pub mod online_tiles;
 pub mod online;
 pub mod paths;
 pub mod routing;
@@ -22,6 +23,11 @@ pub fn run() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
     let state = Arc::new(AppState::new());
     tauri::Builder::default()
+        // Online map without local data: the webview reads the Protomaps world build with HTTP
+        // range requests through this proxy (the build host sends no CORS headers).
+        .register_asynchronous_uri_scheme_protocol("mo-tiles", |_ctx, request, responder| {
+            std::thread::spawn(move || responder.respond(online_tiles::proxy(request)));
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
@@ -46,6 +52,7 @@ pub fn run() {
             commands::favorites_delete,
             commands::data_status,
             commands::tiles_path,
+            commands::tiles_online_key,
             commands::satellite_path,
             commands::world_path,
             commands::terrain_path,

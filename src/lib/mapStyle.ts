@@ -13,6 +13,8 @@ export type FlavorName = "light" | "dark" | "grayscale";
 
 export interface StyleOptions {
   tilesUrl: string | null;
+  /** Planet-wide online build (through the range proxy) used when `tilesUrl` is null. */
+  onlineTilesUrl?: string | null;
   /** Raster PMTiles with Sentinel-2 imagery; shown under roads and labels when `satellite` is on. */
   satelliteUrl: string | null;
   satellite: boolean;
@@ -95,7 +97,8 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
       "hillshade-illumination-direction": 335,
     },
   });
-  if (!o.tilesUrl) {
+  const tilesUrl = o.tilesUrl ?? o.onlineTilesUrl ?? null;
+  if (!tilesUrl) {
     base.layers.push(...worldLayers);
     if (sat) base.layers.push(satelliteLayer());
     if (dem && o.hillshade) base.layers.push(hillshadeLayer());
@@ -104,7 +107,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
 
   base.sources.protomaps = {
     type: "vector",
-    url: `pmtiles://${o.tilesUrl}`,
+    url: `pmtiles://${tilesUrl}`,
     attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
   };
   let ls: LayerSpecification[] = layers("protomaps", flavor, { lang: o.lang });

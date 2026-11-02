@@ -371,6 +371,17 @@ pub fn tiles_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
     Ok(p.exists().then(|| p.display().to_string()))
 }
 
+/// Newest Protomaps build key ("YYYYMMDD.pmtiles") for the online map fallback.
+#[tauri::command]
+pub async fn tiles_online_key() -> R<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let client = crate::data::download::http_client().map_err(err)?;
+        crate::data::tiles::latest_build_key(&client).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
 /// Absolute path of the world basemap archive, if installed.
 #[tauri::command]
 pub fn world_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {

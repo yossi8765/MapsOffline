@@ -17,7 +17,7 @@ const BUILDS_URLS: [&str; 2] = [
     "https://build-metadata.protomaps.dev/builds.json",
     "https://build.protomaps.com/builds.json",
 ];
-const BUILD_BASE: &str = "https://build.protomaps.com/";
+pub const BUILD_BASE: &str = "https://build.protomaps.com/";
 const RELEASE_API: &str = "https://api.github.com/repos/protomaps/go-pmtiles/releases/latest";
 const MIN_TILES_SIZE: u64 = 10 * 1024 * 1024;
 
@@ -112,7 +112,7 @@ pub fn pick_latest_build(json: &str) -> anyhow::Result<String> {
 /// Newest daily build key ("YYYYMMDD.pmtiles"). builds.json first; if the metadata host is
 /// unreachable (content filters such as NetFree block it while the build host itself is open),
 /// probe the build host for the last two weeks of daily names.
-pub(crate) fn latest_build_key(client: &reqwest::blocking::Client) -> anyhow::Result<String> {
+pub fn latest_build_key(client: &reqwest::blocking::Client) -> anyhow::Result<String> {
     let mut last: Option<anyhow::Error> = None;
     let mut blocked: Option<anyhow::Error> = None;
     for u in BUILDS_URLS {

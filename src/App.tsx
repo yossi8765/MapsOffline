@@ -65,7 +65,12 @@ export default function App() {
 
   // connectivity (gates online-only actions such as "open in Google Maps")
   useEffect(() => {
-    const sync = () => useStore.setState({ online: navigator.onLine });
+    const sync = () => {
+      useStore.setState({ online: navigator.onLine });
+      // back online without a local map: fetch the online map now
+      const s = useStore.getState();
+      if (navigator.onLine && s.tilesChecked && !s.tilesUrl && !s.onlineTilesUrl) void s.refreshTiles();
+    };
     window.addEventListener("online", sync);
     window.addEventListener("offline", sync);
     sync();

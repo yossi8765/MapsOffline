@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type StyleSpecification } from "maplibre-gl";
 import { Protocol } from "pmtiles";
-import { Database } from "lucide-react";
+import { Database, Wifi } from "lucide-react";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { buildStyle, DEFAULT_CENTER, DEFAULT_ZOOM, MAX_BOUNDS, firstSymbolLayer, type FlavorName } from "../lib/mapStyle";
@@ -492,6 +492,7 @@ export function MapView() {
   const satelliteUrl = useStore((s) => s.satelliteUrl);
   const terrainUrl = useStore((s) => s.terrainUrl);
   const worldUrl = useStore((s) => s.worldUrl);
+  const onlineTilesUrl = useStore((s) => s.onlineTilesUrl);
   const tilesTick = useStore((s) => s.tilesTick);
   const layers = useStore((s) => s.layers);
   const theme = useStore((s) => s.settings.theme);
@@ -526,7 +527,7 @@ export function MapView() {
     }
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
+      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
       center: start.center,
       zoom: start.zoom,
       maxZoom: 20,
@@ -636,14 +637,15 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
+    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // with a world basemap the map may leave Israel and zoom out to the planet
-    map.setMaxBounds(worldUrl ? null : MAX_BOUNDS);
-    map.setMinZoom(worldUrl ? 1 : 5);
-  }, [tilesUrl, satelliteUrl, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
+    const planet = !!worldUrl || (!tilesUrl && !!onlineTilesUrl);
+    map.setMaxBounds(planet ? null : MAX_BOUNDS);
+    map.setMinZoom(planet ? 1 : 5);
+  }, [tilesUrl, onlineTilesUrl, satelliteUrl, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.
@@ -942,7 +944,8 @@ export function MapView() {
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   // The "no map yet" card points at the Data panel, so it hides while that panel is open.
   const tilesChecked = useStore((s) => s.tilesChecked);
-  const noTiles = tilesChecked && !tilesUrl && !(panel === "data" && !sidebarCollapsed);
+  const noTiles = tilesChecked && !tilesUrl && !onlineTilesUrl && !(panel === "data" && !sidebarCollapsed);
+  const onlineMap = tilesChecked && !tilesUrl && !!onlineTilesUrl;
   const setPanel = useStore((s) => s.setPanel);
 
   return (
@@ -965,6 +968,15 @@ export function MapView() {
               {t("goToData")}
             </button>
           </div>
+        </div>
+      )}
+      {onlineMap && (
+        <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 popover rounded-full ps-3 pe-1.5 h-9 flex items-center gap-2 text-xs no-print fade-in">
+          <Wifi size={14} className="text-accent shrink-0" />
+          <span>{t("onlineMapBanner")}</span>
+          <button className="btn btn-primary btn-sm !h-6 !text-[12px] !px-2.5 rounded-full" onClick={() => setPanel("data")}>
+            {t("onlineMapDownload")}
+          </button>
         </div>
       )}
       <CategoryPicker />

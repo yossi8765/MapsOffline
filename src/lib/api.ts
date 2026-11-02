@@ -417,6 +417,8 @@ export const api = {
 
   dataStatus: () => invoke<DataStatus>("data_status"),
   tilesPath: () => invoke<string | null>("tiles_path"),
+  /** Newest Protomaps build key for the online map (no local map installed). */
+  tilesOnlineKey: () => invoke<string>("tiles_online_key"),
   satellitePath: () => invoke<string | null>("satellite_path"),
   worldPath: () => invoke<string | null>("world_path"),
   terrainPath: () => invoke<string | null>("terrain_path"),

@@ -158,6 +158,8 @@ interface State {
   satelliteUrl: string | null;
   terrainUrl: string | null;
   worldUrl: string | null;
+  /** Planet-wide Protomaps build read through the app's range proxy (no local map, online). */
+  onlineTilesUrl: string | null;
   /** The tiles path has been queried at least once (the "no map" card waits for it). */
   tilesChecked: boolean;
   tilesTick: number;
@@ -291,6 +293,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   satelliteUrl: null,
   terrainUrl: null,
   worldUrl: null,
+  onlineTilesUrl: null,
   tilesChecked: false,
   tilesTick: 0,
 
@@ -598,6 +601,18 @@ export const useStore = create<State & Actions>((set, get) => ({
       const bust = `?v=${Date.now()}`;
       const url = p ? convertFileSrc(p) + bust : null;
       set((s) => ({ tilesUrl: url, satelliteUrl: sp ? convertFileSrc(sp) + bust : null, terrainUrl: tp ? convertFileSrc(tp) + bust : null, worldUrl: wp ? convertFileSrc(wp) + bust : null, tilesChecked: true, tilesTick: s.tilesTick + 1 }));
+      if (!url && navigator.onLine) {
+        // no local map: show the live Protomaps build until the user downloads one
+        try {
+          const key = await api.tilesOnlineKey();
+          set({ onlineTilesUrl: `http://mo-tiles.localhost/${key}` });
+        } catch (e) {
+          console.warn("online map unavailable", e);
+          set({ onlineTilesUrl: null });
+        }
+      } else if (url) {
+        set({ onlineTilesUrl: null });
+      }
     } catch (e) {
       console.warn("tiles_path failed", e);
       set({ tilesUrl: null, satelliteUrl: null, terrainUrl: null, worldUrl: null, tilesChecked: true });
