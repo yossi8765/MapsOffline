@@ -237,6 +237,7 @@ const he = {
   // layers
   layer3d: "בניינים תלת-ממדיים",
   layerSatellite: "תצלום לוויין",
+  layerRoadShields: "מספרי כבישים",
   layerHillshade: "הצללת שטח (טופוגרפיה)",
   layerTerrain3d: "פני שטח תלת-ממדיים",
   layerTerrainHint: "לפי מודל גובה ברזולוציה של 30 מטר. בתלת-ממד: הטו את המפה (גרירה עם הלחצן הימני).",
@@ -607,6 +608,7 @@ const en: Record<I18nKey, string> = {
   forceUpdateTitle: "Download and rebuild even if there is no newer version",
   layer3d: "3D buildings",
   layerSatellite: "Satellite imagery",
+  layerRoadShields: "Road numbers",
   layerHillshade: "Hillshade (topography)",
   layerTerrain3d: "3D terrain",
   layerTerrainHint: "From a 30 m elevation model. In 3D: tilt the map (drag with the right button).",

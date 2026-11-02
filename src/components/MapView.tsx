@@ -515,7 +515,7 @@ export function MapView() {
     const st = useStore.getState();
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
+      style: buildStyle({ tilesUrl: st.tilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
       maxZoom: 20,
@@ -613,11 +613,11 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
+    const style = buildStyle({ tilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tilesUrl, satelliteUrl, terrainUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d]);
+  }, [tilesUrl, satelliteUrl, terrainUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.

@@ -20,6 +20,8 @@ export interface StyleOptions {
   terrainUrl: string | null;
   hillshade: boolean;
   terrain3d: boolean;
+  /** Road-number shields (default on). */
+  roadShields?: boolean;
   flavor: FlavorName;
   lang: string;
   poi: boolean;
@@ -97,6 +99,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   // MapView (`styleimagemissing`), see `shieldImage()`.
   // The current Protomaps builds carry the number in `ref` (no `shield_text`), and a road can
   // list several refs separated by ";": the first one is the shield.
+  if (o.roadShields === false) ls = ls.filter((l) => l.id !== "roads_shields");
   const shields = ls.find((l) => l.id === "roads_shields");
   if (shields && shields.type === "symbol") {
     shields.minzoom = 7;

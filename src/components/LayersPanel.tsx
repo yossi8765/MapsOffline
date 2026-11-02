@@ -20,6 +20,7 @@ export function LayersPanel() {
           <Toggle label={t("layer3d")} checked={layers.buildings3d} onChange={(v) => setLayers({ buildings3d: v })} />
           <Toggle label={t("layerPoi")} checked={layers.poi} onChange={(v) => setLayers({ poi: v })} />
           <Toggle label={t("layerTransit")} checked={layers.transitStops} onChange={(v) => setLayers({ transitStops: v })} />
+          <Toggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
         </div>
         {layers.satellite && (
           <p className="m-0 text-xs text-muted px-0.5 fade-in">{satelliteUrl ? t("layerSatelliteHint") : t("layerSatelliteMissing")}</p>

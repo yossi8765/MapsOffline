@@ -52,6 +52,8 @@ export interface MapLayers {
   satellite: boolean;
   /** Hillshading from the elevation data. */
   hillshade: boolean;
+  /** Road-number shields. */
+  roadShields: boolean;
   /** 3D terrain (needs tilt). */
   terrain3d: boolean;
   /** Selected map-layer POI categories (ids from lib/poiCategories). */
@@ -239,7 +241,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   searchFocusTick: 0,
   settingsLoaded: false,
   settings: DEFAULT_SETTINGS,
-  layers: { satellite: false, hillshade: false, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he" },
+  layers: { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he" },
   appVersion: "",
   transitStopsUnavailable: false,
 
