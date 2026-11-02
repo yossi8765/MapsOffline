@@ -95,14 +95,19 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   // Israeli colour code by road class: 1-digit national roads blue, 2-digit regional red,
   // 3-digit local green, longer numbers grey. The shield images are drawn on demand by
   // MapView (`styleimagemissing`), see `shieldImage()`.
+  // The current Protomaps builds carry the number in `ref` (no `shield_text`), and a road can
+  // list several refs separated by ";": the first one is the shield.
   const shields = ls.find((l) => l.id === "roads_shields");
   if (shields && shields.type === "symbol") {
     shields.minzoom = 7;
-    const n: ExpressionSpecification = ["length", ["get", "shield_text"]];
+    const refText: ExpressionSpecification = ["coalesce", ["get", "shield_text"], ["get", "ref"], ""];
+    const n: ExpressionSpecification = ["length", refText];
+    // (no split expression in the style spec: roads with several numbers "1;20" get no shield)
+    shields.filter = ["all", ["in", ["get", "kind"], ["literal", ["highway", "major_road"]]], [">", n, 0], ["<=", n, 5], ["==", ["index-of", ";", refText], -1]];
     shields.layout = {
       ...shields.layout,
       "icon-image": ["concat", "shield-", ["case", ["<=", n, 1], "blue", ["<=", n, 2], "red", ["<=", n, 3], "green", "grey"], "-", n],
-      "text-field": ["get", "shield_text"],
+      "text-field": refText,
       "text-font": ["Noto Sans Medium"],
       "text-size": ["interpolate", ["linear"], ["zoom"], 7, 10, 11, 12, 15, 14],
       "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.83, 11, 1, 15, 1.17],
