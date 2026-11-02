@@ -1,0 +1,92 @@
+[package]
+name = "mapsoffline"
+version = "1.0.0"
+description = "MapsOffline - offline navigation and maps for Israel"
+authors = ["MapsOffline"]
+edition = "2021"
+default-run = "mapsoffline"
+
+[lib]
+name = "mapsoffline_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "mapsoffline"
+path = "src/main.rs"
+
+[[bin]]
+name = "mapsoffline-data"
+path = "src/bin/mapsoffline-data.rs"
+# The data CLI is a developer tool. Gating it behind a feature keeps it out of
+# `cargo build --bins` (what `tauri build` runs) and therefore out of the installer,
+# which otherwise bundles every [[bin]] (~5-7 MB). Use:
+#   cargo run --release --features cli --bin mapsoffline-data -- <args>
+required-features = ["cli"]
+
+[features]
+cli = ["dep:clap"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+osmpbf = "0.3"
+# Only the blocking client (online routing, tiles metadata) and the async client with
+# chunk() reads (downloads) are used; "stream" (bytes_stream/wrap_stream) is not.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "blocking"] }
+# download.rs builds a current_thread runtime and uses tokio::time::timeout.
+tokio = { version = "1", features = ["rt", "time"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+csv = "1.3"
+# Deflate only (flate2/miniz_oxide). The zopfli encoder it drags in is only reachable from
+# ZipWriter (tests), so LTO removes it from the shipped binary.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Already in the tree via zip; used directly for PMTiles directories (satellite) and package compression.
+flate2 = "1"
+# Decoding Terrarium DEM tiles for elevation profiles (decoder only is used; the encoder only in tests).
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+# WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
+windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10"
+anyhow = "1"
+log = "0.4"
+# No regex filter syntax / ANSI auto-colour (RUST_LOG=module=level still works).
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
+rstar = "0.12"
+rayon = "1"
+rustc-hash = "2"
+clap = { version = "4", optional = true, default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+dirs = "6"
+unicode-normalization = "0.1"
+parking_lot = "0.12"
+smallvec = "1"
+
+# Size/speed tuned, see docs/SIZE.md. opt-level "s" was measured equal to 3 for routing
+# (A*, alternatives) and graph load; only SQLite (FTS5 search) lost ~15-50 % at -Os,
+# so the SQLite C code and its Rust wrapper stay at 3. "z" slowed routing ~28 % (rejected).
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+panic = "abort"
+strip = true
+debug = false
+incremental = false
+
+[profile.release.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.release.package.rusqlite]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2

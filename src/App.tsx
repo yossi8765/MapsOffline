@@ -1,0 +1,96 @@
+import { useEffect } from "react";
+import { api } from "./lib/api";
+import { resolveTheme, useStore } from "./lib/store";
+import { isRtl } from "./lib/i18n";
+import { MapView } from "./components/MapView";
+import { Sidebar } from "./components/Sidebar";
+import { Toasts } from "./components/Toast";
+import { PrintSheet } from "./components/PrintSheet";
+
+export default function App() {
+  const theme = useStore((s) => s.settings.theme);
+  const lang = useStore((s) => s.settings.language);
+  const settingsLoaded = useStore((s) => s.settingsLoaded);
+
+  // startup
+  useEffect(() => {
+    const s = useStore.getState();
+    void (async () => {
+      await s.loadSettings();
+      await Promise.all([s.refreshDataStatus(), s.refreshTiles(), s.loadFavorites(), s.loadHistory()]);
+      // transit too: origin/destination search offers bus stops once the model is in memory
+      api.dataPreload(true).catch(() => {});
+    })();
+    let unProg: (() => void) | undefined;
+    let unUpd: (() => void) | undefined;
+    api.onDataProgress((p) => useStore.getState().setProgress(p)).then((u) => (unProg = u)).catch(() => {});
+    api
+      .onDataUpdated(() => {
+        const st = useStore.getState();
+        void st.refreshDataStatus();
+        void st.refreshTiles();
+      })
+      .then((u) => (unUpd = u))
+      .catch(() => {});
+    return () => {
+      unProg?.();
+      unUpd?.();
+    };
+  }, []);
+
+  // theme
+  useEffect(() => {
+    const apply = () => document.documentElement.setAttribute("data-theme", resolveTheme(theme));
+    apply();
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", apply);
+    // "night" follows the sun: re-evaluate every minute so the switch happens on time.
+    const timer = theme === "night" ? window.setInterval(apply, 60_000) : undefined;
+    return () => {
+      mq.removeEventListener("change", apply);
+      if (timer) window.clearInterval(timer);
+    };
+  }, [theme]);
+
+  // direction / lang
+  useEffect(() => {
+    document.documentElement.setAttribute("lang", lang);
+    document.documentElement.setAttribute("dir", isRtl(lang) ? "rtl" : "ltr");
+  }, [lang]);
+
+  // global shortcuts
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const s = useStore.getState();
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === "f") {
+          e.preventDefault();
+          s.focusSearch();
+        } else if (k === "r") {
+          e.preventDefault();
+          s.clearRoute();
+          s.setPanel("route");
+        } else if (k === "h") {
+          e.preventDefault();
+          s.setPanel("history");
+        }
+      } else if (e.key === "Escape") {
+        s.setContextMenu(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <>
+      <div className="app-shell relative w-full h-full bg-bg text-fg overflow-hidden">
+        <MapView />
+        {settingsLoaded && <Sidebar />}
+        <Toasts />
+      </div>
+      <PrintSheet />
+    </>
+  );
+}
