@@ -100,7 +100,7 @@ export function RoutePanel() {
           <Plus size={14} /> {t("addVia")}
         </button>
         {n >= 3 && canCompute && mode !== "transit" && (
-          <button className="btn btn-ghost btn-sm text-muted" onClick={() => void optimizeOrder(true)} disabled={loading} title={t("shortestOrderHint")}>
+          <button className="btn btn-ghost btn-sm text-muted" onClick={() => void optimizeOrder(false)} disabled={loading} title={t("shortestOrderHint")}>
             <Route size={14} /> {t("shortestOrder")}
           </button>
         )}
