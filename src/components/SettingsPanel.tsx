@@ -55,7 +55,7 @@ export function SettingsPanel() {
         </Row>
         <Row label={t("accentColor")}>
           <div className="flex gap-1.5" role="radiogroup" aria-label={t("accentColor")}>
-            {(["blue", "green", "purple", "orange", "teal", "rose", "slate"] as const).map((a) => (
+            {(["blue", "green", "purple", "orange", "teal", "rose", "slate", "pastel"] as const).map((a) => (
               <button
                 key={a}
                 type="button"
@@ -232,7 +232,17 @@ export function SettingsPanel() {
   );
 }
 
-const ACCENT_SWATCH: Record<string, string> = { blue: "#1a66d9", green: "#15803d", purple: "#6d28d9", orange: "#c2410c", teal: "#0f766e", rose: "#be123c", slate: "#334155" };
+const ACCENT_SWATCH: Record<string, string> = {
+  blue: "#1a66d9",
+  green: "#15803d",
+  purple: "#6d28d9",
+  orange: "#c2410c",
+  teal: "#0f766e",
+  rose: "#be123c",
+  slate: "#334155",
+  // the pastel scheme recolours the whole panel: show its palette on the swatch
+  pastel: "conic-gradient(from 90deg, #b8c8f5, #f5c6d6, #c8ecd9, #fbe3b3, #d9ccf5, #b8c8f5)",
+};
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (

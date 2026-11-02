@@ -681,6 +681,42 @@
 :root[data-accent="rose"]:not([data-theme="dark"]) { --accent: #be123c; --accent-hover: #9f1239; --accent-solid: #be123c; --accent-solid-hover: #9f1239; --accent-soft: rgba(190, 18, 60, 0.1); }
 :root[data-accent="slate"]:not([data-theme="dark"]) { --accent: #334155; --accent-hover: #1e293b; --accent-solid: #334155; --accent-solid-hover: #1e293b; --accent-soft: rgba(51, 65, 85, 0.1); }
 
+/* Pastel: soft lavender surfaces, muted ink, candy accents; every panel token, not only the
+   accent. Light theme only, like the other schemes. */
+:root[data-accent="pastel"]:not([data-theme="dark"]) {
+  --bg: #f4f1fa;
+  --fg: #3f3a5a;
+  --fg-muted: #726c8e;
+  --fg-subtle: #9c96b4;
+  --surface: rgba(250, 248, 255, 0.92);
+  --surface-solid: #faf8ff;
+  --surface-raised: #fffdfd;
+  --surface-2: #eee9f8;
+  --surface-hover: rgba(120, 100, 180, 0.07);
+  --surface-active: rgba(120, 100, 180, 0.12);
+  --border: rgba(110, 95, 160, 0.14);
+  --border-strong: rgba(110, 95, 160, 0.26);
+  --accent: #7c6cf0;
+  --accent-hover: #6a5ae0;
+  --accent-solid: #8f82f2;
+  --accent-solid-hover: #7c6cf0;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(124, 108, 240, 0.13);
+  --danger: #d9657f;
+  --danger-soft: rgba(217, 101, 127, 0.12);
+  --success: #3f9d7a;
+  --success-soft: rgba(63, 157, 122, 0.13);
+  --warning: #c98b3a;
+  --warning-soft: rgba(201, 139, 58, 0.13);
+  --route-car: #7c6cf0;
+  --route-foot: #3f9d7a;
+  --route-bike: #c98b3a;
+  --route-alt: #a7a1c2;
+  --ring-color: rgba(124, 108, 240, 0.4);
+  --shadow-panel: 0 1px 2px rgba(90, 70, 140, 0.06), 0 8px 28px -6px rgba(90, 70, 140, 0.18);
+  --shadow-pop: 0 2px 6px rgba(90, 70, 140, 0.07), 0 12px 32px -8px rgba(90, 70, 140, 0.24);
+}
+
 /* ---------- maplibre ---------- */
 .maplibregl-ctrl-top-left,
 .maplibregl-ctrl-top-right {
