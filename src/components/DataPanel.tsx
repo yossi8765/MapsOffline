@@ -128,6 +128,18 @@ export function DataPanel() {
             {checking ? t("checking") : t("checkUpdates")}
           </button>
         </div>
+        <div className="flex flex-col gap-2 mb-1">
+        {updating ? (
+          <button className="btn btn-danger w-full !h-10" onClick={() => void cancelUpdate()}>
+            <X size={16} strokeWidth={1.75} /> {t("cancelUpdate")}
+          </button>
+        ) : (
+          <button className="btn btn-primary w-full" onClick={() => void startUpdate(DATA_COMPONENTS)}>
+            <Download size={16} strokeWidth={2} /> {t("updateAll")}
+          </button>
+        )}
+        <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
+        </div>
         <div className="group-list">
           {DATA_COMPONENTS.map((c) => (
             <ComponentCard
@@ -158,18 +170,6 @@ export function DataPanel() {
         )}
       </div>
 
-      <div className="flex flex-col gap-2">
-        {updating ? (
-          <button className="btn btn-danger w-full !h-10" onClick={() => void cancelUpdate()}>
-            <X size={16} strokeWidth={1.75} /> {t("cancelUpdate")}
-          </button>
-        ) : (
-          <button className="btn btn-primary w-full" onClick={() => void startUpdate(DATA_COMPONENTS)}>
-            <Download size={16} strokeWidth={2} /> {t("updateAll")}
-          </button>
-        )}
-        <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
-      </div>
 
       <div className="flex flex-col gap-2">
         <h2 className="section-label m-0">{t("offlineTransfer")}</h2>

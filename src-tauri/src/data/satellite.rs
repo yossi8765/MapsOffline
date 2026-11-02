@@ -286,8 +286,12 @@ pub struct Writer {
     index: BufWriter<File>,
     data_len: u64,
     entries: Vec<Entry>,
-    done: HashMap<(u8, u32, u32), ()>,
+    /// every tile already handled: (offset, len) of its bytes (len 0 = no tile on the server)
+    done: HashMap<(u8, u32, u32), (u64, u32)>,
     dedup: HashMap<u64, (u64, u32)>,
+    /// dedup key of a content-filter placeholder picture, once one was recognised: such tiles
+    /// are skipped (not stored, not marked done) so a later run fetches them for real
+    placeholder: Option<u64>,
     addressed: u64,
     root_max: usize,
 }
@@ -308,6 +312,7 @@ impl Writer {
             entries: Vec::new(),
             done: HashMap::new(),
             dedup: HashMap::new(),
+            placeholder: None,
             addressed: 0,
             root_max: ROOT_MAX,
         })
@@ -331,7 +336,7 @@ impl Writer {
             if offset + u64::from(len) > md.len() {
                 break; // data file is shorter than the index claims: stop at the last good record
             }
-            done.insert((z, x, y), ());
+            done.insert((z, x, y), (offset, len));
             if len > 0 {
                 entries.push(Entry { tile_id: tile_id(z, x, y), offset, length: len, run_length: 1 });
                 data_len = data_len.max(offset + u64::from(len));
@@ -348,7 +353,7 @@ impl Writer {
         let mut index = BufWriter::new(File::create(&index_tmp)?);
         index.write_all(&idx[..done.len() * INDEX_REC])?;
         log::info!("resuming satellite download: {} tiles already stored", done.len());
-        Ok(Self { data_tmp: data_tmp.to_path_buf(), index_tmp, data, index, data_len, addressed: entries.len() as u64, entries, done, dedup: HashMap::new(), root_max: ROOT_MAX })
+        Ok(Self { data_tmp: data_tmp.to_path_buf(), index_tmp, data, index, data_len, addressed: entries.len() as u64, entries, done, dedup: HashMap::new(), placeholder: None, root_max: ROOT_MAX })
     }
 
     pub fn is_done(&self, z: u8, x: u32, y: u32) -> bool {
@@ -363,8 +368,44 @@ impl Writer {
         rec[9..17].copy_from_slice(&offset.to_le_bytes());
         rec[17..21].copy_from_slice(&len.to_le_bytes());
         self.index.write_all(&rec)?;
-        self.done.insert((z, x, y), ());
+        self.done.insert((z, x, y), (offset, len));
         Ok(())
+    }
+
+    /// Recreate the index from `done` (after placeholder tiles were dropped).
+    fn rewrite_index(&mut self) -> anyhow::Result<()> {
+        self.index.flush()?;
+        let mut f = BufWriter::new(File::create(&self.index_tmp)?);
+        for (&(z, x, y), &(offset, len)) in &self.done {
+            let mut rec = [0u8; INDEX_REC];
+            rec[0] = z;
+            rec[1..5].copy_from_slice(&x.to_le_bytes());
+            rec[5..9].copy_from_slice(&y.to_le_bytes());
+            rec[9..17].copy_from_slice(&offset.to_le_bytes());
+            rec[17..21].copy_from_slice(&len.to_le_bytes());
+            f.write_all(&rec)?;
+        }
+        f.flush()?;
+        drop(f);
+        self.index = BufWriter::new(std::fs::OpenOptions::new().append(true).open(&self.index_tmp)?);
+        Ok(())
+    }
+
+    /// Forget every tile that carries the content-filter placeholder (the picture shared by
+    /// several zoom <= 11 tiles) and skip that content from now on. Returns how many were dropped.
+    pub fn drop_placeholders(&mut self) -> anyhow::Result<usize> {
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for e in self.entries.iter().filter(|e| zoom_of(e.tile_id) <= PLACEHOLDER_MAX_ZOOM) {
+            *counts.entry(e.offset).or_insert(0) += 1;
+        }
+        let Some((&offset, _)) = counts.iter().filter(|(_, &n)| n >= PLACEHOLDER_SHARED).max_by_key(|(_, &n)| n) else { return Ok(0) };
+        let before = self.entries.len();
+        self.entries.retain(|e| e.offset != offset);
+        self.done.retain(|_, &mut (o, len)| !(o == offset && len > 0));
+        self.addressed = self.entries.len() as u64;
+        self.placeholder = self.dedup.iter().find(|(_, &(o, _))| o == offset).map(|(&k, _)| k);
+        self.rewrite_index()?;
+        Ok(before - self.entries.len())
     }
 
     /// Flush data before index so every index record points at bytes already on disk.
@@ -375,14 +416,19 @@ impl Writer {
     }
 
     /// `bytes` empty = the server has no tile here (remembered so a resume skips it).
-    pub fn add(&mut self, z: u8, x: u32, y: u32, bytes: &[u8]) -> anyhow::Result<()> {
+    /// Returns false when the tile is a known content-filter placeholder and was skipped.
+    pub fn add(&mut self, z: u8, x: u32, y: u32, bytes: &[u8]) -> anyhow::Result<bool> {
         if bytes.is_empty() {
-            return self.record(z, x, y, self.data_len, 0);
+            self.record(z, x, y, self.data_len, 0)?;
+            return Ok(true);
         }
         let mut h = rustc_hash::FxHasher::default();
         bytes.hash(&mut h);
         bytes.len().hash(&mut h);
         let key = h.finish();
+        if self.placeholder == Some(key) {
+            return Ok(false);
+        }
         let (offset, length) = match self.dedup.get(&key) {
             Some(&v) => v,
             None => {
@@ -396,7 +442,8 @@ impl Writer {
         };
         self.entries.push(Entry { tile_id: tile_id(z, x, y), offset, length, run_length: 1 });
         self.addressed += 1;
-        self.record(z, x, y, offset, length)
+        self.record(z, x, y, offset, length)?;
+        Ok(true)
     }
 
     pub fn tiles(&self) -> u64 {
@@ -408,8 +455,9 @@ impl Writer {
         has_placeholders(&self.entries)
     }
 
-    /// Assemble the archive at `dest` (written in full, caller renames) and delete the temp data.
-    pub fn finish(mut self, dest: &Path, meta: &ArchiveMeta) -> anyhow::Result<()> {
+    /// Assemble the archive at `dest` (written in full, caller renames). The temp data + index
+    /// are deleted unless `keep_temps` (a partial archive whose next run should resume).
+    pub fn finish(mut self, dest: &Path, meta: &ArchiveMeta, keep_temps: bool) -> anyhow::Result<()> {
         self.data.flush()?;
         self.index.flush()?;
         drop(self.data);
@@ -483,8 +531,10 @@ impl Writer {
         std::io::copy(&mut src, &mut out)?;
         out.flush()?;
         drop(src);
-        let _ = std::fs::remove_file(&self.data_tmp);
-        let _ = std::fs::remove_file(&self.index_tmp);
+        if !keep_temps {
+            let _ = std::fs::remove_file(&self.data_tmp);
+            let _ = std::fs::remove_file(&self.index_tmp);
+        }
         Ok(())
     }
 }
@@ -613,11 +663,18 @@ pub(crate) fn verify(path: &Path, placeholders: bool) -> anyhow::Result<()> {
     let mut f = File::open(path)?;
     let h = read_header(&mut f)?;
     let z = 10.min(h.max_zoom);
-    let t = read_tile(path, z, lon_to_x(34.78, z), lat_to_y(32.08, z))?.ok_or_else(|| anyhow!("sample tile missing"))?;
+    let entries = all_entries(&mut f, &h)?;
+    let t = match read_tile(path, z, lon_to_x(34.78, z), lat_to_y(32.08, z))? {
+        Some(t) => t,
+        None => {
+            let e = entries.iter().find(|e| e.run_length > 0 && e.length > 0).ok_or_else(|| anyhow!("archive has no tiles"))?;
+            read_at(&mut f, h.data_off + e.offset, u64::from(e.length))?
+        }
+    };
     if !has_signature(&t, h.tile_type != 2) {
         bail!("sample tile has the wrong image signature");
     }
-    if placeholders && has_placeholders(&all_entries(&mut f, &h)?) {
+    if placeholders && has_placeholders(&entries) {
         bail!("{PLACEHOLDER_MSG}");
     }
     Ok(())
@@ -669,7 +726,9 @@ pub struct RasterSpec<'a> {
 
 /// Download every tile of `spec` into the archive at `dest` (atomically replaced at the end).
 /// Resumable: temp data + index next to `dest` survive a failure / cancel for the same `version`.
-pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &Client, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<()> {
+/// Returns the number of tiles skipped because a content filter answered with its placeholder
+/// picture (they stay unfetched; the next run picks them up).
+pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &Client, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<usize> {
     let label = spec.label;
     let data_tmp = dest.with_extension("data.tmp");
     let out_tmp = dest.with_extension("pmtiles.tmp");
@@ -689,6 +748,7 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
     progress(ProgressPhase::Downloading, already, total, &format!("{label} – {already}/{total} אריחים"));
     let jpeg = spec.tile_type != 2;
 
+    let mut skipped = 0usize;
     let result = (|| -> anyhow::Result<()> {
         let next = AtomicUsize::new(0);
         let (tx, rx) = mpsc::sync_channel::<anyhow::Result<((u8, u32, u32), Option<Vec<u8>>)>>(WORKERS * 4);
@@ -730,11 +790,15 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
                         break;
                     }
                 };
-                writer.add(z, x, y, bytes.as_deref().unwrap_or(&[]))?;
+                if !writer.add(z, x, y, bytes.as_deref().unwrap_or(&[]))? {
+                    skipped += 1;
+                }
                 fetched += 1;
                 if spec.placeholders && z <= PLACEHOLDER_MAX_ZOOM && writer.has_placeholders() {
-                    result = Err(anyhow!("{PLACEHOLDER_MSG}"));
-                    break;
+                    // the filter's "sent for checking" picture: forget those tiles, skip the rest
+                    let n = writer.drop_placeholders()?;
+                    skipped += n;
+                    log::warn!("{label}: content-filter placeholder recognised, {n} tiles dropped; continuing");
                 }
                 if last_checkpoint.elapsed() >= Duration::from_secs(5) {
                     last_checkpoint = Instant::now();
@@ -746,7 +810,8 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
                     let rate = fetched as f64 / started.elapsed().as_secs_f64().max(0.001);
                     let eta = if fetched >= 50 && rate > 0.0 { ((total - done) as f64 / rate / 60.0).ceil() as u64 } else { 0 };
                     let eta_s = if eta > 0 { format!(" · נותרו כ-{eta} דקות") } else { String::new() };
-                    progress(ProgressPhase::Downloading, done, total, &format!("{label} – {done}/{total} אריחים{eta_s}"));
+                    let skip_s = if skipped > 0 { format!(" · {skipped} דולגו (סינון)") } else { String::new() };
+                    progress(ProgressPhase::Downloading, done, total, &format!("{label} – {done}/{total} אריחים{eta_s}{skip_s}"));
                 }
             }
             // keep what we have for the next attempt, then surface the error
@@ -762,24 +827,23 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
         })?;
         progress(ProgressPhase::Finalizing, 0, 0, &format!("בונה את קובץ {label}"));
         let meta = ArchiveMeta { name: spec.name.clone(), attribution: spec.attribution.clone(), bbox: spec.bbox, min_zoom: 0, max_zoom: spec.max_zoom, tile_type: spec.tile_type };
-        writer.finish(&out_tmp, &meta)?;
+        if skipped > 0 {
+            progress(ProgressPhase::Finalizing, 0, 0, &format!("בונה את קובץ {label} ({skipped} אריחים חסרים בגלל סינון – יושלמו בעדכון הבא)"));
+        }
+        writer.finish(&out_tmp, &meta, skipped > 0)?;
         verify(&out_tmp, spec.placeholders)?;
         Ok(())
     })();
     if let Err(e) = result {
+        // temp data + index stay on disk so the next run resumes
         let _ = std::fs::remove_file(&out_tmp);
-        if e.to_string() == PLACEHOLDER_MSG {
-            // the stored tiles are the filter's picture: start over next time
-            let _ = std::fs::remove_file(&data_tmp);
-            let _ = std::fs::remove_file(data_tmp.with_extension("index.tmp"));
-            let _ = std::fs::remove_file(&layer_tmp);
-        }
-        // otherwise temp data + index stay on disk so the next run resumes
         return Err(e);
     }
     atomic_replace(dest, &out_tmp)?;
-    let _ = std::fs::remove_file(&layer_tmp);
-    Ok(())
+    if skipped == 0 {
+        let _ = std::fs::remove_file(&layer_tmp);
+    }
+    Ok(skipped)
 }
 
 pub fn update_satellite(
@@ -810,8 +874,10 @@ pub fn update_satellite(
         attribution: ATTRIBUTION.to_string(),
         bbox: BBOX_ISRAEL,
     };
-    download_raster(&dest, &layer, &spec, &client, progress, cancel)?;
-    Ok(Some(layer))
+    let skipped = download_raster(&dest, &layer, &spec, &client, progress, cancel)?;
+    // a partial archive gets a version that never equals the server's, so "check updates"
+    // keeps offering the download until every tile is in
+    Ok(Some(if skipped > 0 { format!("{layer} (חסרים {skipped} אריחים)") } else { layer }))
 }
 
 #[cfg(test)]
@@ -861,10 +927,27 @@ mod tests {
         let mut w = Writer::create(&data_tmp).unwrap();
         let same = [0xFF, 0xD8, 1, 2, 3];
         for i in 0..3u32 {
-            w.add(9, i, 0, &same).unwrap();
+            assert!(w.add(9, i, 0, &same).unwrap());
         }
         assert!(!w.has_placeholders(), "three shared low-zoom tiles are still tolerated");
         w.add(9, 3, 0, &same).unwrap();
+        assert!(w.has_placeholders());
+        // a real tile next to them survives the purge; the placeholder content is skipped afterwards
+        w.add(9, 5, 0, &[0xFF, 0xD8, 9, 9, 9]).unwrap();
+        assert_eq!(w.drop_placeholders().unwrap(), 4);
+        assert!(!w.has_placeholders());
+        assert!(!w.is_done(9, 0, 0) && w.is_done(9, 5, 0));
+        assert!(!w.add(9, 6, 0, &same).unwrap(), "placeholder content is skipped");
+        assert!(!w.is_done(9, 6, 0));
+        w.checkpoint().unwrap();
+        // the rewritten index forgets the dropped tiles
+        let reopened = Writer::open(&data_tmp).unwrap();
+        assert!(!reopened.is_done(9, 0, 0) && reopened.is_done(9, 5, 0));
+        drop(reopened);
+        let mut w = Writer::open(&data_tmp).unwrap();
+        for i in 0..4u32 {
+            w.add(9, i, 0, &same).unwrap();
+        }
         assert!(w.has_placeholders());
         // shared content at high zoom (flat lake tiles) is fine
         let mut w2 = Writer::create(&dir.join("q.data.tmp")).unwrap();
@@ -876,7 +959,7 @@ mod tests {
         assert_eq!(zoom_of(0), 0);
         let out = dir.join("p.pmtiles");
         let meta = ArchiveMeta { name: "p".into(), attribution: "a".into(), bbox: [0.0, 0.0, 1.0, 1.0], min_zoom: 9, max_zoom: 9, tile_type: 3 };
-        w.finish(&out, &meta).unwrap();
+        w.finish(&out, &meta, false).unwrap();
         let mut f = File::open(&out).unwrap();
         let h = read_header(&mut f).unwrap();
         assert!(has_placeholders(&all_entries(&mut f, &h).unwrap()));
@@ -908,7 +991,7 @@ mod tests {
         w.add(5, 0, 0, &[0xFF, 0xD8, 9]).unwrap();
         let out = dir.join("r.pmtiles");
         let meta = ArchiveMeta { name: "r".into(), attribution: "a".into(), bbox: [0.0, 0.0, 1.0, 1.0], min_zoom: 5, max_zoom: 5, tile_type: 3 };
-        w.finish(&out, &meta).unwrap();
+        w.finish(&out, &meta, false).unwrap();
         assert_eq!(read_tile(&out, 5, 1, 2).unwrap(), Some(vec![0xFF, 0xD8, 1]));
         assert_eq!(read_tile(&out, 5, 2, 3).unwrap(), Some(vec![0xFF, 0xD8, 2, 2]));
         assert_eq!(read_tile(&out, 5, 0, 0).unwrap(), Some(vec![0xFF, 0xD8, 9]));
@@ -953,7 +1036,7 @@ mod tests {
             w.add(z, x, y, &bytes_of(i, z, x, y)).unwrap();
         }
         let meta = ArchiveMeta { name: "t".into(), attribution: "a".into(), bbox: [34.5, 31.0, 35.5, 32.5], min_zoom: 0, max_zoom: 13, tile_type: 3 };
-        w.finish(&out, &meta).unwrap();
+        w.finish(&out, &meta, false).unwrap();
         assert!(!data_tmp.exists());
         for (i, &(z, x, y)) in tiles.iter().enumerate() {
             assert_eq!(read_tile(&out, z, x, y).unwrap().as_deref(), Some(bytes_of(i, z, x, y).as_slice()), "tile {z}/{x}/{y}");

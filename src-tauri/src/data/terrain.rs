@@ -50,7 +50,7 @@ pub fn update_terrain(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) 
         attribution: ATTRIBUTION.into(),
         bbox: BBOX_ISRAEL,
     };
-    download_raster(&dest, &version, &spec, &client, progress, cancel)?;
+    let _ = download_raster(&dest, &version, &spec, &client, progress, cancel)?;
     Ok(Some(version))
 }
 
