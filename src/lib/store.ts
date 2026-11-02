@@ -234,7 +234,8 @@ let toastSeq = 1;
 let routeSeq = 0;
 
 export const useStore = create<State & Actions>((set, get) => ({
-  panel: "route",
+  // `?panel=search` opens on another panel (used by the headless UI screenshots)
+  panel: ((typeof location !== "undefined" && (new URLSearchParams(location.search).get("panel") as Panel | null)) || "route") as Panel,
   sidebarCollapsed: false,
   contextMenu: null,
   toasts: [],
