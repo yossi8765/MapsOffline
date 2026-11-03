@@ -528,7 +528,7 @@ export function MapView() {
     }
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, satelliteOrtho: st.settings.satelliteSource !== "sentinel" || !!st.dataStatus?.satellite?.version?.startsWith("govmap-"), terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
+      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, satelliteOrtho: st.settings.satelliteSource !== "sentinel" || !!st.dataStatus?.satellite?.version?.startsWith("govmap-"), terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme }),
       center: start.center,
       zoom: start.zoom,
       maxZoom: 20,
@@ -638,7 +638,7 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
+    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -646,7 +646,7 @@ export function MapView() {
     const planet = !!worldUrl || isMergedTiles(tilesUrl) || (!tilesUrl && !!onlineTilesUrl);
     map.setMaxBounds(planet ? null : MAX_BOUNDS);
     map.setMinZoom(planet ? 1 : 5);
-  }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
+  }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.
@@ -774,7 +774,8 @@ export function MapView() {
   }, [poiCatsKey, mapReady, poiLayerTick]);
 
   // ---- transit stops layer (viewport fetch, debounced)
-  const transitStopsOn = layers.transitStops;
+  // the public-transport map always shows the stops
+  const transitStopsOn = layers.transitStops || layers.theme === "transit";
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;

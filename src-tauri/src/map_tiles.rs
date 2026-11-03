@@ -226,3 +226,19 @@ mod live {
         }
     }
 }
+
+#[cfg(test)]
+mod dump {
+    /// `MAP_FILE=<pmtiles> DUMP=<out.mvt> cargo test --lib map_tiles::dump -- --ignored`
+    #[test]
+    #[ignore]
+    fn dump_tile() {
+        let f = std::path::PathBuf::from(std::env::var("MAP_FILE").unwrap());
+        super::set_files(vec![f]);
+        let (z, lon, lat) = (15u8, 34.7818f64, 32.0853f64);
+        let n = f64::from(1u32 << z);
+        let x = ((lon + 180.0) / 360.0 * n) as u32;
+        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n) as u32;
+        std::fs::write(std::env::var("DUMP").unwrap(), super::tile(z, x, y).unwrap()).unwrap();
+    }
+}

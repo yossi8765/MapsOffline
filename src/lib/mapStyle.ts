@@ -32,6 +32,59 @@ export interface StyleOptions {
   lang: string;
   poi: boolean;
   buildings3d: boolean;
+  /** Thematic look: cycleways or rail / transit brought forward, the rest of the roads muted. */
+  theme?: MapTheme;
+}
+
+export type MapTheme = "standard" | "cycle" | "transit";
+
+const CYCLE_COLOR = "#16a34a";
+const RAIL_COLOR = "#334155";
+
+/** Restyle the Protomaps layer list for the cycling / public-transport map. */
+function applyTheme(ls: LayerSpecification[], theme: MapTheme, dark: boolean): LayerSpecification[] {
+  if (theme === "standard") return ls;
+  const muted = new Set(["roads_minor", "roads_minor_service", "roads_major", "roads_highway", "roads_link", "roads_bridges_minor", "roads_bridges_major", "roads_bridges_highway", "roads_bridges_link", "roads_tunnels_minor", "roads_tunnels_major", "roads_tunnels_highway", "roads_tunnels_link"]);
+  const out: LayerSpecification[] = [];
+  for (const l of ls) {
+    if (l.type === "line" && muted.has(l.id)) {
+      out.push({ ...l, paint: { ...l.paint, "line-opacity": 0.55 } } as LayerSpecification);
+      continue;
+    }
+    if (theme === "cycle" && l.type === "line" && (l.id === "roads_other" || l.id === "roads_bridges_other" || l.id === "roads_tunnels_other")) {
+      // footways stay thin and quiet; cycleways get a white-cased green band on top
+      out.push(l);
+      // the stock filters use the legacy filter syntax, so the added test must too
+      const isCycle = ["==", "kind_detail", "cycleway"] as unknown as ExpressionSpecification;
+      const base = (l as { filter?: ExpressionSpecification }).filter;
+      const filter = (base ? ["all", base, isCycle] : isCycle) as ExpressionSpecification;
+      out.push({
+        id: `${l.id}-cycle-casing`, type: "line", source: l.source, "source-layer": l["source-layer"], filter,
+        minzoom: 11,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": dark ? "#0b1220" : "#ffffff", "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 11, 2, 14, 4, 18, 10] },
+      } as LayerSpecification);
+      out.push({
+        id: `${l.id}-cycle`, type: "line", source: l.source, "source-layer": l["source-layer"], filter,
+        minzoom: 11,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": CYCLE_COLOR, "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 11, 1, 14, 2.5, 18, 6] },
+      } as LayerSpecification);
+      continue;
+    }
+    if (theme === "transit" && l.type === "line" && l.id === "roads_rail") {
+      // classic railway: dark band with a light dash inside
+      const railWidth: ExpressionSpecification = ["interpolate", ["exponential", 1.5], ["zoom"], 6, 1, 12, 2.5, 16, 5, 19, 8];
+      out.push({ ...l, paint: { "line-color": dark ? "#cbd5e1" : RAIL_COLOR, "line-width": railWidth } } as LayerSpecification);
+      out.push({
+        ...l, id: "roads_rail-dash",
+        paint: { "line-color": dark ? "#1e293b" : "#ffffff", "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 6, 0.3, 12, 1, 16, 2, 19, 3.5], "line-dasharray": [3, 3] },
+      } as LayerSpecification);
+      continue;
+    }
+    out.push(l);
+  }
+  return out;
 }
 
 function origin(): string {
@@ -123,7 +176,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     ...(merged ? { tiles: [tilesUrl], minzoom: 0, maxzoom: 15 } : { url: `pmtiles://${tilesUrl}` }),
     attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
   };
-  let ls: LayerSpecification[] = layers("protomaps", flavor, { lang: o.lang });
+  let ls: LayerSpecification[] = applyTheme(layers("protomaps", flavor, { lang: o.lang }), o.theme ?? "standard", o.flavor === "dark");
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
   // Road numbers: the stock shields are tiny (8 px) and sparse; make them readable at every
   // zoom and place them before the street names so they win collisions.

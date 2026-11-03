@@ -64,6 +64,8 @@ export interface MapLayers {
   transitStops: boolean;
   flavor: "auto" | "light" | "dark" | "grayscale";
   labelLang: "he" | "en" | "ar";
+  /** Thematic map: standard, cycling, public transport. */
+  theme: "standard" | "cycle" | "transit";
 }
 
 export interface HighlightState {
@@ -260,7 +262,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   searchFocusTick: 0,
   settingsLoaded: false,
   settings: DEFAULT_SETTINGS,
-  layers: { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he" },
+  layers: { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard" },
   appVersion: "",
   transitStopsUnavailable: false,
 

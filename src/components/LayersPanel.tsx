@@ -35,6 +35,20 @@ export function LayersPanel() {
       </section>
 
       <section className="flex flex-col gap-2">
+        <h2 className="section-label m-0">{t("mapTheme")}</h2>
+        <div className="seg">
+          {(["standard", "cycle", "transit"] as MapLayers["theme"][]).map((th) => (
+            <button key={th} aria-pressed={layers.theme === th} onClick={() => setLayers({ theme: th })}>
+              <span>{t(th === "standard" ? "themeStandard" : th === "cycle" ? "themeCycle" : "themeTransit")}</span>
+            </button>
+          ))}
+        </div>
+        {layers.theme !== "standard" && (
+          <p className="m-0 text-xs text-muted px-0.5 fade-in">{t(layers.theme === "cycle" ? "themeCycleHint" : "themeTransitHint")}</p>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-2">
         <h2 className="section-label m-0">{t("mapFlavor")}</h2>
         <div className="seg">
           {(["auto", "light", "dark", "grayscale"] as MapLayers["flavor"][]).map((f) => (
