@@ -46,6 +46,8 @@ enum Cmd {
     Status,
     /// Ask the servers whether newer data is available (no download)
     Check,
+    /// Bring the local OSM extract up to date – daily Geofabrik diffs when possible – without rebuilding
+    OsmUpdate,
     /// Pack installed data into one .mapsdata file (all components, or only the listed ones)
     Export {
         dest: String,
@@ -338,6 +340,19 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+        }
+        Cmd::OsmUpdate => {
+            let t0 = std::time::Instant::now();
+            let progress = |ph: ProgressPhase, d: u64, t: u64, m: &str| -> bool {
+                if t == 0 || t < 1000 || d % (1 << 20) < 65536 {
+                    eprintln!("[{ph:?}] {d}/{t} {m}");
+                }
+                true
+            };
+            let pbf = paths.pbf_file();
+            let v = mapsoffline_lib::data::osmdiff::update_pbf(&pbf, &progress, &Cancel::default())?;
+            let (st, _) = mapsoffline_lib::data::osmdiff::header_info(&pbf)?;
+            println!("version {v:?} header {st:?} size {} MB in {:?}", std::fs::metadata(&pbf)?.len() >> 20, t0.elapsed());
         }
         Cmd::AppCheck => {
             let t0 = std::time::Instant::now();

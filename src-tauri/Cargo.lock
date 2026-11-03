@@ -2377,6 +2377,7 @@ dependencies = [
  "osmpbf",
  "parking_lot",
  "png 0.17.16",
+ "quick-xml",
  "rayon",
  "reqwest 0.12.28",
  "rstar",
