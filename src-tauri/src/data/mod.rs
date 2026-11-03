@@ -98,7 +98,7 @@ pub type Emit = Arc<dyn Fn(DataProgress) + Send + Sync>;
 pub fn build_tag(c: DataComponent, source_version: &str) -> String {
     match c {
         DataComponent::Routing => format!("{source_version} g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV),
-        DataComponent::Geocode => format!("{source_version} s{}", crate::geocode::SCHEMA_VERSION),
+        DataComponent::Geocode => format!("{source_version} s{}.{}", crate::geocode::SCHEMA_VERSION, crate::geocode::BUILD_REV),
         DataComponent::Transit => format!("{source_version} t{}", crate::transit::model::VERSION),
         _ => source_version.to_string(),
     }

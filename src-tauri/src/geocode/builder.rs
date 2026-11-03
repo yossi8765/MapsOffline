@@ -13,6 +13,9 @@ use super::norm::{canon, housenumber_key, index_tokens};
 use crate::types::{ProgressFn, ProgressPhase};
 
 pub const SCHEMA_VERSION: &str = "3";
+/// Builder revision (same file format): 1 = data.gov.il points of interest. Part of the
+/// manifest version so a new revision shows up as an available update.
+pub const BUILD_REV: u32 = 1;
 thread_local! {
     /// cos(reference latitude) for the flat-earth distances of one build (the build runs on one
     /// thread; countries are built concurrently on different threads). Israel: cos(31.5°).

@@ -4,7 +4,7 @@
 //! * `open` opens it read-only; `search` and `reverse` answer queries.
 mod builder;
 pub mod datagov;
-pub use builder::SCHEMA_VERSION;
+pub use builder::{BUILD_REV, SCHEMA_VERSION};
 pub mod categories;
 pub mod norm;
 
