@@ -193,6 +193,7 @@ pub fn inspect(src: &Path) -> anyhow::Result<PackageInfo> {
 pub fn import(
     paths: &DataPaths,
     src: &Path,
+    only: &[DataComponent],
     progress: &(dyn Fn(DataComponent, ProgressPhase, u64, u64, &str) + Sync),
     cancel: &Cancel,
 ) -> anyhow::Result<Vec<DataComponent>> {
@@ -229,6 +230,9 @@ pub fn import(
             continue;
         }
         let Some(c) = component_of(&name) else { continue };
+        if !only.is_empty() && !only.contains(&c) {
+            continue;
+        }
         // Only plain relative paths inside the known folders.
         let relp = e.enclosed_name().ok_or_else(|| anyhow!("שם קובץ לא חוקי בחבילה: {name}"))?;
         if relp.components().any(|p| !matches!(p, Component::Normal(_))) || relp.components().count() != 2 {
@@ -257,7 +261,12 @@ pub fn import(
                 }
             }
         }
-        atomic_replace(&dest, &tmp)?;
+        if c == DataComponent::Geocode && dest == paths.geocode_file() {
+            // the app may be searching this index: close its connections before the swap
+            crate::geocode::replace_index(&dest, &tmp)?;
+        } else {
+            atomic_replace(&dest, &tmp)?;
+        }
         if !installed.contains(&c) {
             installed.push(c);
         }
@@ -303,7 +312,10 @@ mod tests {
         assert_eq!(inspect(&one).unwrap().components, vec![DataComponent::Routing]);
 
         let dst = DataPaths::new(dir.join("dst"));
-        let got = import(&dst, &pkg, &noop, &cancel).unwrap();
+        let only_route = DataPaths::new(dir.join("dst-one"));
+        assert_eq!(import(&only_route, &pkg, &[DataComponent::Routing], &noop, &cancel).unwrap(), vec![DataComponent::Routing]);
+        assert!(!only_route.transit_file().exists());
+        let got = import(&dst, &pkg, &[], &noop, &cancel).unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(std::fs::read(dst.graph_file()).unwrap(), b"graph-bytes");
         assert_eq!(std::fs::metadata(dst.transit_file()).unwrap().len(), 5 * 1024 * 1024);

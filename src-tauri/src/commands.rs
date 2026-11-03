@@ -631,7 +631,7 @@ pub async fn data_import(app: AppHandle, state: State<'_, Arc<AppState>>, src: S
         .map_err(err)?
         .map_err(err)?;
     let res = run_package_job(app.clone(), st.clone(), move |paths, progress, cancel| {
-        crate::data::package::import(paths, &src_path, progress, cancel)
+        crate::data::package::import(paths, &src_path, &[], progress, cancel)
     })
     .await;
     st.unload_all();

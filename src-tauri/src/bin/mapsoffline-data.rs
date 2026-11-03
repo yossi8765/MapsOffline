@@ -712,7 +712,7 @@ fn package_cmd(paths: &DataPaths, file: &str, export_only: Option<&[DataComponen
     let is_export = export_only.is_some();
     let comps = match export_only {
         Some(only) => data::package::export(paths, p, only, &progress, &cancel)?,
-        None => data::package::import(paths, p, &progress, &cancel)?,
+        None => data::package::import(paths, p, &[], &progress, &cancel)?,
     };
     let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     println!("{} {:?} ({} MB) in {:?}", if is_export { "exported" } else { "imported" }, comps, size >> 20, t0.elapsed());

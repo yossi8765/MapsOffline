@@ -628,6 +628,9 @@ pub struct Settings {
     /// Default for the route panel: avoid difficult junctions (unsignalised left / U-turns).
     #[serde(default = "default_true")]
     pub avoid_hard_turns: bool,
+    /// Take ready-made components from the project's weekly GitLab build when possible.
+    #[serde(default = "default_true")]
+    pub use_prebuilt_data: bool,
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
@@ -703,6 +706,7 @@ impl Default for Settings {
             unpaved: default_unpaved(),
             avoid_hard_turns: true,
             transit_preference: default_transit_pref(),
+            use_prebuilt_data: true,
         }
     }
 }

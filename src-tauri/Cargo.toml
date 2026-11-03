@@ -60,9 +60,6 @@ jpeg-encoder = "0.6"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 sha2 = "0.10"
 
-[target.'cfg(windows)'.dependencies]
-# WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
-windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10"
 anyhow = "1"
@@ -77,6 +74,13 @@ dirs = "6"
 unicode-normalization = "0.1"
 parking_lot = "0.12"
 smallvec = "1"
+
+
+# Windows only. This section must stay last among the dependency lists: every line below a
+# [target] header belongs to it (chrono & co. once landed here and broke Linux builds).
+[target.'cfg(windows)'.dependencies]
+# WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
+windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation"] }
 
 # Size/speed tuned, see docs/SIZE.md. opt-level "s" was measured equal to 3 for routing
 # (A*, alternatives) and graph load; only SQLite (FTS5 search) lost ~15-50 % at -Os,

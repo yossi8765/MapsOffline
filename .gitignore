@@ -33,3 +33,7 @@ src-tauri/target/
 .buildlog.txt
 .poi-preview.html
 .vitelog.txt
+
+ci-data/
+ci-out/
+.cargo/

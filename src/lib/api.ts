@@ -355,6 +355,8 @@ export interface Settings {
   avoidHardTurns: boolean;
   /** Order of public-transport results. */
   transitPreference: TransitPreference;
+  /** Take ready-made components from the weekly GitLab build when possible. */
+  usePrebuiltData: boolean;
 }
 
 export interface AppInfo {

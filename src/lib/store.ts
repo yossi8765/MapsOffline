@@ -98,6 +98,7 @@ const DEFAULT_SETTINGS: Settings = {
   unpaved: "avoidLong",
   avoidHardTurns: true,
   transitPreference: "fastest",
+  usePrebuiltData: true,
 };
 
 /** Route-panel defaults derived from the settings. */

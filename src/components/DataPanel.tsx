@@ -7,6 +7,7 @@ import { DATA_COMPONENTS, type ComponentStatus, type DataComponent, type Progres
 import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
+import { Toggle } from "./RoutePanel";
 import { RegionsSection } from "./RegionsSection";
 
 const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc: I18nKey }> = {
@@ -38,6 +39,7 @@ export function DataPanel() {
   const checking = useStore((s) => s.checkingUpdates);
   const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, toastError, updateSettings } = useStore.getState();
   const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
+  const usePrebuilt = useStore((s) => s.settings.usePrebuiltData ?? true);
   const satelliteSource = useStore((s) => s.settings.satelliteSource ?? "govmap");
   const ortho = satelliteSource !== "sentinel";
   const updating = !!status?.updating;
@@ -146,6 +148,10 @@ export function DataPanel() {
           </button>
         ) : null}
         <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
+        <div className="group-list">
+          <Toggle label={t("prebuiltData")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
+        </div>
+        <p className="m-0 text-xs text-muted px-0.5">{t("prebuiltDataHint")}</p>
         </div>
         <div className="group-list">
           {DATA_COMPONENTS.map((c) => (

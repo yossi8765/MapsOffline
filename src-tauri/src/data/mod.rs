@@ -4,6 +4,7 @@ pub mod download;
 pub mod manifest;
 pub mod orthophoto;
 pub mod osmdiff;
+pub mod prebuilt;
 pub mod regions;
 pub mod package;
 pub mod satellite;
@@ -311,10 +312,17 @@ pub fn update(
     cancel: &Cancel,
 ) -> anyhow::Result<()> {
     paths.ensure_dirs()?;
-    let wants = |c: DataComponent| components.contains(&c);
     for &c in components {
         emit(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: String::new() });
     }
+    // ready-made components from the weekly GitLab build first; the rest is built here
+    let ready = if crate::state::load_settings(paths).use_prebuilt_data { prebuilt::install(paths, components, &emit, cancel) } else { Vec::new() };
+    let rest: Vec<DataComponent> = components.iter().copied().filter(|c| !ready.contains(c)).collect();
+    let components = rest.as_slice();
+    if components.is_empty() {
+        return Ok(());
+    }
+    let wants = |c: DataComponent| components.contains(&c);
     let fin = Finisher { paths, emit: &emit, cancel, manifest_lock: parking_lot::Mutex::new(()), errors: parking_lot::Mutex::new(Vec::new()) };
 
     std::thread::scope(|s| {
