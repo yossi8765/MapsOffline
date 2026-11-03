@@ -600,9 +600,13 @@ pub struct Settings {
     /// Look for a newer program version at startup (once a day).
     #[serde(default = "default_true")]
     pub auto_check_app_updates: bool,
-    /// Satellite imagery detail: "low" (zoom 12, ~40 m/px), "medium" (13), "high" (14, the sensor's 10 m).
+    /// Imagery detail. Sentinel-2: "low" z12, "medium" z13, "high"/"max" z14 (the sensor's 10 m).
+    /// govmap orthophoto: "low" z14, "medium" z15, "high" z16, "max" z17.
     #[serde(default = "default_sat_quality")]
     pub satellite_quality: String,
+    /// Imagery source: "govmap" (Survey of Israel aerial orthophoto, ~0.13 m) | "sentinel" (Sentinel-2, 10 m).
+    #[serde(default = "default_sat_source")]
+    pub satellite_source: String,
     /// Open the map where it was last left.
     #[serde(default = "default_true")]
     pub remember_map_view: bool,
@@ -646,6 +650,10 @@ fn default_sat_quality() -> String {
     "high".into()
 }
 
+fn default_sat_source() -> String {
+    "govmap".into()
+}
+
 pub fn default_transit_api_url() -> String {
     "https://api.transitous.org".into()
 }
@@ -678,6 +686,7 @@ impl Default for Settings {
             transit_api_url: default_transit_api_url(),
             auto_check_app_updates: true,
             satellite_quality: "high".into(),
+            satellite_source: default_sat_source(),
             remember_map_view: true,
             accent: "blue".into(),
             avoid_tolls: true,
@@ -694,3 +703,65 @@ impl Default for Settings {
 /// Progress callback. Returns `false` when the job was cancelled: builders stop at their next
 /// checkpoint. The callback also blocks while the update is paused.
 pub type ProgressFn<'a> = &'a (dyn Fn(ProgressPhase, u64, u64, &str) -> bool + Sync);
+
+// ---------------------------------------------------------------- other countries (regions)
+
+/// One downloadable region of the Geofabrik catalogue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionEntry {
+    pub id: String,
+    pub parent: Option<String>,
+    pub name: String,
+    /// ISO 3166-1 alpha-2 when the region is exactly one country
+    pub iso: Option<String>,
+    pub bbox: [f64; 4],
+    /// Israel: covered by the built-in components
+    pub builtin: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionPartStatus {
+    pub present: bool,
+    pub size_bytes: u64,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledRegion {
+    pub id: String,
+    pub name: String,
+    pub iso: Option<String>,
+    pub bbox: [f64; 4],
+    pub map: RegionPartStatus,
+    pub search: RegionPartStatus,
+    pub updated_iso: Option<String>,
+    pub busy: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegionPart {
+    Map,
+    Search,
+}
+
+/// Emitted as tauri event `region-progress`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionProgress {
+    pub id: String,
+    pub part: RegionPart,
+    pub phase: ProgressPhase,
+    pub done: u64,
+    pub total: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionSize {
+    pub pbf_bytes: Option<u64>,
+}

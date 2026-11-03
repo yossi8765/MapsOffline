@@ -2,6 +2,8 @@
 
 pub mod download;
 pub mod manifest;
+pub mod orthophoto;
+pub mod regions;
 pub mod package;
 pub mod satellite;
 pub mod terrain;
@@ -169,15 +171,26 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             Ok(key) => UpdateCheck { available: tiles::build_is_stale(tiles::Extract::world(paths).installed_build().as_deref(), &key), remote_version: Some(key), error: None },
             Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
         });
-        let sat = s.spawn(|| match download::http_client().and_then(|c| satellite::latest_layer(&c)) {
+        let sat = s.spawn(|| {
+            let settings = crate::state::load_settings(paths);
             // an archive full of content-filter placeholders counts as not installed
-            Ok(layer) => {
-                let quality = crate::state::load_settings(paths).satellite_quality;
-                let expected = satellite::archive_version(&layer, &quality);
-                let damaged = paths.satellite_file().exists() && satellite::verify(&paths.satellite_file(), true).is_err();
-                UpdateCheck { available: damaged || !satellite::version_matches(local(DataComponent::Satellite).as_deref(), &layer, &quality), remote_version: Some(expected), error: None }
+            let damaged = || paths.satellite_file().exists() && satellite::verify(&paths.satellite_file(), true).is_err();
+            if settings.satellite_source != "sentinel" {
+                // the orthophoto cache is fixed; only reachability is worth a probe
+                let expected = orthophoto::archive_version(&settings.satellite_quality);
+                return match download::http_client().and_then(|c| orthophoto::Source::new(c).probe(&Cancel::default())) {
+                    Ok(()) => UpdateCheck { available: damaged() || !satellite::settings_match(local(DataComponent::Satellite).as_deref(), &settings, None), remote_version: Some(expected), error: None },
+                    Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+                };
             }
-            Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+            match download::http_client().and_then(|c| satellite::latest_layer(&c)) {
+                Ok(layer) => UpdateCheck {
+                    available: damaged() || !satellite::settings_match(local(DataComponent::Satellite).as_deref(), &settings, Some(&layer)),
+                    remote_version: Some(satellite::expected_version(&settings, &layer)),
+                    error: None,
+                },
+                Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+            }
         });
         let dem = s.spawn(|| match download::http_client().and_then(|c| terrain::remote_version(&c)) {
             Ok(v) => {

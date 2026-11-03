@@ -86,6 +86,7 @@ const DEFAULT_SETTINGS: Settings = {
   avoidTolls: true,
   autoCheckAppUpdates: true,
   satelliteQuality: "high",
+  satelliteSource: "govmap",
   rememberMapView: true,
   accent: "blue",
   avoidAreas: "ab",
@@ -595,12 +596,15 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
   refreshTiles: async () => {
     try {
-      const [p, sp, tp, wp] = await Promise.all([api.tilesPath(), api.satellitePath().catch(() => null), api.terrainPath().catch(() => null), api.worldPath().catch(() => null)]);
+      const [p, sp, tp, wp, merged] = await Promise.all([api.tilesPath(), api.satellitePath().catch(() => null), api.terrainPath().catch(() => null), api.worldPath().catch(() => null), api.mapTilesAvailable().catch(() => false)]);
       // A fresh query string per refresh: the pmtiles protocol caches archive headers and
       // directories per URL, so a replaced file must get a new URL or stale tiles keep showing.
       const bust = `?v=${Date.now()}`;
-      const url = p ? convertFileSrc(p) + bust : null;
-      set((s) => ({ tilesUrl: url, satelliteUrl: sp ? convertFileSrc(sp) + bust : null, terrainUrl: tp ? convertFileSrc(tp) + bust : null, worldUrl: wp ? convertFileSrc(wp) + bust : null, tilesChecked: true, tilesTick: s.tilesTick + 1 }));
+      // other countries installed: one merged source over every local map (see map_tiles.rs)
+      const url = merged ? `http://mo-map.localhost/{z}/{x}/{y}.mvt${bust}` : p ? convertFileSrc(p) + bust : null;
+      set((s) => ({ tilesUrl: url, // satellite layer through the backend: the downloaded archive, tiles seen before, or live
+      // orthophoto when online (see online_sat.rs)
+      satelliteUrl: sp || navigator.onLine ? `http://mo-sat.localhost/{z}/{x}/{y}${bust}` : null, terrainUrl: tp ? convertFileSrc(tp) + bust : null, worldUrl: wp ? convertFileSrc(wp) + bust : null, tilesChecked: true, tilesTick: s.tilesTick + 1 }));
       if (!url && navigator.onLine) {
         // no local map: show the live Protomaps build until the user downloads one
         try {

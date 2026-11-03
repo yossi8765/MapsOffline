@@ -51,6 +51,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 # Decoding Terrarium DEM tiles for elevation profiles (decoder only is used; the encoder only in tests).
 png = "0.17"
+# govmap orthophoto: decode the ITM source tiles, encode the reprojected WebMercator tiles (pure Rust).
+jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder = "0.6"
 # In-app update: Ed25519 signature of the release checksum list + SHA-256 of the download.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 sha2 = "0.10"

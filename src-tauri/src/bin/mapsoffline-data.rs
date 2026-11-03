@@ -42,6 +42,16 @@ enum Cmd {
         #[arg(long)]
         transit: bool,
     },
+    /// Other countries: `region list [filter]`, `region install <id> [--map-only|--search-only]`,
+    /// `region delete <id>`, `region search <id> <query>`
+    Region {
+        action: String,
+        args: Vec<String>,
+        #[arg(long)]
+        map_only: bool,
+        #[arg(long)]
+        search_only: bool,
+    },
     /// Show status of data files
     Status,
     /// Ask the servers whether newer data is available (no download)
@@ -144,6 +154,44 @@ fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
 
     match cli.cmd {
+        Cmd::Region { action, args, map_only, search_only } => {
+            use mapsoffline_lib::data::regions;
+            use mapsoffline_lib::types::RegionPart;
+            match action.as_str() {
+                "list" => {
+                    let f = args.first().map(|s| s.to_lowercase()).unwrap_or_default();
+                    for r in regions::catalog(&paths, false)?.iter().filter(|r| r.entry.id.contains(&f) || r.entry.name.to_lowercase().contains(&f)) {
+                        println!("{:<28} {:<20} {:<4} {:?}", r.entry.id, r.entry.parent.clone().unwrap_or_default(), r.entry.iso.clone().unwrap_or_default(), r.entry.bbox);
+                    }
+                    for r in regions::installed(&paths, &|_| false) {
+                        println!("installed: {} map={:?} ({} B) search={:?} ({} B)", r.id, r.map.version, r.map.size_bytes, r.search.version, r.search.size_bytes);
+                    }
+                }
+                "install" => {
+                    let id = args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?;
+                    let parts = if map_only { vec![RegionPart::Map] } else if search_only { vec![RegionPart::Search] } else { vec![RegionPart::Map, RegionPart::Search] };
+                    let t0 = std::time::Instant::now();
+                    let emit = |p: mapsoffline_lib::types::RegionProgress| {
+                        let pct = if p.total > 0 { format!("{:5.1}%", p.done as f64 * 100.0 / p.total as f64) } else { "     ".into() };
+                        eprintln!("[{} {:?}] {:?} {} {}", p.id, p.part, p.phase, pct, p.message);
+                    };
+                    regions::install(&paths, id, &parts, &emit, &data::Cancel::default())?;
+                    println!("installed {id} in {:?}", t0.elapsed());
+                }
+                "delete" => regions::delete(&paths, args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?)?,
+                "search" => {
+                    let id = args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?;
+                    let q = args[1..].join(" ");
+                    let g = mapsoffline_lib::geocode::open(&regions::geocode_file(&paths.region_dir(id)))?;
+                    let t0 = std::time::Instant::now();
+                    for r in g.search(&q, None, 10)? {
+                        println!("{:?} {} | {} {} | {:.5},{:.5}", r.kind, r.name, r.city.unwrap_or_default(), r.category.unwrap_or_default(), r.lon, r.lat);
+                    }
+                    println!("({:?})", t0.elapsed());
+                }
+                other => anyhow::bail!("unknown region action {other}"),
+            }
+        }
         Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit } => {
             let mut comps = vec![];
             if all || tiles {

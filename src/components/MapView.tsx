@@ -4,7 +4,7 @@ import { Protocol } from "pmtiles";
 import { Database, Wifi } from "lucide-react";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { buildStyle, DEFAULT_CENTER, DEFAULT_ZOOM, MAX_BOUNDS, firstSymbolLayer, type FlavorName } from "../lib/mapStyle";
+import { buildStyle, DEFAULT_CENTER, DEFAULT_ZOOM, MAX_BOUNDS, firstSymbolLayer, isMergedTiles, type FlavorName } from "../lib/mapStyle";
 import { categoryOf, POI_CATEGORIES } from "../lib/poiCategories";
 import { CategoryPicker, LocateButton } from "./CategoryPicker";
 import { fmtCoords } from "../lib/format";
@@ -490,6 +490,7 @@ export function MapView() {
 
   const tilesUrl = useStore((s) => s.tilesUrl);
   const satelliteUrl = useStore((s) => s.satelliteUrl);
+  const satelliteOrtho = useStore((s) => s.settings.satelliteSource !== "sentinel" || !!s.dataStatus?.satellite?.version?.startsWith("govmap-"));
   const terrainUrl = useStore((s) => s.terrainUrl);
   const worldUrl = useStore((s) => s.worldUrl);
   const onlineTilesUrl = useStore((s) => s.onlineTilesUrl);
@@ -527,7 +528,7 @@ export function MapView() {
     }
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
+      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, satelliteOrtho: st.settings.satelliteSource !== "sentinel" || !!st.dataStatus?.satellite?.version?.startsWith("govmap-"), terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d }),
       center: start.center,
       zoom: start.zoom,
       maxZoom: 20,
@@ -637,15 +638,15 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
+    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // with a world basemap the map may leave Israel and zoom out to the planet
-    const planet = !!worldUrl || (!tilesUrl && !!onlineTilesUrl);
+    const planet = !!worldUrl || isMergedTiles(tilesUrl) || (!tilesUrl && !!onlineTilesUrl);
     map.setMaxBounds(planet ? null : MAX_BOUNDS);
     map.setMinZoom(planet ? 1 : 5);
-  }, [tilesUrl, onlineTilesUrl, satelliteUrl, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
+  }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.
@@ -749,14 +750,12 @@ export function MapView() {
       try {
         const pois = await api.poiLayer(cats, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], POIS_LIMIT);
         if (id !== seq) return;
-        src()?.setData({
-          type: "FeatureCollection",
-          features: pois.flatMap((p) => {
-            const c = categoryOf(p.category ?? "", p.name, selectedCats);
-            if (!c) return [];
-            return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
-          }),
+        const feats = pois.flatMap((p) => {
+          const c = categoryOf(p.category ?? "", p.name, selectedCats);
+          if (!c) return [];
+          return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
         });
+        src()?.setData({ type: "FeatureCollection", features: feats });
       } catch (e) {
         console.warn("poi_layer failed", e);
       }

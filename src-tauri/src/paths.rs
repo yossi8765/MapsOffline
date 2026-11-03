@@ -86,6 +86,13 @@ impl DataPaths {
     pub fn transit_dir(&self) -> PathBuf {
         self.root.join("transit")
     }
+    /// Other countries: one folder per Geofabrik region (`regions/<id>/map.pmtiles`, `geocode.sqlite`).
+    pub fn regions_dir(&self) -> PathBuf {
+        self.root.join("regions")
+    }
+    pub fn region_dir(&self, id: &str) -> PathBuf {
+        self.regions_dir().join(id.replace(['/', '\\', ':'], "_"))
+    }
     pub fn downloads_dir(&self) -> PathBuf {
         self.root.join("downloads")
     }

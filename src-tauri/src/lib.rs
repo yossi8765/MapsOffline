@@ -5,8 +5,10 @@ pub mod geo;
 pub mod geocode;
 pub mod history;
 pub mod location;
+pub mod map_tiles;
 pub mod app_update;
 pub mod online_tiles;
+pub mod online_sat;
 pub mod online;
 pub mod paths;
 pub mod routing;
@@ -22,11 +24,22 @@ use state::AppState;
 pub fn run() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
     let state = Arc::new(AppState::new());
+    state.refresh_map_files();
     tauri::Builder::default()
         // Online map without local data: the webview reads the Protomaps world build with HTTP
         // range requests through this proxy (the build host sends no CORS headers).
         .register_asynchronous_uri_scheme_protocol("mo-tiles", |_ctx, request, responder| {
             std::thread::spawn(move || responder.respond(online_tiles::proxy(request)));
+        })
+        // Every installed detailed map (Israel + downloaded countries) as one vector-tile source.
+        .register_asynchronous_uri_scheme_protocol("mo-map", |_ctx, request, responder| {
+            std::thread::spawn(move || responder.respond(map_tiles::serve(request)));
+        })
+        // Satellite layer: downloaded archive, else tiles seen before, else live from govmap / EOX.
+        .register_asynchronous_uri_scheme_protocol("mo-sat", |ctx, request, responder| {
+            use tauri::Manager;
+            let st = ctx.app_handle().state::<Arc<AppState>>().inner().clone();
+            std::thread::spawn(move || responder.respond(online_sat::serve(st, request)));
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -34,6 +47,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::geocode_search,
             commands::geocode_reverse,
+            commands::regions_catalog,
+            commands::regions_installed,
+            commands::region_size,
+            commands::region_install,
+            commands::region_cancel,
+            commands::region_delete,
+            commands::map_tiles_available,
             commands::route,
             commands::transit_stops,
             commands::poi_layer,

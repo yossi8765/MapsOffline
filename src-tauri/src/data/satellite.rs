@@ -47,12 +47,12 @@ pub fn version_matches(installed: Option<&str>, layer: &str, quality: &str) -> b
         None => false,
     }
 }
-const WORKERS: usize = 12;
+pub(crate) const WORKERS: usize = 12;
 const FIRST_YEAR: i32 = 2018;
 const ATTRIBUTION: &str = "Sentinel-2 cloudless by EOX IT Services GmbH (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data";
 const MIN_SIZE: u64 = 1024 * 1024;
 
-fn tile_url(layer: &str, z: u8, x: u32, y: u32) -> String {
+pub(crate) fn tile_url(layer: &str, z: u8, x: u32, y: u32) -> String {
     format!("{BASE}{layer}_3857/default/g/{z}/{y}/{x}.jpg")
 }
 
@@ -103,23 +103,23 @@ pub fn tile_id(z: u8, x: u32, y: u32) -> u64 {
     acc + d
 }
 
-fn lon_to_x(lon: f64, z: u8) -> u32 {
+pub(crate) fn lon_to_x(lon: f64, z: u8) -> u32 {
     let n = (1u64 << z) as f64;
     (((lon + 180.0) / 360.0 * n).floor() as i64).clamp(0, (1i64 << z) - 1) as u32
 }
 
-fn lat_to_y(lat: f64, z: u8) -> u32 {
+pub(crate) fn lat_to_y(lat: f64, z: u8) -> u32 {
     let n = (1u64 << z) as f64;
     let r = lat.to_radians();
     let y = (1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
     (y.floor() as i64).clamp(0, (1i64 << z) - 1) as u32
 }
 
-fn tile_lon(x: u32, z: u8) -> f64 {
+pub(crate) fn tile_lon(x: u32, z: u8) -> f64 {
     x as f64 / (1u64 << z) as f64 * 360.0 - 180.0
 }
 
-fn tile_lat(y: u32, z: u8) -> f64 {
+pub(crate) fn tile_lat(y: u32, z: u8) -> f64 {
     let n = std::f64::consts::PI - 2.0 * std::f64::consts::PI * y as f64 / (1u64 << z) as f64;
     n.sinh().atan().to_degrees()
 }
@@ -191,11 +191,11 @@ pub fn tiles_for_bbox(bbox: [f64; 4], max_zoom: u8, skip_sea: bool) -> Vec<(u8, 
 // ---------------------------------------------------------------- PMTiles v3 writer
 
 #[derive(Clone, Copy)]
-struct Entry {
-    tile_id: u64,
-    offset: u64,
-    length: u32,
-    run_length: u32,
+pub(crate) struct Entry {
+    pub(crate) tile_id: u64,
+    pub(crate) offset: u64,
+    pub(crate) length: u32,
+    pub(crate) run_length: u32,
 }
 
 fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
@@ -251,7 +251,7 @@ fn serialize_dir(entries: &[Entry]) -> Vec<u8> {
     buf
 }
 
-fn deserialize_dir(buf: &[u8]) -> anyhow::Result<Vec<Entry>> {
+pub(crate) fn deserialize_dir(buf: &[u8]) -> anyhow::Result<Vec<Entry>> {
     let mut pos = 0;
     let n = get_varint(buf, &mut pos)? as usize;
     let mut v: Vec<Entry> = Vec::with_capacity(n);
@@ -279,7 +279,7 @@ fn gzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(e.finish()?)
 }
 
-fn gunzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn gunzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(data).read_to_end(&mut out)?;
     Ok(out)
@@ -591,7 +591,7 @@ fn read_at(f: &mut File, off: u64, len: u64) -> anyhow::Result<Vec<u8>> {
     Ok(b)
 }
 
-fn find_entry(entries: &[Entry], id: u64) -> Option<Entry> {
+pub(crate) fn find_entry(entries: &[Entry], id: u64) -> Option<Entry> {
     let i = entries.partition_point(|e| e.tile_id <= id);
     if i == 0 {
         return None;
@@ -705,7 +705,7 @@ pub(crate) fn verify(path: &Path, placeholders: bool) -> anyhow::Result<()> {
 
 // ---------------------------------------------------------------- download
 
-fn fetch_tile(client: &Client, url: &str, jpeg: bool, cancel: &Cancel) -> anyhow::Result<Option<Vec<u8>>> {
+pub(crate) fn fetch_tile(client: &Client, url: &str, jpeg: bool, cancel: &Cancel) -> anyhow::Result<Option<Vec<u8>>> {
     let mut last: Option<anyhow::Error> = None;
     for attempt in 0..4u32 {
         if cancel.is_cancelled() {
@@ -735,6 +735,13 @@ pub struct RasterSpec<'a> {
     /// Hebrew name used in progress messages ("תצלום לוויין")
     pub label: &'a str,
     pub url: &'a (dyn Fn(u8, u32, u32) -> String + Sync),
+    /// Produces a tile itself instead of downloading `url` (rendered sources such as the
+    /// govmap orthophoto); `Ok(None)` = no tile here.
+    pub fetch: Option<&'a (dyn Fn(u8, u32, u32, &Cancel) -> anyhow::Result<Option<Vec<u8>>> + Sync)>,
+    /// Keep only the tiles this returns true for (e.g. inside the country outline).
+    pub filter: Option<&'a (dyn Fn(u8, u32, u32) -> bool + Sync)>,
+    /// Parallel requests (EOX throttles above ~12).
+    pub workers: usize,
     pub max_zoom: u8,
     pub skip_sea: bool,
     /// PMTiles tile type: 2 = png, 3 = jpeg
@@ -764,7 +771,10 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
     }
     std::fs::write(&layer_tmp, version)?;
     let mut writer = Writer::open(&data_tmp)?;
-    let all = tiles_for_bbox(spec.bbox, spec.max_zoom, spec.skip_sea);
+    let mut all = tiles_for_bbox(spec.bbox, spec.max_zoom, spec.skip_sea);
+    if let Some(keep) = spec.filter {
+        all.retain(|&(z, x, y)| keep(z, x, y));
+    }
     let total = all.len() as u64;
     let tiles: Vec<(u8, u32, u32)> = all.iter().copied().filter(|&(z, x, y)| !writer.is_done(z, x, y)).collect();
     let already = total - tiles.len() as u64;
@@ -774,13 +784,14 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
     let mut skipped = 0usize;
     let result = (|| -> anyhow::Result<()> {
         let next = AtomicUsize::new(0);
-        let (tx, rx) = mpsc::sync_channel::<anyhow::Result<((u8, u32, u32), Option<Vec<u8>>)>>(WORKERS * 4);
+        let workers = spec.workers.max(1);
+        let (tx, rx) = mpsc::sync_channel::<anyhow::Result<((u8, u32, u32), Option<Vec<u8>>)>>(workers * 4);
         std::thread::scope(|s| -> anyhow::Result<()> {
-            for _ in 0..WORKERS {
+            for _ in 0..workers {
                 let tx = tx.clone();
                 let client = client.clone();
                 let (tiles, next, cancel) = (&tiles, &next, cancel);
-                let url = spec.url;
+                let (url, fetch) = (spec.url, spec.fetch);
                 s.spawn(move || loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&(z, x, y)) = tiles.get(i) else { break };
@@ -788,7 +799,11 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
                     if cancel.is_cancelled() {
                         break;
                     }
-                    let r = fetch_tile(&client, &url(z, x, y), jpeg, cancel).map(|b| ((z, x, y), b));
+                    let r = match fetch {
+                        Some(f) => f(z, x, y, cancel),
+                        None => fetch_tile(&client, &url(z, x, y), jpeg, cancel),
+                    }
+                    .map(|b| ((z, x, y), b));
                     let failed = r.is_err();
                     if tx.send(r).is_err() || failed {
                         break;
@@ -869,17 +884,39 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
     Ok(skipped)
 }
 
+/// Manifest version the current settings expect, given the newest Sentinel-2 layer.
+pub fn expected_version(settings: &crate::types::Settings, layer: &str) -> String {
+    if settings.satellite_source == "sentinel" {
+        archive_version(layer, &settings.satellite_quality)
+    } else {
+        super::orthophoto::archive_version(&settings.satellite_quality)
+    }
+}
+
+/// Is the installed archive what the settings ask for?
+pub fn settings_match(installed: Option<&str>, settings: &crate::types::Settings, layer: Option<&str>) -> bool {
+    if settings.satellite_source == "sentinel" {
+        layer.is_some_and(|l| version_matches(installed, l, &settings.satellite_quality))
+    } else {
+        installed == Some(super::orthophoto::archive_version(&settings.satellite_quality).as_str())
+    }
+}
+
 pub fn update_satellite(
     paths: &DataPaths,
     progress: ProgressFn,
     cancel: &Cancel,
 ) -> anyhow::Result<Option<String>> {
     paths.ensure_dirs()?;
+    let settings = crate::state::load_settings(paths);
+    if settings.satellite_source != "sentinel" {
+        return update_orthophoto(paths, &settings, progress, cancel);
+    }
     progress(ProgressPhase::Processing, 0, 0, "מחפש את תצלום הלוויין העדכני (Sentinel-2)");
     let client = http_client()?;
     let layer = latest_layer(&client)?;
 
-    let quality = crate::state::load_settings(paths).satellite_quality;
+    let quality = settings.satellite_quality;
     let version = archive_version(&layer, &quality);
     let dest = paths.satellite_file();
     let m = super::manifest::Manifest::load(paths);
@@ -891,6 +928,9 @@ pub fn update_satellite(
     let spec = RasterSpec {
         label: "תצלום לוויין",
         url: &url,
+        fetch: None,
+        filter: None,
+        workers: WORKERS,
         max_zoom: quality_zoom(&quality),
         skip_sea: true,
         tile_type: 3,
@@ -902,6 +942,48 @@ pub fn update_satellite(
     let skipped = download_raster(&dest, &version, &spec, &client, progress, cancel)?;
     // a partial archive gets a version that never equals the expected one, so "check updates"
     // keeps offering the download until every tile is in
+    Ok(Some(if skipped > 0 { format!("{version} (חסרים {skipped} אריחים)") } else { version }))
+}
+
+/// Survey of Israel orthophoto (govmap) above zoom 9, Sentinel-2 below; see `orthophoto.rs`.
+fn update_orthophoto(paths: &DataPaths, settings: &crate::types::Settings, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
+    use super::orthophoto as ortho;
+    progress(ProgressPhase::Processing, 0, 0, "בודק את שרת תצלומי האוויר (govmap)");
+    let client = http_client()?;
+    let version = ortho::archive_version(&settings.satellite_quality);
+    let dest = paths.satellite_file();
+    let m = super::manifest::Manifest::load(paths);
+    if dest.exists() && m.entry(crate::types::DataComponent::Satellite).and_then(|e| e.version.as_deref()) == Some(version.as_str()) && verify(&dest, true).is_ok() {
+        progress(ProgressPhase::Processing, 1, 1, "תצלומי האוויר כבר מעודכנים");
+        return Ok(Some(version));
+    }
+    let src = ortho::Source::new(client.clone());
+    src.probe(cancel)?;
+    // low zooms from Sentinel-2 when reachable (they cover the neighbours and the sea too)
+    let layer = match latest_layer(&client) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            log::warn!("Sentinel-2 unavailable, low zooms come from the orthophoto: {e:#}");
+            None
+        }
+    };
+    let fetch = |z: u8, x: u32, y: u32, c: &Cancel| ortho::tile(&src, layer.as_deref(), z, x, y, c);
+    let url = |_: u8, _: u32, _: u32| String::new();
+    let spec = RasterSpec {
+        label: "תצלומי אוויר",
+        url: &url,
+        fetch: Some(&fetch),
+        filter: Some(&ortho::wanted),
+        workers: ortho::WORKERS,
+        max_zoom: ortho::quality_zoom(&settings.satellite_quality),
+        skip_sea: false,
+        tile_type: 3,
+        placeholders: true,
+        name: format!("Survey of Israel orthophoto {}", ortho::CACHE),
+        attribution: ortho::ATTRIBUTION.to_string(),
+        bbox: BBOX_ISRAEL,
+    };
+    let skipped = download_raster(&dest, &version, &spec, &client, progress, cancel)?;
     Ok(Some(if skipped > 0 { format!("{version} (חסרים {skipped} אריחים)") } else { version }))
 }
 

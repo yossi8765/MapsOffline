@@ -35,7 +35,12 @@ pub struct Extract {
     /// None = the whole world
     pub bbox: Option<[f64; 4]>,
     pub maxzoom: u8,
-    pub label: &'static str,
+    pub label: String,
+    /// GeoJSON (Multi)Polygon file: extract this shape instead of `bbox` (countries); `bbox`
+    /// is then the shape's bounding box, used for the sidecar check.
+    pub region: Option<std::path::PathBuf>,
+    /// Smallest plausible output (tiny countries make small archives).
+    pub min_size: u64,
 }
 
 pub const WORLD_BBOX: [f64; 4] = [-180.0, -85.0, 180.0, 85.0];
@@ -43,10 +48,10 @@ pub const WORLD_MAX_ZOOM: u8 = 6;
 
 impl Extract {
     pub fn israel(paths: &DataPaths) -> Self {
-        Self { file: paths.tiles_file(), bbox: Some(BBOX_ISRAEL), maxzoom: 15, label: "אריחי המפה" }
+        Self { file: paths.tiles_file(), bbox: Some(BBOX_ISRAEL), maxzoom: 15, label: "אריחי המפה".into(), region: None, min_size: MIN_TILES_SIZE }
     }
     pub fn world(paths: &DataPaths) -> Self {
-        Self { file: paths.world_file(), bbox: None, maxzoom: WORLD_MAX_ZOOM, label: "מפת העולם" }
+        Self { file: paths.world_file(), bbox: None, maxzoom: WORLD_MAX_ZOOM, label: "מפת העולם".into(), region: None, min_size: MIN_TILES_SIZE }
     }
     fn sidecar(&self) -> std::path::PathBuf {
         download::meta_path(&self.file)
@@ -61,7 +66,7 @@ impl Extract {
         }
         let s = std::fs::read_to_string(self.sidecar()).ok()?;
         let m = serde_json::from_str::<TilesMeta>(&s).ok()?;
-        (m.bbox == self.meta_bbox() && m.maxzoom == self.maxzoom && verify_tiles(&self.file).is_ok()).then_some(m.version)
+        (m.bbox == self.meta_bbox() && m.maxzoom == self.maxzoom && verify_tiles(&self.file, self.min_size).is_ok()).then_some(m.version)
     }
 }
 
@@ -205,9 +210,9 @@ fn ensure_cli(
     Ok(())
 }
 
-fn verify_tiles(p: &Path) -> anyhow::Result<()> {
+fn verify_tiles(p: &Path, min_size: u64) -> anyhow::Result<()> {
     let md = std::fs::metadata(p).context("tiles output missing")?;
-    if md.len() <= MIN_TILES_SIZE {
+    if md.len() <= min_size {
         bail!("tiles output too small ({} bytes)", md.len());
     }
     let mut magic = [0u8; 7];
@@ -331,7 +336,7 @@ pub fn update_world(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) ->
     update_extract(paths, &Extract::world(paths), progress, cancel)
 }
 
-fn update_extract(paths: &DataPaths, ex: &Extract, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
+pub(crate) fn update_extract(paths: &DataPaths, ex: &Extract, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
     paths.ensure_dirs()?;
     ensure_cli(paths, progress, cancel)?;
     if cancel.is_cancelled() {
@@ -350,17 +355,19 @@ fn update_extract(paths: &DataPaths, ex: &Extract, progress: ProgressFn, cancel:
     let tmp = ex.file.with_extension("pmtiles.tmp");
     let _ = std::fs::remove_file(&tmp);
     let mut args: Vec<String> = Vec::new();
-    if let Some(b) = ex.bbox {
+    if let Some(r) = &ex.region {
+        args.push(format!("--region={}", r.display()));
+    } else if let Some(b) = ex.bbox {
         args.push(format!("--bbox={},{},{},{}", b[0], b[1], b[2], b[3]));
     }
     args.push(format!("--maxzoom={}", ex.maxzoom));
     let src = format!("{BUILD_BASE}{key}");
-    progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", ex.label));
+    progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", &ex.label));
 
     let mut last_err = None;
     let mut attempt = 0;
     while attempt < 3 {
-        match run_extract(paths, &src, &tmp, &args, ex.label, progress, cancel) {
+        match run_extract(paths, &src, &tmp, &args, &ex.label, progress, cancel) {
             Ok(()) => {
                 last_err = None;
                 break;
@@ -384,7 +391,7 @@ fn update_extract(paths: &DataPaths, ex: &Extract, progress: ProgressFn, cancel:
         return Err(e);
     }
     progress(ProgressPhase::Finalizing, 0, 0, "מאמת את קובץ המפה");
-    if let Err(e) = verify_tiles(&tmp) {
+    if let Err(e) = verify_tiles(&tmp, ex.min_size) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }

@@ -13,7 +13,15 @@ use super::norm::{canon, housenumber_key, index_tokens};
 use crate::types::{ProgressFn, ProgressPhase};
 
 pub const SCHEMA_VERSION: &str = "3";
-const COS_LAT: f64 = 0.8526; // cos(31.5 deg): good enough for Israel
+thread_local! {
+    /// cos(reference latitude) for the flat-earth distances of one build (the build runs on one
+    /// thread; countries are built concurrently on different threads). Israel: cos(31.5°).
+    static COS_LAT_TL: std::cell::Cell<f64> = const { std::cell::Cell::new(0.8526) };
+}
+#[allow(non_snake_case)]
+fn COS_LAT() -> f64 {
+    COS_LAT_TL.with(|c| c.get())
+}
 
 // ------------------------------------------------------------------ tag classification
 
@@ -285,7 +293,7 @@ fn centroid(pts: &[(i32, i32)]) -> Option<(f64, f64)> {
 }
 
 fn seg_len_m(a: (i32, i32), b: (i32, i32)) -> f64 {
-    let dx = (b.0 - a.0) as f64 / E7 * COS_LAT * 111_320.0;
+    let dx = (b.0 - a.0) as f64 / E7 * COS_LAT() * 111_320.0;
     let dy = (b.1 - a.1) as f64 / E7 * 110_574.0;
     (dx * dx + dy * dy).sqrt()
 }
@@ -361,7 +369,7 @@ struct CityIndex {
 
 impl CityIndex {
     fn nearest(&self, lon: f64, lat: f64) -> Option<usize> {
-        let q = [lon * COS_LAT, lat];
+        let q = [lon * COS_LAT(), lat];
         let mut best: Option<(f64, usize)> = None;
         for c in self.tree.nearest_neighbor_iter(&q).take(6) {
             let d = c.distance_2(&q).sqrt() * 111_320.0;
@@ -445,6 +453,12 @@ fn resolve(span: Span, arena: &[i64], needed: &[i64], coords: &[(i32, i32)]) -> 
 }
 
 pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
+    build_at(pbf, out, 31.5, progress)
+}
+
+/// Build for a region centred around latitude `ref_lat` (degrees).
+pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
+    COS_LAT_TL.with(|c| c.set(ref_lat.to_radians().cos().max(0.2)));
     let t0 = Instant::now();
     let p = |done: u64, msg: &str| progress(ProgressPhase::Processing, done, 100, msg);
     if !p(0, "קריאת נתוני OSM (שלב 1)") {
@@ -544,7 +558,7 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         pfs.retain(|p| {
             if matches!(p.kind, "city" | "town" | "village" | "hamlet") {
                 let e = seen.entry((canon(p.names.primary()), p.kind)).or_default();
-                if e.iter().any(|q| ((q.0 - p.lon) * COS_LAT).hypot(q.1 - p.lat) * 111_320.0 < 3000.0) {
+                if e.iter().any(|q| ((q.0 - p.lon) * COS_LAT()).hypot(q.1 - p.lat) * 111_320.0 < 3000.0) {
                     return false;
                 }
                 e.push((p.lon, p.lat));
@@ -560,7 +574,7 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                 let idx = cities.names.len() as u32;
                 cities.names.push(name_of(&p.names));
                 cities.pops.push(p.pop);
-                pts.push(CityPt { xy: [p.lon * COS_LAT, p.lat], idx });
+                pts.push(CityPt { xy: [p.lon * COS_LAT(), p.lat], idx });
             }
         }
         cities.tree = RTree::bulk_load(pts);

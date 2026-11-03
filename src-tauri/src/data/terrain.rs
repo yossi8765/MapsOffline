@@ -42,6 +42,9 @@ pub fn update_terrain(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) 
     let spec = RasterSpec {
         label: "נתוני גובה",
         url: &tile_url,
+        fetch: None,
+        filter: None,
+        workers: super::satellite::WORKERS,
         max_zoom: MAX_ZOOM,
         skip_sea: false,
         tile_type: 2,

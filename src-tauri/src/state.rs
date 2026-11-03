@@ -19,6 +19,11 @@ pub struct AppState {
     /// Pool of idle geocoder connections (SQLite connections are not `Sync`; each concurrent
     /// search checks one out instead of serialising on a single connection).
     geocoder: Mutex<GeoPool>,
+    /// Geocoder pools of the downloaded countries, by index file.
+    region_geo: Mutex<std::collections::HashMap<std::path::PathBuf, GeoPool>>,
+    /// Running country installs (id → cancel handle); a busy country is hidden from the
+    /// map and the search so its files can be replaced.
+    pub region_jobs: Mutex<std::collections::HashMap<String, Cancel>>,
     pub history: Mutex<Option<History>>,
     pub updating: std::sync::atomic::AtomicBool,
     pub cancel: Cancel,
@@ -59,6 +64,8 @@ impl AppState {
             graph: RwLock::new(None),
             transit: RwLock::new(None),
             geocoder: Mutex::new(GeoPool::default()),
+            region_geo: Mutex::new(Default::default()),
+            region_jobs: Mutex::new(Default::default()),
             history: Mutex::new(None),
             updating: std::sync::atomic::AtomicBool::new(false),
             cancel: Cancel::default(),
@@ -80,6 +87,65 @@ impl AppState {
         pool.gen += 1;
         pool.idle.clear();
         pool.cache = None;
+        drop(pool);
+        self.unload_regions();
+        self.refresh_map_files();
+    }
+
+    /// Drop the pooled connections of every country index (before files are replaced / removed).
+    pub fn unload_regions(&self) {
+        self.region_geo.lock().clear();
+    }
+
+    pub fn region_busy(&self, id: &str) -> bool {
+        self.region_jobs.lock().contains_key(id)
+    }
+
+    /// Tell the merged tile source which map archives exist: Israel first, then the countries
+    /// that are not being installed right now.
+    pub fn refresh_map_files(&self) {
+        let p = self.paths();
+        let mut v = Vec::new();
+        if p.tiles_file().exists() {
+            v.push(p.tiles_file());
+        }
+        for (id, f, _) in crate::data::regions::ready_maps(&p) {
+            if !self.region_busy(&id) {
+                v.push(f);
+            }
+        }
+        crate::map_tiles::set_files(v);
+    }
+
+    /// Search indexes of the countries that are ready: (id, file, bbox).
+    pub fn region_geocoders(&self) -> Vec<(String, std::path::PathBuf, [f64; 4])> {
+        crate::data::regions::ready_geocoders(&self.paths()).into_iter().filter(|(id, _, _)| !self.region_busy(id)).collect()
+    }
+
+    /// Like [`with_geocoder`] for a country's index file.
+    pub fn with_region_geocoder<R>(&self, path: &std::path::Path, f: impl FnOnce(&Geocoder) -> anyhow::Result<R>) -> anyhow::Result<R> {
+        let (gen, geo) = {
+            let mut pools = self.region_geo.lock();
+            let pool = pools.entry(path.to_path_buf()).or_default();
+            let gen = pool.gen;
+            match pool.idle.pop() {
+                Some(g) => (gen, g),
+                None => {
+                    let cache = pool.cache.clone().unwrap_or_default();
+                    let g = crate::geocode::open_with_cache(path, cache)?;
+                    pool.cache = Some(g.shared_cache());
+                    (gen, g)
+                }
+            }
+        };
+        let r = f(&geo);
+        let mut pools = self.region_geo.lock();
+        if let Some(pool) = pools.get_mut(path) {
+            if pool.gen == gen && pool.idle.len() < MAX_IDLE_GEOCODERS {
+                pool.idle.push(geo);
+            }
+        }
+        r
     }
 
     /// True once the geocoder index has been opened (never blocks on a running search).

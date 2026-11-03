@@ -18,6 +18,8 @@ export interface StyleOptions {
   /** Raster PMTiles with Sentinel-2 imagery; shown under roads and labels when `satellite` is on. */
   satelliteUrl: string | null;
   satellite: boolean;
+  /** Installed imagery is the govmap orthophoto (else Sentinel-2): picks the attribution. */
+  satelliteOrtho?: boolean;
   /** Raster-DEM PMTiles (Terrarium); hillshade and/or 3D terrain when installed. */
   terrainUrl: string | null;
   /** Minimal world basemap (zoom 0–6) drawn under the Israel map for context outside it. */
@@ -36,15 +38,23 @@ function origin(): string {
   return window.location.origin;
 }
 
-export const SATELLITE_MAX_ZOOM = 14;
 export const WORLD_MAX_ZOOM = 6;
 export const TERRAIN_MAX_ZOOM = 12;
 const TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Mapzen terrain tiles</a>';
-const SATELLITE_ATTRIBUTION =
+const SENTINEL_ATTRIBUTION =
   '<a href="https://s2maps.eu">Sentinel-2 cloudless</a> by <a href="https://eox.at">EOX</a> (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data';
+
+export const ORTHOPHOTO_ATTRIBUTION =
+  'תצלומי אוויר © <a href="https://www.govmap.gov.il">המרכז למיפוי ישראל</a> (לשימוש אישי) · ' + SENTINEL_ATTRIBUTION;
 
 function satelliteLayer(): LayerSpecification {
   return { id: "satellite", type: "raster", source: "satellite", paint: { "raster-resampling": "linear", "raster-fade-duration": 150 } };
+}
+
+/** Template of the merged local map source (Israel + downloaded countries), served by the backend. */
+export const MERGED_TILES_PREFIX = "http://mo-map.localhost/";
+export function isMergedTiles(url: string | null | undefined): boolean {
+  return !!url && url.startsWith(MERGED_TILES_PREFIX);
 }
 
 export function flavorFor(name: FlavorName): Flavor {
@@ -78,7 +88,8 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   }
   const sat = o.satellite && !!o.satelliteUrl;
   if (sat) {
-    base.sources.satellite = { type: "raster", url: `pmtiles://${o.satelliteUrl}`, tileSize: 256, maxzoom: SATELLITE_MAX_ZOOM, attribution: SATELLITE_ATTRIBUTION };
+    const live = o.satelliteUrl!.startsWith("http://mo-sat.localhost/");
+    base.sources.satellite = { type: "raster", ...(live ? { tiles: [o.satelliteUrl!], minzoom: 0, maxzoom: 19 } : { url: `pmtiles://${o.satelliteUrl}` }), tileSize: 256, attribution: o.satelliteOrtho ? ORTHOPHOTO_ATTRIBUTION : SENTINEL_ATTRIBUTION };
   }
   const dem = !!o.terrainUrl && (o.hillshade || o.terrain3d);
   if (dem) {
@@ -105,9 +116,11 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     return base;
   }
 
+  // Several countries installed: the backend merges every local archive into one tile URL.
+  const merged = isMergedTiles(tilesUrl);
   base.sources.protomaps = {
     type: "vector",
-    url: `pmtiles://${tilesUrl}`,
+    ...(merged ? { tiles: [tilesUrl], minzoom: 0, maxzoom: 15 } : { url: `pmtiles://${tilesUrl}` }),
     attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
   };
   let ls: LayerSpecification[] = layers("protomaps", flavor, { lang: o.lang });
@@ -166,6 +179,26 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     // Imagery replaces every area fill (land, water, landuse, buildings); roads, boundaries and
     // labels stay on top. 3D buildings are kept when the user asked for them.
     ls = ls.filter((l) => l.type !== "fill" && (l.type !== "fill-extrusion" || o.buildings3d));
+    // Over a photo, footways / sidewalks / paths and service roads drawn as wide solid white
+    // bands hide what they run through: draw them as thin dashed lines instead (the photo shows
+    // the actual pavement). Real streets keep their normal look.
+    const THIN = new Set(["roads_other", "roads_bridges_other", "roads_tunnels_other", "roads_minor_service", "roads_pier"]);
+    const DROP = new Set(["roads_tunnels_other_casing", "roads_bridges_other_casing", "roads_minor_service_casing"]);
+    ls = ls
+      .filter((l) => !DROP.has(l.id))
+      .map((l) => {
+        if (!THIN.has(l.id) || l.type !== "line") return l;
+        const service = l.id === "roads_minor_service";
+        return {
+          ...l,
+          paint: {
+            "line-color": "#ffffff",
+            "line-opacity": 0.85,
+            "line-width": ["interpolate", ["exponential", 1.4], ["zoom"], 14, 0.6, 17, 1.4, 20, 2.6],
+            "line-dasharray": service ? [4, 2] : [2, 2],
+          },
+        } as LayerSpecification;
+      });
     const bgIdx = ls.findIndex((l) => l.id === "background");
     ls.splice(bgIdx + 1, 0, satelliteLayer());
   }
@@ -188,5 +221,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
 
 /** First symbol layer id – route layers are inserted below labels. */
 export function firstSymbolLayer(style: StyleSpecification): string | undefined {
-  return style.layers.find((l) => l.type === "symbol")?.id;
+  // the world basemap sits under everything and has its own labels: skip them, or overlays
+  // inserted "below the labels" would end up under the detailed map and the imagery
+  return style.layers.find((l) => l.type === "symbol" && !l.id.startsWith("world-"))?.id;
 }

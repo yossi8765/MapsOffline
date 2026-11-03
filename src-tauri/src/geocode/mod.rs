@@ -22,6 +22,11 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     builder::build(pbf, out, progress)
 }
 
+/// Index of another country (`ref_lat` = middle latitude of its bbox).
+pub fn build_region(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
+    builder::build_at(pbf, out, ref_lat, progress)
+}
+
 struct PlaceMem {
     name: String,
     kind: String,

@@ -338,7 +338,9 @@ export interface Settings {
   /** Look for a newer program version at startup (once a day). */
   autoCheckAppUpdates: boolean;
   /** Satellite imagery detail: low (zoom 12), medium (13), high (14 = native 10 m). */
-  satelliteQuality: "low" | "medium" | "high";
+  satelliteQuality: "low" | "medium" | "high" | "max";
+  /** Imagery source: Survey of Israel orthophoto (govmap, ~0.13 m) or Sentinel-2 (10 m). */
+  satelliteSource: "govmap" | "sentinel";
   /** Open the map where it was last left. */
   rememberMapView: boolean;
   /** Accent colour of the light theme. */
@@ -384,6 +386,60 @@ export function errorText(e: unknown): string {
 }
 
 // ------------------------------------------------------------- commands
+
+// ---------------------------------------------------------------- countries / regions (world maps)
+
+/** One downloadable region of the Geofabrik catalogue (continent, country or sub-region). */
+export interface RegionEntry {
+  /** Geofabrik id, e.g. "france", "us/california" style ids are plain ("california"). */
+  id: string;
+  /** Parent id (continent / country); null for continents. */
+  parent: string | null;
+  /** English name from the catalogue. */
+  name: string;
+  /** ISO 3166-1 alpha-2 when the region is a country ("FR"); use Intl.DisplayNames for the Hebrew name. */
+  iso: string | null;
+  /** [minLon, minLat, maxLon, maxLat] */
+  bbox: [number, number, number, number];
+  /** Israel itself: covered by the built-in components, not installable here. */
+  builtin: boolean;
+}
+
+export interface RegionPartStatus {
+  present: boolean;
+  sizeBytes: number;
+  version: string | null;
+}
+
+export interface InstalledRegion {
+  id: string;
+  name: string;
+  iso: string | null;
+  bbox: [number, number, number, number];
+  map: RegionPartStatus;
+  search: RegionPartStatus;
+  updatedIso: string | null;
+  /** an install / update of this region is running */
+  busy: boolean;
+}
+
+export type RegionPart = "map" | "search";
+
+/** Emitted as tauri event `region-progress`. */
+export interface RegionProgress {
+  id: string;
+  part: RegionPart;
+  phase: ProgressPhase;
+  done: number;
+  total: number;
+  message: string;
+}
+
+/** Download size of the region's OSM extract (search source); the map is roughly 1.5× this. */
+export interface RegionSize {
+  pbfBytes: number | null;
+}
+
 export const api = {
   geocodeSearch: (query: string, near?: LonLat, limit?: number) =>
     invoke<GeoResult[]>("geocode_search", { query, near, limit }),
@@ -415,6 +471,17 @@ export const api = {
   favoritesUpdate: (id: number, name: string, icon: string) => invoke<void>("favorites_update", { id, name, icon }),
   favoritesDelete: (id: number) => invoke<void>("favorites_delete", { id }),
 
+  /** Geofabrik region catalogue (cached on disk, refreshed weekly or with `refresh`). */
+  regionsCatalog: (refresh = false) => invoke<RegionEntry[]>("regions_catalog", { refresh }),
+  /** True when countries besides Israel are installed: use the merged tile source. */
+  mapTilesAvailable: () => invoke<boolean>("map_tiles_available"),
+  regionsInstalled: () => invoke<InstalledRegion[]>("regions_installed"),
+  regionSize: (id: string) => invoke<RegionSize>("region_size", { id }),
+  /** Install or update a region (long running; progress on `region-progress`). Resolves when done. */
+  regionInstall: (id: string, parts: RegionPart[]) => invoke<void>("region_install", { id, parts }),
+  regionCancel: (id: string) => invoke<void>("region_cancel", { id }),
+  regionDelete: (id: string) => invoke<void>("region_delete", { id }),
+  onRegionProgress: (cb: (p: RegionProgress) => void) => listen<RegionProgress>("region-progress", (e) => cb(e.payload)),
   dataStatus: () => invoke<DataStatus>("data_status"),
   tilesPath: () => invoke<string | null>("tiles_path"),
   /** Newest Protomaps build key for the online map (no local map installed). */

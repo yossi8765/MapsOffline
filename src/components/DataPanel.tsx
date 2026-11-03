@@ -7,6 +7,7 @@ import { DATA_COMPONENTS, type ComponentStatus, type DataComponent, type Progres
 import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
+import { RegionsSection } from "./RegionsSection";
 
 const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc: I18nKey }> = {
   tiles: { icon: <Map size={16} strokeWidth={1.75} />, label: "compTiles", desc: "compTilesDesc" },
@@ -37,6 +38,8 @@ export function DataPanel() {
   const checking = useStore((s) => s.checkingUpdates);
   const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, toastError, updateSettings } = useStore.getState();
   const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
+  const satelliteSource = useStore((s) => s.settings.satelliteSource ?? "govmap");
+  const ortho = satelliteSource !== "sentinel";
   const updating = !!status?.updating;
   const paused = !!status?.paused;
   const present = DATA_COMPONENTS.filter((c) => status?.[c]?.present);
@@ -158,21 +161,49 @@ export function DataPanel() {
               onPause={(p) => void pauseUpdate(p)}
               extra={
                 c === "satellite" ? (
-                  <label className="flex flex-col gap-1 text-xs text-muted mt-1.5">
-                    <span>{t("satelliteQuality")}</span>
-                    <select
-                      className="input h-8 !py-0 text-xs w-full min-w-0"
-                      value={satelliteQuality}
-                      disabled={updating}
-                      onChange={(e) => {
-                        void updateSettings({ satelliteQuality: e.target.value as "low" | "medium" | "high" }).then(() => checkUpdates(true));
-                      }}
-                    >
-                      <option value="low">{t("satQualityLowOpt")}</option>
-                      <option value="medium">{t("satQualityMediumOpt")}</option>
-                      <option value="high">{t("satQualityHighOpt")}</option>
-                    </select>
-                  </label>
+                  <div className="flex flex-col gap-1.5 mt-1.5">
+                    <label className="flex flex-col gap-1 text-xs text-muted">
+                      <span>{t("satelliteSource")}</span>
+                      <select
+                        className="input h-8 !py-0 text-xs w-full min-w-0"
+                        value={satelliteSource}
+                        disabled={updating}
+                        onChange={(e) => {
+                          void updateSettings({ satelliteSource: e.target.value as "govmap" | "sentinel" }).then(() => checkUpdates(true));
+                        }}
+                      >
+                        <option value="govmap">{t("satSourceGovmap")}</option>
+                        <option value="sentinel">{t("satSourceSentinel")}</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-muted">
+                      <span>{t("satelliteQuality")}</span>
+                      <select
+                        className="input h-8 !py-0 text-xs w-full min-w-0"
+                        value={!ortho && satelliteQuality === "max" ? "high" : satelliteQuality}
+                        disabled={updating}
+                        onChange={(e) => {
+                          void updateSettings({ satelliteQuality: e.target.value as "low" | "medium" | "high" | "max" }).then(() => checkUpdates(true));
+                        }}
+                      >
+                        {ortho ? (
+                          <>
+                            <option value="low">{t("satOrthoLowOpt")}</option>
+                            <option value="medium">{t("satOrthoMediumOpt")}</option>
+                            <option value="high">{t("satOrthoHighOpt")}</option>
+                            <option value="max">{t("satOrthoMaxOpt")}</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="low">{t("satQualityLowOpt")}</option>
+                            <option value="medium">{t("satQualityMediumOpt")}</option>
+                            <option value="high">{t("satQualityHighOpt")}</option>
+                          </>
+                        )}
+                      </select>
+                    </label>
+                    {ortho && <p className="m-0 text-[11px] leading-snug text-muted">{t("satOrthoNote")}</p>}
+                  </div>
                 ) : undefined
               }
             />
@@ -191,6 +222,7 @@ export function DataPanel() {
         )}
       </div>
 
+      <RegionsSection />
 
       <div className="flex flex-col gap-2">
         <h2 className="section-label m-0">{t("offlineTransfer")}</h2>

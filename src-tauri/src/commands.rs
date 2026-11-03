@@ -34,10 +34,40 @@ pub async fn geocode_search(
         if let Some(c) = parse_coord(&q) {
             out.push(c);
         }
+        // Israel and every downloaded country; the area around `near` comes first, the others
+        // are interleaved after it.
+        let regions = st.region_geocoders();
+        let in_box = |b: &[f64; 4], p: &LonLat| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
+        let mut groups: Vec<(bool, Vec<GeoResult>)> = Vec::new();
         match st.with_geocoder(|g| g.search(&q, near, limit)) {
-            Ok(mut v) => out.append(&mut v),
+            Ok(v) => groups.push((near.map_or(true, |p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
             Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
-            Err(e) => return Err(err(e)),
+            Err(e) if regions.is_empty() => return Err(err(e)),
+            Err(e) => log::warn!("geocode (Israel): {e:#}"),
+        }
+        for (id, path, bbox) in &regions {
+            match st.with_region_geocoder(path, |g| g.search(&q, near, limit)) {
+                Ok(v) => groups.push((near.is_some_and(|p| in_box(bbox, &p)), v)),
+                Err(e) => log::warn!("geocode ({id}): {e:#}"),
+            }
+        }
+        groups.sort_by_key(|(primary, _)| !*primary);
+        let mut iters: Vec<std::vec::IntoIter<GeoResult>> = Vec::new();
+        for (primary, v) in groups {
+            if primary {
+                out.extend(v);
+            } else {
+                iters.push(v.into_iter());
+            }
+        }
+        while out.len() < limit * 2 && !iters.is_empty() {
+            iters.retain_mut(|it| match it.next() {
+                Some(r) => {
+                    out.push(r);
+                    true
+                }
+                None => false,
+            });
         }
         // Transit stops by name / stop code. The model is loaded in the background on first
         // use so a search never waits for it; until then results simply have no stops.
@@ -57,9 +87,28 @@ pub async fn geocode_search(
 #[tauri::command]
 pub async fn geocode_reverse(state: State<'_, Arc<AppState>>, lon: f64, lat: f64) -> R<Option<GeoResult>> {
     let st = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || st.with_geocoder(|g| g.reverse(lon, lat)).map_err(err))
-        .await
-        .map_err(err)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let b = crate::paths::BBOX_ISRAEL;
+        let in_israel = lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3];
+        if in_israel {
+            match st.with_geocoder(|g| g.reverse(lon, lat)) {
+                Ok(Some(r)) => return Ok(Some(r)),
+                Ok(None) => {}
+                Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
+                Err(e) => return Err(err(e)),
+            }
+        }
+        for (_, path, b) in st.region_geocoders() {
+            if lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3] {
+                if let Ok(Some(r)) = st.with_region_geocoder(&path, |g| g.reverse(lon, lat)) {
+                    return Ok(Some(r));
+                }
+            }
+        }
+        Ok(None)
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Points of interest of the given categories inside the viewport (map layer). The `category`
@@ -70,7 +119,26 @@ pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox:
     let limit = limit.unwrap_or(1500).clamp(1, 10000);
     tauri::async_runtime::spawn_blocking(move || {
         let c: Vec<&str> = cats.iter().map(String::as_str).collect();
-        st.with_geocoder(|g| g.pois_in_bbox(&c, bbox, limit)).map_err(err)
+        let overlaps = |b: &[f64; 4]| !(bbox[2] < b[0] || bbox[0] > b[2] || bbox[3] < b[1] || bbox[1] > b[3]);
+        let mut out = Vec::new();
+        if overlaps(&crate::paths::BBOX_ISRAEL) {
+            match st.with_geocoder(|g| g.pois_in_bbox(&c, bbox, limit)) {
+                Ok(v) => out = v,
+                Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
+                Err(e) => return Err(err(e)),
+            }
+        }
+        for (_, path, b) in st.region_geocoders() {
+            if out.len() >= limit {
+                break;
+            }
+            if overlaps(&b) {
+                if let Ok(mut v) = st.with_region_geocoder(&path, |g| g.pois_in_bbox(&c, bbox, limit - out.len())) {
+                    out.append(&mut v);
+                }
+            }
+        }
+        Ok(out)
     })
     .await
     .map_err(err)?
@@ -686,4 +754,102 @@ pub fn app_info() -> R<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "bbox": crate::paths::BBOX_ISRAEL,
     }))
+}
+
+// ---------------------------------------------------------------- other countries
+
+/// Geofabrik region catalogue (continents, countries, sub-regions).
+#[tauri::command]
+pub async fn regions_catalog(state: State<'_, Arc<AppState>>, refresh: Option<bool>) -> R<Vec<crate::types::RegionEntry>> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::data::regions::catalog(&paths, refresh.unwrap_or(false)).map(|c| c.iter().map(|f| f.entry.clone()).collect()).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+pub fn regions_installed(state: State<'_, Arc<AppState>>) -> R<Vec<crate::types::InstalledRegion>> {
+    let st = state.inner().clone();
+    Ok(crate::data::regions::installed(&st.paths(), &|id| st.region_busy(id)))
+}
+
+#[tauri::command]
+pub async fn region_size(state: State<'_, Arc<AppState>>, id: String) -> R<crate::types::RegionSize> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::regions::size(&paths, &id).map_err(err)).await.map_err(err)?
+}
+
+/// Install / update a country's map and / or search index; progress on `region-progress`.
+#[tauri::command]
+pub async fn region_install(app: AppHandle, state: State<'_, Arc<AppState>>, id: String, parts: Vec<crate::types::RegionPart>) -> R<()> {
+    let st = state.inner().clone();
+    let cancel = crate::data::Cancel::default();
+    {
+        let mut jobs = st.region_jobs.lock();
+        if jobs.contains_key(&id) {
+            return Err("REGION_BUSY".into());
+        }
+        jobs.insert(id.clone(), cancel.clone());
+    }
+    // hide the country from the map and the search while its files are replaced
+    st.refresh_map_files();
+    st.unload_regions();
+    let st2 = st.clone();
+    let id2 = id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let emit = move |p: crate::types::RegionProgress| {
+            let _ = app.emit("region-progress", p);
+        };
+        let parts = if parts.is_empty() { vec![crate::types::RegionPart::Map, crate::types::RegionPart::Search] } else { parts };
+        let r = crate::data::regions::install(&st2.paths(), &id2, &parts, &emit, &cancel);
+        st2.region_jobs.lock().remove(&id2);
+        st2.refresh_map_files();
+        r
+    })
+    .await
+    .map_err(err)?;
+    res.map_err(err)
+}
+
+#[tauri::command]
+pub fn region_cancel(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    if let Some(c) = state.region_jobs.lock().get(&id) {
+        c.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn region_delete(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    let st = state.inner().clone();
+    if st.region_busy(&id) {
+        return Err("REGION_BUSY".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        st.unload_regions();
+        // leave the map source first so no request reads the file being removed
+        let paths = st.paths();
+        let keep: Vec<_> = crate::data::regions::ready_maps(&paths).into_iter().filter(|(i, _, _)| *i != id).collect();
+        let mut files = Vec::new();
+        if paths.tiles_file().exists() {
+            files.push(paths.tiles_file());
+        }
+        files.extend(keep.into_iter().map(|(_, f, _)| f));
+        crate::map_tiles::set_files(files);
+        let r = crate::data::regions::delete(&paths, &id);
+        st.refresh_map_files();
+        r.map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// True when the merged map source (`http://mo-map.localhost/{z}/{x}/{y}.mvt`) should be used:
+/// at least one country besides Israel is installed.
+#[tauri::command]
+pub fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
+    state.refresh_map_files();
+    Ok(!crate::data::regions::ready_maps(&state.paths()).is_empty())
 }
