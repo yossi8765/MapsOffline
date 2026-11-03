@@ -11,7 +11,11 @@ set -uo pipefail
 ROOT="${CI_PROJECT_DIR:-$(pwd)}"
 D="$ROOT/ci-data"
 OUT="$ROOT/ci-out"
-KEEP=2
+# dated packages kept (per-component files); override with a CI variable
+KEEP="${KEEP:-2}"
+# one file with every component at a fixed address, for sharing a link that never changes
+ALL_PKG="mapsdata-all"
+ALL_FILE="MapsOffline-data.mapsdata"
 mkdir -p "$D/downloads" "$OUT"
 
 # The Tauri crate embeds the frontend at compile time; the CLI never uses it, a stub is enough.
@@ -53,7 +57,9 @@ for c in tiles world satellite terrain routing geocode transit; do
 done
 [ "$built" -gt 0 ] || { echo "nothing was built"; exit 1; }
 cp "$D/manifest.json" "$OUT/manifest.json"
-ls -la "$OUT"
+mkdir -p "$OUT/all"
+"$BIN" --dir "$D" export "$OUT/all/$ALL_FILE" || echo "WARNING: combined package failed"
+ls -la "$OUT" "$OUT/all"
 
 if [ -z "${CI_JOB_TOKEN:-}" ]; then
   echo "not in CI: packages left in $OUT"
@@ -71,9 +77,22 @@ for f in "$OUT"/*.mapsdata "$OUT/manifest.json"; do
   echo
 done
 
+if [ -f "$OUT/all/$ALL_FILE" ]; then
+  echo "== uploading $ALL_PKG/latest/$ALL_FILE (fixed link)"
+  curl -fsS --retry 3 -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$OUT/all/$ALL_FILE" "$API/generic/$ALL_PKG/latest/$ALL_FILE"     || { echo "upload of the combined package failed"; exit 1; }
+  echo
+  # the link serves the newest upload; remove the previous ones so they do not pile up
+  pid=$(curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" "$API?package_name=$ALL_PKG&package_type=generic" | jq -r '.[] | select(.version=="latest") | .id' | head -1)
+  if [ -n "$pid" ]; then
+    curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" "$API/$pid/package_files?per_page=100"       | jq -r 'sort_by(.created_at) | .[:-1][] | .id' | while read -r fid; do
+          curl -fsS -X DELETE -H "JOB-TOKEN: $CI_JOB_TOKEN" "$API/$pid/package_files/$fid" && echo "deleted old combined file $fid" || echo "could not delete old combined file $fid"
+        done
+  fi
+fi
+
 echo "== pruning old packages (keeping $KEEP)"
 curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" "$API?package_name=mapsdata&order_by=created_at&sort=desc&per_page=50" \
-  | jq -r ".[$KEEP:][] | .id" | while read -r id; do
+  | jq -r "[.[] | select(.name==\"mapsdata\")] | .[$KEEP:][] | .id" | while read -r id; do
       curl -fsS -X DELETE -H "JOB-TOKEN: $CI_JOB_TOKEN" "$API/$id" && echo "deleted package $id" || echo "could not delete package $id"
     done
 echo "done"
