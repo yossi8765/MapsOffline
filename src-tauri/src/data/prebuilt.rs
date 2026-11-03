@@ -199,3 +199,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod live {
+    /// `cargo test --lib prebuilt::live -- --ignored --nocapture`: the real package vs the real data dir.
+    #[test]
+    #[ignore]
+    fn real_package() {
+        let client = crate::data::download::http_client().unwrap();
+        let l = super::latest(&client).unwrap();
+        eprintln!("package {} ({} days old)", l.version, l.age_days);
+        for (k, e) in &l.manifest.components {
+            eprintln!("  {k}: {:?}", e.version);
+        }
+        let paths = crate::paths::DataPaths::new(crate::paths::DataPaths::default_root());
+        let all = crate::types::DataComponent::ALL;
+        for (c, v) in super::usable(&paths, &l, &all) {
+            eprintln!("would take {c:?} = {v}");
+        }
+    }
+}
