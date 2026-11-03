@@ -1,6 +1,6 @@
 [package]
 name = "mapsoffline"
-version = "1.3.0"
+version = "1.4.0"
 description = "MapsOffline - offline navigation and maps for Israel"
 authors = ["MapsOffline"]
 edition = "2021"
