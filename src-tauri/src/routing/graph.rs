@@ -24,7 +24,7 @@ use crate::routing::areas::{self, Areas};
 use crate::types::{LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOGR";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 /// Revision of the build rules (access, costs) for the same file format: bumping it makes the
 /// update check offer a rebuild of graph.bin (see `data::build_tag`).
 pub const BUILD_REV: u32 = 2;
@@ -187,6 +187,43 @@ pub fn unproj(x: f32, y: f32) -> LonLat {
     [x as f64 / KX + LON0, y as f64 / KY + LAT0]
 }
 
+/// The graph's own equirectangular projection, centred on its bbox (graph v5; v4 files and
+/// tests use the Israel one). `hscale` (≤ 1) keeps the A* heuristic admissible where the true
+/// east-west scale is smaller than at the centre latitude (big countries far from the equator).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Proj {
+    pub lon0: f64,
+    pub lat0: f64,
+    pub kx: f64,
+    pub hscale: f64,
+}
+
+impl Default for Proj {
+    fn default() -> Self {
+        Proj { lon0: LON0, lat0: LAT0, kx: KX, hscale: 1.0 }
+    }
+}
+
+impl Proj {
+    pub fn for_bbox(b: [f64; 4]) -> Self {
+        if b == [0.0; 4] || (b[0] >= 34.0 && b[2] <= 36.5 && b[1] >= 29.0 && b[3] <= 34.0) {
+            return Proj::default(); // Israel (and unit tests): the historical constants
+        }
+        let lat0 = (b[1] + b[3]) / 2.0;
+        let c0 = lat0.to_radians().cos().max(0.05);
+        let far = b[1].abs().max(b[3].abs()).min(89.0);
+        Proj { lon0: (b[0] + b[2]) / 2.0, lat0, kx: 111_320.0 * c0, hscale: (far.to_radians().cos() / c0).clamp(0.05, 1.0) }
+    }
+    #[inline]
+    pub fn fwd(&self, lon: f64, lat: f64) -> [f32; 2] {
+        [((lon - self.lon0) * self.kx) as f32, ((lat - self.lat0) * KY) as f32]
+    }
+    #[inline]
+    pub fn inv(&self, x: f32, y: f32) -> LonLat {
+        [x as f64 / self.kx + self.lon0, y as f64 / KY + self.lat0]
+    }
+}
+
 /// Uniform grid over the projected plane; each cell lists the edges whose geometry (segment
 /// bounding boxes) touches it. Built once by the builder and stored in the graph file.
 #[derive(Default)]
@@ -250,7 +287,7 @@ impl Grid {
         }
         let n_pts = g.geom.len() / 2;
         for i in 0..n_pts {
-            let p = proj(g.geom[2 * i] as f64 * 1e-7, g.geom[2 * i + 1] as f64 * 1e-7);
+            let p = g.proj(g.geom[2 * i] as f64 * 1e-7, g.geom[2 * i + 1] as f64 * 1e-7);
             minx = minx.min(p[0]);
             maxx = maxx.max(p[0]);
             miny = miny.min(p[1]);
@@ -277,7 +314,7 @@ impl Grid {
             pts.push(g.vproj(g.e_from[e]));
             let (a, b) = (g.e_geom_off[e] as usize, g.e_geom_off[e + 1] as usize);
             for i in a..b {
-                pts.push(proj(g.geom[2 * i] as f64 * 1e-7, g.geom[2 * i + 1] as f64 * 1e-7));
+                pts.push(g.proj(g.geom[2 * i] as f64 * 1e-7, g.geom[2 * i + 1] as f64 * 1e-7));
             }
             pts.push(g.vproj(g.e_to[e]));
             cells.clear();
@@ -322,6 +359,7 @@ pub struct Snap {
 #[derive(Default)]
 pub struct Graph {
     pub bbox: [f64; 4],
+    pub proj0: Proj,
     // vertices (1e-7 degrees)
     pub vlon: Vec<i32>,
     pub vlat: Vec<i32>,
@@ -479,6 +517,15 @@ impl Graph {
     pub fn flags(&self, e: u32) -> u32 {
         self.e_flags[e as usize]
     }
+    /// Project with this graph's projection (see [`Proj`]).
+    #[inline]
+    pub fn proj(&self, lon: f64, lat: f64) -> [f32; 2] {
+        self.proj0.fwd(lon, lat)
+    }
+    #[inline]
+    pub fn unproj(&self, x: f32, y: f32) -> LonLat {
+        self.proj0.inv(x, y)
+    }
     #[inline]
     pub fn vproj(&self, v: u32) -> [f32; 2] {
         [self.vpx[v as usize], self.vpy[v as usize]]
@@ -514,7 +561,7 @@ impl Graph {
     /// Up to `k` snap candidates ordered by (slightly class-weighted) distance. Service roads and
     /// tracks are de-prioritised so that a point next to a street is not snapped to a parking lot.
     pub fn snap_candidates(&self, p: LonLat, allowed: &dyn Fn(u32) -> bool, k: usize) -> Vec<Snap> {
-        let q = proj(p[0], p[1]);
+        let q = self.proj(p[0], p[1]);
         let mut cands: Vec<(f32, Snap)> = Vec::new();
         let mut edges: Vec<u32> = Vec::new();
         for &radius in &[150.0f32, 600.0, 2500.0, 8000.0] {
@@ -531,7 +578,7 @@ impl Graph {
                     Class::Steps | Class::Path => 1.3,
                     _ => 1.0,
                 };
-                cands.push((dist as f32 * w + 1.0, Snap { edge: e, frac, point: unproj(pt[0], pt[1]), dist_m: dist }));
+                cands.push((dist as f32 * w + 1.0, Snap { edge: e, frac, point: self.unproj(pt[0], pt[1]), dist_m: dist }));
             }
             if !cands.is_empty() {
                 cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.edge.cmp(&b.1.edge)));
@@ -553,7 +600,7 @@ impl Graph {
             self.vproj(self.e_to[e])
         } else {
             let j = a + i - 1;
-            proj(self.geom[2 * j] as f64 * 1e-7, self.geom[2 * j + 1] as f64 * 1e-7)
+            self.proj(self.geom[2 * j] as f64 * 1e-7, self.geom[2 * j + 1] as f64 * 1e-7)
         }
     }
 
@@ -708,11 +755,12 @@ impl Graph {
             self.v_signal.resize(nv8, 0);
         }
         self.reorder_spatial();
+        self.proj0 = Proj::for_bbox(self.bbox);
         let n = self.num_vertices();
         self.vpx = Vec::with_capacity(n);
         self.vpy = Vec::with_capacity(n);
         for i in 0..n {
-            let p = proj(self.vlon[i] as f64 * 1e-7, self.vlat[i] as f64 * 1e-7);
+            let p = self.proj(self.vlon[i] as f64 * 1e-7, self.vlat[i] as f64 * 1e-7);
             self.vpx.push(p[0]);
             self.vpy.push(p[1]);
         }
@@ -822,6 +870,7 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     w.write_all(&VERSION.to_le_bytes())?;
     put(&mut w, &g.bbox)?;
     put(&mut w, &[g.max_car_kmh])?;
+    put(&mut w, &[g.proj0.lon0, g.proj0.lat0, g.proj0.kx, g.proj0.hscale])?;
     put(&mut w, &g.vlon)?;
     put(&mut w, &g.vlat)?;
     put(&mut w, &g.vpx)?;
@@ -876,14 +925,25 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     let mut ver = [0u8; 4];
     r.read_exact(&mut ver)?;
     let ver = u32::from_le_bytes(ver);
-    if ver != VERSION {
+    if ver != VERSION && ver != 4 {
         anyhow::bail!("graph file version {ver} is not supported (expected {VERSION}); update the routing data");
     }
     let m = file_len; // no array can be larger than the file
     let bad = || anyhow::anyhow!("corrupt graph file");
     let bbox: Vec<f64> = get(&mut r, 32)?;
     let speed: Vec<u8> = get(&mut r, 1)?;
+    // v5 stores the projection; v4 (Israel only) used the fixed Israel constants
+    let proj0 = if ver >= 5 {
+        let p: Vec<f64> = get(&mut r, 32)?;
+        match p.as_slice() {
+            [lon0, lat0, kx, hscale] => Proj { lon0: *lon0, lat0: *lat0, kx: *kx, hscale: *hscale },
+            _ => return Err(bad()),
+        }
+    } else {
+        Proj::default()
+    };
     let mut g = Graph {
+        proj0,
         bbox: bbox.try_into().map_err(|_| bad())?,
         max_car_kmh: *speed.first().ok_or_else(bad)?,
         vlon: get(&mut r, m)?,

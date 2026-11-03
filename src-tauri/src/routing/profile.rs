@@ -58,7 +58,7 @@ impl Profile {
             Mode::Bike => 0.8 / BIKE_SPEED,
             Mode::Transit => 0.9 / FOOT_SPEED,
         };
-        v * 0.97 // projection error margin
+        v * 0.97 * g.proj0.hscale as f32 // projection error margin; east-west shrink away from the centre latitude
     }
 
     /// May the directed state `s` be traversed?

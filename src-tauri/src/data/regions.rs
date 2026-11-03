@@ -44,6 +44,8 @@ struct RegionMeta {
     iso: Option<String>,
     bbox: [f64; 4],
     search_version: Option<String>,
+    #[serde(default)]
+    routing_version: Option<String>,
     updated_iso: Option<String>,
 }
 
@@ -176,6 +178,9 @@ pub fn map_file(dir: &Path) -> PathBuf {
 pub fn geocode_file(dir: &Path) -> PathBuf {
     dir.join("geocode.sqlite")
 }
+pub fn graph_file(dir: &Path) -> PathBuf {
+    dir.join("graph.bin")
+}
 
 fn read_meta(dir: &Path) -> Option<RegionMeta> {
     serde_json::from_slice(&std::fs::read(dir.join("region.json")).ok()?).ok()
@@ -199,7 +204,9 @@ pub fn installed(paths: &DataPaths, busy: &dyn Fn(&str) -> bool) -> Vec<Installe
         let map_version = ex.installed_build();
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let gf = geocode_file(&dir);
+        let rf = graph_file(&dir);
         out.push(InstalledRegion {
+            routing: RegionPartStatus { present: rf.exists(), size_bytes: size(&rf), version: m.routing_version.clone().filter(|_| rf.exists()) },
             busy: busy(&m.id),
             map: RegionPartStatus { present: map_version.is_some(), size_bytes: size(&ex.file), version: map_version },
             search: RegionPartStatus { present: gf.exists(), size_bytes: size(&gf), version: m.search_version.clone().filter(|_| gf.exists()) },
@@ -223,6 +230,24 @@ pub fn ready_maps(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
             if let Some(m) = read_meta(&dir) {
                 let f = map_file(&dir);
                 if f.exists() {
+                    v.push((m.id, f, m.bbox));
+                }
+            }
+        }
+    }
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// Countries with an offline routing graph: (id, file, bbox).
+pub fn ready_graphs(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(paths.regions_dir()) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if let Some(m) = read_meta(&dir) {
+                let f = graph_file(&dir);
+                if f.exists() && m.routing_version.is_some() {
                     v.push((m.id, f, m.bbox));
                 }
             }
@@ -283,7 +308,9 @@ pub fn install(paths: &DataPaths, id: &str, parts: &[RegionPart], emit: &(dyn Fn
         emit(RegionProgress { id: id.to_string(), part, phase, done: 0, total: 0, message: msg });
     };
 
-    let (map_r, search_r) = std::thread::scope(|s| {
+    let want_search = parts.contains(&RegionPart::Search);
+    let want_routing = parts.contains(&RegionPart::Routing);
+    let (map_r, osm_r) = std::thread::scope(|s| {
         let map = parts.contains(&RegionPart::Map).then(|| {
             s.spawn(|| -> anyhow::Result<()> {
                 let p = progress_for(RegionPart::Map);
@@ -293,48 +320,88 @@ pub fn install(paths: &DataPaths, id: &str, parts: &[RegionPart], emit: &(dyn Fn
                 r
             })
         });
-        let search = parts.contains(&RegionPart::Search).then(|| {
-            s.spawn(|| -> anyhow::Result<(Option<String>, ())> {
-                let p = progress_for(RegionPart::Search);
-                p(ProgressPhase::Queued, 0, 0, "");
-                let r = (|| {
-                    let pbf = paths.downloads_dir().join("regions").join(format!("{}.osm.pbf", id.replace(['/', '\\', ':'], "_")));
-                    let v = download::ensure_fresh(&f.pbf_url, &pbf, &p, cancel)?;
-                    cancel.check()?;
-                    let tmp = geocode_file(&dir).with_extension("sqlite.tmp");
-                    let _ = std::fs::remove_file(&tmp);
-                    let mid_lat = (f.entry.bbox[1] + f.entry.bbox[3]) / 2.0;
-                    crate::geocode::build_region(&pbf, &tmp, mid_lat, &p)?;
-                    atomic_replace(&geocode_file(&dir), &tmp)?;
-                    // the extract is only needed for the build; a later update downloads it fresh
-                    let _ = std::fs::remove_file(&pbf);
-                    let _ = std::fs::remove_file(download::meta_path(&pbf));
-                    Ok((v, ()))
-                })();
-                finish(RegionPart::Search, &r.as_ref().map(|_| ()).map_err(|e| anyhow!("{e:#}")));
-                r
+        // search and routing share one download of the region's OSM extract
+        let osm = (want_search || want_routing).then(|| {
+            s.spawn(|| -> (Option<anyhow::Result<String>>, Option<anyhow::Result<String>>) {
+                let ps = progress_for(RegionPart::Search);
+                let pr = progress_for(RegionPart::Routing);
+                let both = |phase: ProgressPhase, done: u64, total: u64, msg: &str| -> bool {
+                    let mut ok = true;
+                    if want_search {
+                        ok &= ps(phase, done, total, msg);
+                    }
+                    if want_routing {
+                        ok &= pr(phase, done, total, msg);
+                    }
+                    ok
+                };
+                both(ProgressPhase::Queued, 0, 0, "");
+                let pbf = paths.downloads_dir().join("regions").join(format!("{}.osm.pbf", id.replace(['/', '\\', ':'], "_")));
+                let version = match download::ensure_fresh(&f.pbf_url, &pbf, &both, cancel).and_then(|v| cancel.check().map(|_| v)) {
+                    Ok(v) => v.unwrap_or_else(|| "unknown".into()),
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        let fail = |part: RegionPart| -> anyhow::Result<String> {
+                            finish(part, &Err(anyhow!("{msg}")));
+                            Err(anyhow!("{msg}"))
+                        };
+                        return (want_search.then(|| fail(RegionPart::Search)), want_routing.then(|| fail(RegionPart::Routing)));
+                    }
+                };
+                let search = want_search.then(|| {
+                    let r = (|| {
+                        let tmp = geocode_file(&dir).with_extension("sqlite.tmp");
+                        let _ = std::fs::remove_file(&tmp);
+                        let mid_lat = (f.entry.bbox[1] + f.entry.bbox[3]) / 2.0;
+                        crate::geocode::build_region(&pbf, &tmp, mid_lat, &ps)?;
+                        atomic_replace(&geocode_file(&dir), &tmp)?;
+                        Ok(format!("{version} s{}", crate::geocode::SCHEMA_VERSION))
+                    })();
+                    finish(RegionPart::Search, &r.as_ref().map(|_| ()).map_err(|e| anyhow!("{e:#}")));
+                    r
+                });
+                let routing = want_routing.then(|| {
+                    let r = (|| {
+                        cancel.check()?;
+                        let tmp = graph_file(&dir).with_extension("bin.tmp");
+                        let _ = std::fs::remove_file(&tmp);
+                        crate::routing::build_graph(&pbf, &tmp, &pr)?;
+                        atomic_replace(&graph_file(&dir), &tmp)?;
+                        Ok(format!("{version} g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV))
+                    })();
+                    finish(RegionPart::Routing, &r.as_ref().map(|_| ()).map_err(|e| anyhow!("{e:#}")));
+                    r
+                });
+                // the extract is only needed for the builds; a later update downloads it fresh
+                let _ = std::fs::remove_file(&pbf);
+                let _ = std::fs::remove_file(download::meta_path(&pbf));
+                (search, routing)
             })
         });
-        (map.map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("map job panicked")))), search.map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("search job panicked")))))
+        (
+            map.map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("map job panicked")))),
+            osm.map(|h| h.join().unwrap_or_else(|_| (Some(Err(anyhow!("search job panicked"))), None))),
+        )
     });
+    let (search_r, routing_r) = osm_r.unwrap_or((None, None));
 
     let mut meta = read_meta(&dir).unwrap_or(meta);
-    if let Some(Ok((v, ()))) = &search_r {
-        meta.search_version = Some(format!("{} s{}", v.clone().unwrap_or_else(|| "unknown".into()), crate::geocode::SCHEMA_VERSION));
+    if let Some(Ok(v)) = &search_r {
+        meta.search_version = Some(v.clone());
     }
-    if map_r.as_ref().is_some_and(|r| r.is_ok()) || search_r.as_ref().is_some_and(|r| r.is_ok()) {
+    if let Some(Ok(v)) = &routing_r {
+        meta.routing_version = Some(v.clone());
+    }
+    if map_r.as_ref().is_some_and(|r| r.is_ok()) || search_r.as_ref().is_some_and(|r| r.is_ok()) || routing_r.as_ref().is_some_and(|r| r.is_ok()) {
         meta.updated_iso = Some(chrono::Local::now().to_rfc3339());
     }
     write_meta(&dir, &meta)?;
     // nothing usable left from a first install that failed: forget the folder
-    if !map_file(&dir).exists() && !geocode_file(&dir).exists() {
+    if !map_file(&dir).exists() && !geocode_file(&dir).exists() && !graph_file(&dir).exists() {
         let _ = std::fs::remove_dir_all(&dir);
     }
-    if let Some(Err(e)) = map_r {
-        return Err(e);
-    }
-    if let Some(Err(e)) = search_r {
-        return Err(e);
+    for r in [map_r, search_r.map(|r| r.map(|_| ())), routing_r.map(|r| r.map(|_| ()))].into_iter().flatten() {
+        r?;
     }
     Ok(())
 }

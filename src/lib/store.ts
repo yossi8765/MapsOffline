@@ -524,6 +524,8 @@ export const useStore = create<State & Actions>((set, get) => ({
           ? t("errOnlineFailed")
           : errorText(e).startsWith("NO_ROUTE_AVOID_AREAS")
             ? t("errNoRouteAreas")
+            : code === "NO_ROUTING_DATA_REGION"
+              ? t("errNoRoutingRegion")
             : code === "NO_ROUTING_DATA"
           ? t("errNoRouting")
           : code === "NO_TRANSIT_DATA"

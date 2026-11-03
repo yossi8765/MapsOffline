@@ -737,6 +737,7 @@ pub struct InstalledRegion {
     pub bbox: [f64; 4],
     pub map: RegionPartStatus,
     pub search: RegionPartStatus,
+    pub routing: RegionPartStatus,
     pub updated_iso: Option<String>,
     pub busy: bool,
 }
@@ -746,6 +747,7 @@ pub struct InstalledRegion {
 pub enum RegionPart {
     Map,
     Search,
+    Routing,
 }
 
 /// Emitted as tauri event `region-progress`.

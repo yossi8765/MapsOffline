@@ -24,6 +24,8 @@ pub struct AppState {
     /// Running country installs (id → cancel handle); a busy country is hidden from the
     /// map and the search so its files can be replaced.
     pub region_jobs: Mutex<std::collections::HashMap<String, Cancel>>,
+    /// The country graph used last (only one stays in memory: big countries are big).
+    region_graph: Mutex<Option<(std::path::PathBuf, Arc<Graph>)>>,
     pub history: Mutex<Option<History>>,
     pub updating: std::sync::atomic::AtomicBool,
     pub cancel: Cancel,
@@ -66,6 +68,7 @@ impl AppState {
             geocoder: Mutex::new(GeoPool::default()),
             region_geo: Mutex::new(Default::default()),
             region_jobs: Mutex::new(Default::default()),
+            region_graph: Mutex::new(None),
             history: Mutex::new(None),
             updating: std::sync::atomic::AtomicBool::new(false),
             cancel: Cancel::default(),
@@ -95,6 +98,36 @@ impl AppState {
     /// Drop the pooled connections of every country index (before files are replaced / removed).
     pub fn unload_regions(&self) {
         self.region_geo.lock().clear();
+        *self.region_graph.lock() = None;
+    }
+
+    /// The routing graph that covers every point: Israel's when they are all inside it, else the
+    /// smallest downloaded country whose bbox holds them all (a sub-region before its country).
+    pub fn graph_for(&self, pts: &[[f64; 2]]) -> anyhow::Result<Arc<Graph>> {
+        let inside = |b: &[f64; 4]| pts.iter().all(|p| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]);
+        if inside(&crate::paths::BBOX_ISRAEL) {
+            return self.graph();
+        }
+        let mut cands: Vec<_> = crate::data::regions::ready_graphs(&self.paths())
+            .into_iter()
+            .filter(|(id, _, b)| !self.region_busy(id) && inside(b))
+            .collect();
+        cands.sort_by(|a, b| {
+            let area = |b: &[f64; 4]| (b[2] - b[0]) * (b[3] - b[1]);
+            area(&a.2).total_cmp(&area(&b.2))
+        });
+        let Some((_, path, _)) = cands.into_iter().next() else { anyhow::bail!("NO_ROUTING_DATA_REGION") };
+        // one load at a time; a second request for the same country waits for it
+        let mut g = self.region_graph.lock();
+        if let Some((p, graph)) = g.as_ref() {
+            if *p == path {
+                return Ok(graph.clone());
+            }
+        }
+        *g = None; // free the previous country first
+        let graph = Arc::new(crate::routing::load_graph(&path).map_err(|e| anyhow::anyhow!("NO_ROUTING_DATA_REGION: {e:#}"))?);
+        *g = Some((path, graph.clone()));
+        Ok(graph)
     }
 
     pub fn region_busy(&self, id: &str) -> bool {

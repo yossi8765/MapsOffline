@@ -257,7 +257,8 @@ pub fn route_offline(st: &AppState, req: &RouteRequest) -> R<RouteResponse> {
             }
         }
         _ => {
-            let g = st.graph().map_err(err)?;
+            let pts: Vec<[f64; 2]> = req.waypoints.iter().map(|w| [w.lon, w.lat]).collect();
+            let g = st.graph_for(&pts).map_err(err)?;
             g.route(req).map_err(err)
         }
     }
@@ -528,7 +529,8 @@ pub async fn optimize_order(state: State<'_, Arc<AppState>>, req: RouteRequest, 
         if req.mode == Mode::Transit {
             return Err("ORDER_NOT_FOR_TRANSIT".into());
         }
-        let g = st.graph().map_err(err)?;
+        let pts: Vec<[f64; 2]> = req.waypoints.iter().map(|w| [w.lon, w.lat]).collect();
+        let g = st.graph_for(&pts).map_err(err)?;
         // pairwise travel times (seconds); unreachable = very large
         let mut cost = vec![vec![f64::INFINITY; n]; n];
         for a in 0..n {

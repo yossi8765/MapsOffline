@@ -362,6 +362,8 @@ export interface AppInfo {
 
 // ------------------------------------------------------------- error helpers
 export const ERROR_CODES = [
+  // longer codes first: errorCode() matches by substring
+  "NO_ROUTING_DATA_REGION",
   "NO_ROUTING_DATA",
   "NO_TRANSIT_DATA",
   "NO_GEOCODE_DATA",
@@ -418,12 +420,14 @@ export interface InstalledRegion {
   bbox: [number, number, number, number];
   map: RegionPartStatus;
   search: RegionPartStatus;
+  /** offline routing graph (car / foot / bike) */
+  routing: RegionPartStatus;
   updatedIso: string | null;
   /** an install / update of this region is running */
   busy: boolean;
 }
 
-export type RegionPart = "map" | "search";
+export type RegionPart = "map" | "search" | "routing";
 
 /** Emitted as tauri event `region-progress`. */
 export interface RegionProgress {

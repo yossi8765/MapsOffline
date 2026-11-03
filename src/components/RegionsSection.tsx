@@ -18,7 +18,8 @@ const CONTINENTS_HE: Record<string, string> = {
   russia: "רוסיה",
 };
 
-const PARTS: RegionPart[] = ["map", "search"];
+const PARTS: RegionPart[] = ["map", "search", "routing"];
+const PART_LABEL: Record<RegionPart, "regPartMap" | "regPartSearch" | "regPartRouting"> = { map: "regPartMap", search: "regPartSearch", routing: "regPartRouting" };
 const ACTIVE = (p?: RegionProgress) => !!p && !["done", "failed", "cancelled"].includes(p.phase);
 
 type PartProgress = Partial<Record<RegionPart, RegionProgress>>;
@@ -50,7 +51,7 @@ export function RegionsSection() {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
-  const [wantParts, setWantParts] = useState<Record<RegionPart, boolean>>({ map: true, search: true });
+  const [wantParts, setWantParts] = useState<Record<RegionPart, boolean>>({ map: true, search: true, routing: true });
   const [sizes, setSizes] = useState<Record<string, number | null | "loading">>({});
 
   const refreshInstalled = useCallback(async () => {
@@ -206,7 +207,7 @@ export function RegionsSection() {
 
   const pick = (e: RegionEntry) => {
     setSelected(e.id);
-    setWantParts({ map: true, search: true });
+    setWantParts({ map: true, search: true, routing: true });
   };
 
   const toggle = (id: string) =>
@@ -352,7 +353,7 @@ export function RegionsSection() {
                     aria-pressed={wantParts[p]}
                     onClick={() => setWantParts((w) => ({ ...w, [p]: !w[p] }))}
                   >
-                    {t(p === "map" ? "regPartMap" : "regPartSearch")}
+                    {t(PART_LABEL[p])}
                   </button>
                 ))}
               </div>
@@ -418,7 +419,7 @@ function InstalledCard({
     const st = r[p];
     return (
       <span key={p}>
-        {t(p === "map" ? "regPartMap" : "regPartSearch")}:{" "}
+        {t(PART_LABEL[p])}:{" "}
         {st.present ? <bdi dir="ltr">{fmtBytes(st.sizeBytes)}</bdi> : <span className="text-subtle">{t("regPartMissing")}</span>}
       </span>
     );
@@ -468,7 +469,7 @@ function ProgressBlock({ title, prog, onCancel }: { title?: string; prog?: PartP
           <div key={p.part}>
             <div className="flex justify-between gap-2 text-xs mb-1.5">
               <span className={clsx(p.phase === "failed" ? "text-danger whitespace-normal break-words" : "text-muted truncate")}>
-                {t(p.part === "map" ? "regPartMap" : "regPartSearch")}
+                {t(PART_LABEL[p.part])}
                 {": "}
                 {p.phase === "failed" ? `${t("phaseFailed")}${p.message ? ` - ${p.message}` : ""}` : p.message || t(p.phase === "queued" ? "phaseQueued" : "phaseDownloading")}
               </span>

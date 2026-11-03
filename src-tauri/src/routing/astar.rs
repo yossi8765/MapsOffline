@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 
 use crate::geo::haversine_m;
-use crate::routing::graph::{proj, Graph, Snap, NONE};
+use crate::routing::graph::{Graph, Snap, NONE};
 use crate::routing::profile::Profile;
 use crate::types::{Leg, LegKind, LonLat};
 
@@ -175,7 +175,7 @@ const PRUNE_MIN_STRAIGHT: f32 = 15_000.0;
 
 pub fn search(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap) -> Option<PathResult> {
     let r = search_impl(g, p, from, to, true);
-    if r.is_none() && d2(proj(from.point[0], from.point[1]), proj(to.point[0], to.point[1])) > PRUNE_MIN_STRAIGHT * PRUNE_MIN_STRAIGHT {
+    if r.is_none() && d2(g.proj(from.point[0], from.point[1]), g.proj(to.point[0], to.point[1])) > PRUNE_MIN_STRAIGHT * PRUNE_MIN_STRAIGHT {
         // the hierarchy pruning cut the only connection (e.g. a long private / rural access road)
         return search_impl(g, p, from, to, false);
     }
@@ -189,8 +189,8 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
     let mut b = take_bufs(n);
     let gen = b.next_gen();
 
-    let ps = proj(from.point[0], from.point[1]);
-    let pt = proj(to.point[0], to.point[1]);
+    let ps = g.proj(from.point[0], from.point[1]);
+    let pt = g.proj(to.point[0], to.point[1]);
     let hfac = prof.heuristic_spm(g);
     let straight = d2(ps, pt).sqrt();
     // Hierarchy pruning for long routes: minor roads only near the endpoints, tertiary roads

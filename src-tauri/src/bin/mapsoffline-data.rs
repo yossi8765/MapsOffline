@@ -51,6 +51,8 @@ enum Cmd {
         map_only: bool,
         #[arg(long)]
         search_only: bool,
+        #[arg(long)]
+        routing_only: bool,
     },
     /// Show status of data files
     Status,
@@ -154,7 +156,7 @@ fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
 
     match cli.cmd {
-        Cmd::Region { action, args, map_only, search_only } => {
+        Cmd::Region { action, args, map_only, search_only, routing_only } => {
             use mapsoffline_lib::data::regions;
             use mapsoffline_lib::types::RegionPart;
             match action.as_str() {
@@ -169,7 +171,15 @@ fn main() -> anyhow::Result<()> {
                 }
                 "install" => {
                     let id = args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?;
-                    let parts = if map_only { vec![RegionPart::Map] } else if search_only { vec![RegionPart::Search] } else { vec![RegionPart::Map, RegionPart::Search] };
+                    let parts = if map_only {
+                        vec![RegionPart::Map]
+                    } else if search_only {
+                        vec![RegionPart::Search]
+                    } else if routing_only {
+                        vec![RegionPart::Routing]
+                    } else {
+                        vec![RegionPart::Map, RegionPart::Search, RegionPart::Routing]
+                    };
                     let t0 = std::time::Instant::now();
                     let emit = |p: mapsoffline_lib::types::RegionProgress| {
                         let pct = if p.total > 0 { format!("{:5.1}%", p.done as f64 * 100.0 / p.total as f64) } else { "     ".into() };
@@ -188,6 +198,32 @@ fn main() -> anyhow::Result<()> {
                         println!("{:?} {} | {} {} | {:.5},{:.5}", r.kind, r.name, r.city.unwrap_or_default(), r.category.unwrap_or_default(), r.lon, r.lat);
                     }
                     println!("({:?})", t0.elapsed());
+                }
+                "route" => {
+                    // region route <id> lon,lat lon,lat [car|foot|bike]
+                    let id = args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?;
+                    let pt = |s: &str| -> anyhow::Result<mapsoffline_lib::types::Waypoint> {
+                        let (a, b) = s.split_once(',').ok_or_else(|| anyhow::anyhow!("lon,lat expected"))?;
+                        Ok(serde_json::from_value(serde_json::json!({"lon": a.trim().parse::<f64>()?, "lat": b.trim().parse::<f64>()?}))?)
+                    };
+                    let mode = args.get(3).map(String::as_str).unwrap_or("car");
+                    let req: mapsoffline_lib::types::RouteRequest = serde_json::from_value(serde_json::json!({
+                        "waypoints": [pt(&args[1])?, pt(&args[2])?], "mode": mode, "time": {"kind": "now"}, "alternatives": 2
+                    }))?;
+                    let t0 = std::time::Instant::now();
+                    let g = mapsoffline_lib::routing::load_graph(&regions::graph_file(&paths.region_dir(id)))?;
+                    println!("graph loaded in {:?} (proj {:?})", t0.elapsed(), g.proj0);
+                    let t1 = std::time::Instant::now();
+                    let resp = g.route(&req)?;
+                    for r in &resp.routes {
+                        println!("{:.1} km, {} min, {} legs", r.distance_m / 1000.0, (r.duration_sec / 60.0).round(), r.legs.len());
+                    }
+                    if let Some(st) = resp.routes.first().and_then(|r| r.legs.first()).map(|l| &l.steps) {
+                        for s in st.iter().take(6) {
+                            println!("  {}", s.instruction);
+                        }
+                    }
+                    println!("routed in {:?}", t1.elapsed());
                 }
                 other => anyhow::bail!("unknown region action {other}"),
             }
