@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bus, ChevronDown, Flag, Navigation, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { Bus, ChevronDown, Flag, Navigation, Pencil, Plus, Trash2 } from "lucide-react";
 import clsx from "clsx";
 import { api, type Favorite, type LineSummary, type LineTimes, type StopBoard } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -290,16 +290,16 @@ export function FavoritesPanel() {
           ? f.address
           : "";
     return (
-      <div key={f.id} className={clsx("rounded-[10px] -mx-2 transition-colors duration-150", open ? "bg-hover" : "hover:bg-hover focus-within:bg-hover")}>
+      <div key={f.id} className={clsx("rounded -mx-2 transition-colors duration-150", open ? "bg-hover" : "hover:bg-hover focus-within:bg-hover")}>
         <div className="group flex items-center gap-1 px-2">
           <button
-            className="flex-1 min-w-0 flex items-center gap-3 py-2 text-start rounded-lg"
+            className="flex-1 min-w-0 flex items-center gap-3 py-2 text-start rounded"
             onClick={() => (isLine ? void openLine(f) : isStop ? (open ? setOpenStop(null) : void openStopBoard(f)) : goTo(f))}
             aria-expanded={isLine || isStop ? open : undefined}
             aria-busy={busy === f.id}
           >
             {isLine ? (
-              <span className="inline-flex items-center justify-center gap-1 h-8 min-w-8 px-2 rounded-lg text-white text-sm font-semibold num shrink-0" style={{ background: color }}>
+              <span className="inline-flex items-center justify-center gap-1 h-8 min-w-8 px-2 rounded text-white text-sm font-semibold num shrink-0" style={{ background: color }}>
                 <Bus size={13} />
                 {d.routeShortName}
               </span>
@@ -392,7 +392,7 @@ export function FavoritesPanel() {
               const c = first ? countdown(first[0], first[1], openStop.at, now, t) : null;
               return (
                 <div key={i} className="flex items-center gap-2 min-h-9">
-                  <span className="inline-flex items-center justify-center h-7 min-w-7 px-1.5 rounded-md text-white text-xs font-semibold num shrink-0" style={{ background: lineColor(l.color) }}>
+                  <span className="inline-flex items-center justify-center h-7 min-w-7 px-1.5 rounded text-white text-xs font-semibold num shrink-0" style={{ background: lineColor(l.color) }}>
                     {l.shortName}
                   </span>
                   <span className="flex-1 min-w-0">
@@ -440,10 +440,7 @@ export function FavoritesPanel() {
       )}
       {adding && form}
       {favorites.length === 0 && !adding && (
-        <div className="flex flex-col items-center text-center gap-3 py-12 px-6">
-          <span className="tile w-10 h-10 rounded-full">
-            <Star size={18} strokeWidth={1.75} />
-          </span>
+        <div className="flex flex-col gap-1 px-1 py-2">
           <p className="m-0 text-sm text-muted">{t("favoritesEmpty")}</p>
           <p className="m-0 text-xs text-subtle">{t("favoritesHint")}</p>
         </div>

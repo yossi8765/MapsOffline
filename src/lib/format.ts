@@ -14,8 +14,9 @@ export function fmtDuration(sec: number, t: T): string {
   if (min < 60) return `${min} ${t("minutes")}`;
   const h = Math.floor(min / 60);
   const m = min % 60;
-  const hs = h === 1 ? `1 ${t("hours")}` : `${h} ${t("hoursPlural")}`;
-  return m ? `${hs} ${m} ${t("minutes")}` : hs;
+  // Hebrew: "שעה", "שעתיים", "3 שעות"; minutes join with "ו-" ("שעה ו-20 דק׳")
+  const hs = h === 1 ? t("hourOne") : h === 2 ? t("hourTwo") : `${h} ${t("hoursPlural")}`;
+  return m ? `${hs} ${t("durationAnd")}${m} ${t("minutes")}` : hs;
 }
 
 export function fmtDistance(m: number, t: T, units = "metric"): string {
@@ -178,5 +179,16 @@ export async function copyText(text: string): Promise<boolean> {
     const ok = document.execCommand("copy");
     ta.remove();
     return ok;
+  }
+}
+
+/** Yes/no question in a native Windows dialog with the app's own title and button labels
+ *  (window.confirm shows "tauri.localhost says" and English OK/Cancel). */
+export async function askConfirm(message: string, okLabel: string, cancelLabel: string, title: string): Promise<boolean> {
+  try {
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    return await ask(message, { title, kind: "warning", okLabel, cancelLabel });
+  } catch {
+    return window.confirm(message);
   }
 }

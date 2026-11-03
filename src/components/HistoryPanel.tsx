@@ -3,7 +3,7 @@ import { Bike, Bus, Car, Clock, Footprints, History, Search, Trash2 } from "luci
 import { api, type GeoResult, type HistoryItem, type RouteRequest } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { fmtAgo, fmtDistance, fmtDuration } from "../lib/format";
+import { askConfirm, fmtAgo, fmtDistance, fmtDuration } from "../lib/format";
 import { kindIcon, resultLabel } from "./SearchBox";
 
 type Tab = "search" | "route";
@@ -50,7 +50,7 @@ export function HistoryPanel() {
     }
   };
   const clear = async () => {
-    if (!window.confirm(t("clearConfirm"))) return;
+    if (!(await askConfirm(t("clearConfirm"), t("clearAll"), t("cancel"), t("appName")))) return;
     try {
       await api.historyClear(tab === "search" ? "search" : "route");
       await loadHistory();
@@ -87,8 +87,8 @@ export function HistoryPanel() {
                 const p = tab === "route" ? (h.payload as RoutePayload | null) : null;
                 const r = tab === "search" ? (h.payload as GeoResult | null) : null;
                 return (
-                  <div key={h.id} className="group flex items-center gap-1 rounded-[10px] hover:bg-hover focus-within:bg-hover px-2 transition-colors duration-150">
-                    <button className="flex-1 min-w-0 flex items-center gap-3 py-2 text-start rounded-lg" onClick={() => (tab === "search" ? restoreSearch(h) : restoreRoute(h))}>
+                  <div key={h.id} className="group flex items-center gap-1 rounded hover:bg-hover focus-within:bg-hover px-2 transition-colors duration-150">
+                    <button className="flex-1 min-w-0 flex items-center gap-3 py-2 text-start rounded" onClick={() => (tab === "search" ? restoreSearch(h) : restoreRoute(h))}>
                       <span className="tile">
                         {tab === "search" ? (r && typeof r === "object" && "kind" in r ? kindIcon(r.kind) : <Clock size={16} strokeWidth={1.75} />) : modeIcon(p?.request?.mode)}
                       </span>
@@ -125,11 +125,7 @@ export function HistoryPanel() {
   );
 }
 
-function EmptyState({ icon, text }: { icon: React.ReactNode; text: string }) {
-  return (
-    <div className="flex flex-col items-center text-center gap-3 py-12 px-6">
-      <span className="tile w-10 h-10 rounded-full">{icon}</span>
-      <p className="m-0 text-sm text-muted">{text}</p>
-    </div>
-  );
+/** One plain sentence: no icon circle, no centred hero. */
+function EmptyState({ text }: { icon?: React.ReactNode; text: string }) {
+  return <p className="m-0 px-1 py-2 text-sm text-muted">{text}</p>;
 }

@@ -273,6 +273,35 @@ export function sortTransit(routes: Route[], pref: TransitPreference, timeKind: 
   return [...routes].sort(by);
 }
 
+const DEFAULT_LAYERS: MapLayers = { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard" };
+const LAYERS_KEY = "mapsoffline.layers";
+
+/** The map layers chosen last time. Read synchronously so the map is created with them (a later
+ *  change would rebuild the style). poi / transitStops / labelLang live in settings.json too and
+ *  are overwritten from there by loadSettings. */
+function loadSavedLayers(): MapLayers {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYERS_KEY) || "null") as Partial<MapLayers> | null;
+    if (!saved || typeof saved !== "object") return DEFAULT_LAYERS;
+    const out: MapLayers = { ...DEFAULT_LAYERS };
+    for (const k of Object.keys(DEFAULT_LAYERS) as (keyof MapLayers)[]) {
+      const v = saved[k];
+      if (v !== undefined && typeof v === typeof DEFAULT_LAYERS[k] && Array.isArray(v) === Array.isArray(DEFAULT_LAYERS[k])) (out as unknown as Record<string, unknown>)[k] = v;
+    }
+    return out;
+  } catch {
+    return DEFAULT_LAYERS;
+  }
+}
+
+function saveLayers(layers: MapLayers) {
+  try {
+    localStorage.setItem(LAYERS_KEY, JSON.stringify(layers));
+  } catch {
+    /* ignore */
+  }
+}
+
 export const useStore = create<State & Actions>((set, get) => ({
   // `?panel=search` opens on another panel (used by the headless UI screenshots)
   panel: ((typeof location !== "undefined" && (new URLSearchParams(location.search).get("panel") as Panel | null)) || "route") as Panel,
@@ -282,7 +311,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   searchFocusTick: 0,
   settingsLoaded: false,
   settings: DEFAULT_SETTINGS,
-  layers: { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard" },
+  layers: loadSavedLayers(),
   appVersion: "",
   transitStopsUnavailable: false,
 
@@ -426,6 +455,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   setLayers: (patch) => {
     const layers = { ...get().layers, ...patch };
     set({ layers });
+    saveLayers(layers);
     const s = get().settings;
     const settingsPatch: Partial<Settings> = {};
     if (patch.poi !== undefined && patch.poi !== s.showPoiLayer) settingsPatch.showPoiLayer = patch.poi;

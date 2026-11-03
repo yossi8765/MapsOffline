@@ -1,13 +1,17 @@
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import clsx from "clsx";
 import { useStore } from "../lib/store";
+import { useT } from "../lib/i18n";
 
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const dismiss = useStore((s) => s.dismissToast);
+  const tr = useT();
+  // the "online map" banner sits at bottom-10: stack the toasts above it
+  const banner = useStore((s) => s.tilesChecked && !s.tilesUrl && !!s.onlineTilesUrl);
   if (!toasts.length) return null;
   return (
-    <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-50 flex flex-col items-center gap-2 no-print pointer-events-none" aria-live="polite">
+    <div className={clsx("absolute start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-50 flex flex-col items-center gap-2 no-print pointer-events-none", banner ? "bottom-[88px]" : "bottom-10")} aria-live="polite">
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -23,8 +27,8 @@ export function Toasts() {
           ) : (
             <Info size={16} className="text-muted shrink-0" />
           )}
-          <span className="flex-1 py-1 justify">{t.text}</span>
-          <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => dismiss(t.id)} aria-label="close">
+          <span className="flex-1 py-1">{t.text}</span>
+          <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => dismiss(t.id)} aria-label={tr("close")} title={tr("close")}>
             <X size={14} />
           </button>
         </div>

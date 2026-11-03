@@ -279,11 +279,11 @@ impl Geocoder {
         if let Some(c) = parse_coord(q) {
             return Ok(vec![c]);
         }
-        let r = self.search_rewritten(q, near, limit)?;
+        let r = dedupe_addresses(self.search_rewritten(q, near, limit)?);
         // Keyboard left in English ("shzbdu; 50" -> "דיזנגוף 50"): try the Hebrew reading too and
         // keep whichever answers better (a city-only hit for the Hebrew part must not win).
         if let Some(h) = from_latin_keyboard(q) {
-            let r2 = self.search_rewritten(&h, near, limit)?;
+            let r2 = dedupe_addresses(self.search_rewritten(&h, near, limit)?);
             let best = |v: &[GeoResult]| v.first().map_or(f64::MIN, |g| g.score);
             if best(&r2) > best(&r) {
                 return Ok(r2);
@@ -359,9 +359,13 @@ impl Geocoder {
         if res.is_empty() {
             for c in cands {
                 let Some(qc) = &c.city else { continue };
+                // The street was not found at all, so only a clearly typed city may answer: the
+                // whole name, or a prefix of at least 3 letters. A 1-2 letter "city" left over from
+                // gibberish ("ווטז 12 כ") used to return the biggest city starting with it.
+                let prefix_ok = qc.chars().count() >= 3;
                 let mut best: Option<&PlaceMem> = None;
                 for p in &self.places().list {
-                    if p.canon == *qc || p.canon.starts_with(qc.as_str()) {
+                    if p.canon == *qc || (prefix_ok && p.canon.starts_with(qc.as_str())) {
                         if best.map_or(true, |b| p.pop > b.pop) {
                             best = Some(p);
                         }
@@ -475,8 +479,13 @@ impl Geocoder {
             if let Some(qc) = &c.city {
                 parts.extend(qc.split(' ').filter(|t| !t.is_empty()).map(|t| format!("\"{}\"", spell_fold(t).replace('"', ""))));
             }
-            let fts = parts.join(" ");
             let (last, head) = qt.split_last().expect("non-empty");
+            // a lone 1-2 letter street word is too short to stand for a longer street name
+            // ("ום 12" must not become "חומה ומגדל 12")
+            if head.is_empty() && spell_fold(last).chars().count() < 3 {
+                continue;
+            }
+            let fts = parts.join(" ");
             let headf: Vec<String> = head.iter().map(|q| spell_fold(q)).collect();
             let lastf = spell_fold(last);
             let mut cache = FxHashMap::default();
@@ -1193,6 +1202,55 @@ impl Geocoder {
     }
 }
 
+/// Same address from several sources (OSM with "תל אביב" and "תל אביב–יפו", data.gov.il, a
+/// second street reading): equal normalised street and house number, the same city (one city
+/// name may extend the other by whole words) and less than 50 m apart. Keeps the best score and
+/// takes the most precise, then the longer (official) city name. Order is preserved.
+pub fn dedupe_addresses(v: Vec<GeoResult>) -> Vec<GeoResult> {
+    fn same_city(a: &str, b: &str) -> bool {
+        let (a, b) = (canon(a), canon(b));
+        a == b || a.starts_with(&format!("{b} ")) || b.starts_with(&format!("{a} "))
+    }
+    fn rank(p: &GeoPrecision) -> u8 {
+        match p {
+            GeoPrecision::Exact => 0,
+            GeoPrecision::Interpolated => 1,
+            GeoPrecision::Street => 2,
+            GeoPrecision::City => 3,
+        }
+    }
+    fn pref(g: &GeoResult) -> (u8, std::cmp::Reverse<usize>) {
+        (rank(&g.precision), std::cmp::Reverse(g.city.as_deref().map_or(0, |c| c.chars().count())))
+    }
+    let key = |g: &GeoResult| (g.street.as_deref().map(canon), g.house_number.as_deref().map(norm));
+    let mut out: Vec<GeoResult> = Vec::with_capacity(v.len());
+    for g in v {
+        let dup = if g.kind == GeoKind::Address {
+            let k = key(&g);
+            out.iter().position(|o| {
+                o.kind == GeoKind::Address
+                    && key(o) == k
+                    && same_city(o.city.as_deref().unwrap_or(""), g.city.as_deref().unwrap_or(""))
+                    && haversine_m([o.lon, o.lat], [g.lon, g.lat]) < 50.0
+            })
+        } else {
+            None
+        };
+        match dup {
+            None => out.push(g),
+            Some(i) => {
+                let o = &mut out[i];
+                let score = o.score.max(g.score);
+                if pref(&g) < pref(o) {
+                    *o = g;
+                }
+                o.score = score;
+            }
+        }
+    }
+    out
+}
+
 /// Merge geocoder results with transit-stop results by score (stops are never dropped just
 /// because the geocoder filled the limit).
 pub fn merge_with_stops(mut geo: Vec<GeoResult>, stops: Vec<GeoResult>, limit: usize) -> Vec<GeoResult> {
@@ -1248,6 +1306,52 @@ mod tests {
         assert_eq!(r.kind, GeoKind::Coord);
         assert!((r.lon - 34.7818).abs() < 1e-9);
         assert!(parse_coord("הרצל 12").is_none());
+    }
+
+    fn addr(city: &str, street: &str, hn: &str, lon: f64, lat: f64, score: f64) -> GeoResult {
+        GeoResult {
+            id: format!("addr:{city}:{score}"),
+            name: format!("{street} {hn}, {city}"),
+            kind: GeoKind::Address,
+            precision: GeoPrecision::Exact,
+            lon,
+            lat,
+            city: Some(city.to_string()),
+            street: Some(street.to_string()),
+            house_number: Some(hn.to_string()),
+            category: None,
+            score,
+        }
+    }
+
+    #[test]
+    fn dedupe_same_address_from_several_sources() {
+        let d = dedupe_addresses(vec![
+            addr("תל אביב–יפו", "הרצל", "12", 34.76995, 32.06231, 202.8),
+            addr("תל אביב", "הרצל", "12", 34.77000, 32.06223, 200.0),
+            addr("ירושלים", "הרצל", "12", 35.19909, 31.78756, 82.9),
+            addr("תל אביב–יפו", "הרצל", "12", 34.76995, 32.06231, 82.8),
+            addr("תל אביב–יפו", "הרצל", "14", 34.76990, 32.06250, 80.0),
+        ]);
+        assert_eq!(d.len(), 3, "{:?}", d.iter().map(|g| &g.name).collect::<Vec<_>>());
+        assert_eq!(d[0].city.as_deref(), Some("תל אביב–יפו"));
+        assert!((d[0].score - 202.8).abs() < 1e-9);
+        assert_eq!(d[1].city.as_deref(), Some("ירושלים"));
+        assert_eq!(d[2].house_number.as_deref(), Some("14"));
+        // the longer official city name wins even when the shorter one scored higher
+        let d = dedupe_addresses(vec![
+            addr("תל אביב", "הרצל", "12", 34.77000, 32.06223, 210.0),
+            addr("תל אביב-יפו", "הרצל", "12", 34.76995, 32.06231, 200.0),
+        ]);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].city.as_deref(), Some("תל אביב-יפו"));
+        assert!((d[0].score - 210.0).abs() < 1e-9);
+        // same street and number far apart stay separate
+        let d = dedupe_addresses(vec![
+            addr("רמת גן", "הרצל", "12", 34.81, 32.08, 100.0),
+            addr("רמת גן", "הרצל", "12", 34.83, 32.09, 90.0),
+        ]);
+        assert_eq!(d.len(), 2);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::types::{Mode, RouteRequest, RouteResponse, Settings};
 
-pub const USER_AGENT: &str = "MapsOffline/0.1 (+https://github.com/mapsoffline)";
+pub const USER_AGENT: &str = crate::data::download::USER_AGENT;
 
 pub fn client() -> anyhow::Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()

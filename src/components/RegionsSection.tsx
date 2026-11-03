@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { api, type InstalledRegion, type RegionEntry, type RegionLocate, type RegionPart, type RegionProgress } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { fmtBytes, fmtDateTime } from "../lib/format";
+import { askConfirm, fmtBytes, fmtDateTime } from "../lib/format";
 
 const CONTINENTS_HE: Record<string, string> = {
   africa: "אפריקה",
@@ -161,7 +161,7 @@ export function RegionsSection() {
   };
 
   const remove = async (r: InstalledRegion, label: string) => {
-    if (!window.confirm(`${t("regDeleteConfirm")} ${label}`)) return;
+    if (!(await askConfirm(`${t("regDeleteConfirm")} ${label}`, t("delete"), t("cancel"), t("appName")))) return;
     try {
       await api.regionDelete(r.id);
     } catch (e) {
@@ -250,7 +250,7 @@ export function RegionsSection() {
     return (
       <div key={e.id}>
         <div
-          className={clsx("flex items-center gap-1 pe-2 min-h-9 rounded-md", isSel ? "bg-surface-2" : "hover:bg-surface-2/60")}
+          className={clsx("flex items-center gap-1 pe-2 min-h-9 rounded", isSel ? "bg-surface-2" : "hover:bg-surface-2/60")}
           style={{ paddingInlineStart: 8 + depth * 16 }}
         >
           {kids.length > 0 ? (

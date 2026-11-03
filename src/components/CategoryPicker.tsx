@@ -13,7 +13,7 @@ export function LocateButton() {
   return (
     <button
       type="button"
-      className={clsx("absolute top-[60px] end-3 z-20 no-print w-10 h-10 rounded-[10px] popover flex items-center justify-center transition-colors duration-150 hover:bg-hover", has ? "text-accent" : "text-fg")}
+      className={clsx("absolute top-[60px] end-3 z-20 no-print w-10 h-10 rounded popover flex items-center justify-center transition-colors duration-150 hover:bg-hover", has ? "text-accent" : "text-fg")}
       title={t("myLocation")}
       aria-label={t("myLocation")}
       aria-busy={locating}
@@ -77,7 +77,7 @@ export function CategoryPicker() {
     <div ref={rootRef} className="absolute top-3 end-3 z-20 no-print">
       <button
         type="button"
-        className={clsx("w-10 h-10 rounded-[10px] popover flex items-center justify-center text-fg transition-colors duration-150 hover:bg-hover relative", (open || selected.length > 0) && "text-accent")}
+        className={clsx("w-10 h-10 rounded popover flex items-center justify-center text-fg transition-colors duration-150 hover:bg-hover relative", (open || selected.length > 0) && "text-accent")}
         title={t("categoriesTitle")}
         aria-label={t("categoriesTitle")}
         aria-expanded={open}
@@ -130,7 +130,7 @@ export function CategoryPicker() {
                 );
               })
             )}
-            {visible.length === 0 && <div className="text-sm text-muted py-2">{t("noLines")}</div>}
+            {visible.length === 0 && <div className="text-sm text-muted py-2">{t("noCategoriesMatch")}</div>}
           </div>
           <p className="m-0 text-xs text-subtle">{t("poiLayerHint")}</p>
         </div>

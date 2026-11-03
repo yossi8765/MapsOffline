@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Flag, Navigation, Search, Star } from "lucide-react";
+import { Copy, Flag, Navigation, Star } from "lucide-react";
 import clsx from "clsx";
 import { findFavorite, useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { fmtCoords } from "../lib/format";
+import { copyText, fmtCoords } from "../lib/format";
 import { SearchBox, kindIcon, stopCode, type Pick } from "./SearchBox";
 
 export function SearchPanel() {
@@ -35,8 +35,18 @@ export function SearchPanel() {
                   {picked.result.kind === "stop" ? `${t("stopCode")} ${stopCode(picked.result)}` : picked.result.category}
                 </div>
               )}
-              <div className="text-xs text-subtle num mt-1" dir="ltr" style={{ textAlign: "start" }}>
-                {fmtCoords(picked.lon, picked.lat)}
+              <div className="flex items-center gap-1 mt-1 text-xs text-subtle num">
+                <bdi dir="ltr" className="selectable">{fmtCoords(picked.lon, picked.lat)}</bdi>
+                <button
+                  className="btn btn-ghost btn-icon btn-sm !w-6 !h-6 text-subtle hover:text-fg"
+                  title={t("ctxCopyCoords")}
+                  aria-label={t("ctxCopyCoords")}
+                  onClick={async () => {
+                    if (await copyText(fmtCoords(picked.lon, picked.lat))) useStore.getState().toast("success", t("copied"));
+                  }}
+                >
+                  <Copy size={12} strokeWidth={1.75} />
+                </button>
               </div>
             </div>
           </div>
@@ -48,7 +58,7 @@ export function SearchPanel() {
                 useStore.getState().setPanel("route");
               }}
             >
-              <Navigation size={14} /> {t("useAsFrom")}
+              <Navigation size={14} className="rtl:-scale-x-100" /> {t("useAsFrom")}
             </button>
             <button
               className="btn btn-primary !h-9 !text-[13px] flex-1"
@@ -71,12 +81,7 @@ export function SearchPanel() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col items-center text-center gap-2 pt-10 pb-6 px-6">
-          <span className="tile w-10 h-10 rounded-full">
-            <Search size={18} strokeWidth={1.75} />
-          </span>
-          <p className="m-0 text-sm text-muted max-w-[260px]">{t("searchHint")}</p>
-        </div>
+        <p className="m-0 px-1 text-sm text-muted">{t("searchHint")}</p>
       )}
     </div>
   );

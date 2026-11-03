@@ -17,7 +17,8 @@ import {
   Printer,
   RotateCcw,
   Undo2,
-  Redo2,
+  CornerLeftDown,
+  CornerRightDown,
 } from "lucide-react";
 import clsx from "clsx";
 import { findLineFavorite, useStore } from "../lib/store";
@@ -43,12 +44,13 @@ function maneuverIcon(m: Maneuver, size = 16) {
       return <MoveUpLeft size={size} />;
     case "slight-right":
       return <MoveUpRight size={size} />;
+    // sharp turns bend back down; the U-shaped arrow is the U-turn (it read as "undo" before)
     case "sharp-left":
-      return <Undo2 size={size} />;
+      return <CornerLeftDown size={size} />;
     case "sharp-right":
-      return <Redo2 size={size} />;
+      return <CornerRightDown size={size} />;
     case "uturn":
-      return <RotateCcw size={size} />;
+      return <Undo2 size={size} />;
     case "roundabout":
     case "exit-roundabout":
       return <RotateCcw size={size} />;
@@ -151,7 +153,7 @@ function TransitLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex
           </div>
         </button>
         <div className="flex items-center gap-2 min-w-0">
-          <span className="inline-flex items-center gap-1 h-[22px] px-2 rounded-md text-white text-xs font-semibold num shrink-0 max-w-[60%]" style={{ background: color }}>
+          <span className="inline-flex items-center gap-1 h-[22px] px-2 rounded text-white text-xs font-semibold num shrink-0 max-w-[60%]" style={{ background: color }}>
             {vehicleIcon(leg, 12)}
             <span className="truncate">{tr.routeShortName || tr.routeLongName}</span>
           </span>
@@ -169,7 +171,7 @@ function TransitLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex
         </div>
         {tr.headsign && tr.agency && <div className="text-xs text-subtle truncate -mt-1">{tr.agency}</div>}
         <button
-          className="text-sm text-muted hover:text-fg flex items-center gap-1 self-start rounded-md -mx-1 px-1 h-7 transition-colors num"
+          className="text-sm text-muted hover:text-fg flex items-center gap-1 self-start rounded -mx-1 px-1 h-7 transition-colors num"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
         >
@@ -181,7 +183,7 @@ function TransitLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex
             {mid.map((s, i) => (
               <li
                 key={i}
-                className="flex justify-between gap-2 h-7 items-center cursor-pointer hover:text-fg rounded-md -mx-1 px-1 hover:bg-hover"
+                className="flex justify-between gap-2 h-7 items-center cursor-pointer hover:text-fg rounded -mx-1 px-1 hover:bg-hover"
                 onClick={() => flyTo([s.lon, s.lat], 16)}
               >
                 <span className="truncate">
@@ -218,7 +220,7 @@ function WalkLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex: n
       </div>
       <div className="flex-1 min-w-0 py-2">
         <button
-          className={clsx("flex items-center gap-2 text-sm text-muted num rounded-md -mx-1 px-1 h-7 transition-colors", hasSteps && "hover:text-fg")}
+          className={clsx("flex items-center gap-2 text-sm text-muted num rounded -mx-1 px-1 h-7 transition-colors", hasSteps && "hover:text-fg")}
           onClick={() => hasSteps && setOpen((v) => !v)}
           aria-expanded={hasSteps ? open : undefined}
         >
@@ -229,7 +231,7 @@ function WalkLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex: n
           {hasSteps && <ChevronDown size={14} className={clsx("transition-transform duration-150", open && "rotate-180")} />}
         </button>
         {open && hasSteps && (
-          <div className="fade-in mt-1 rounded-lg border border-line overflow-hidden [&_li+li]:border-t [&_li+li]:border-line">
+          <div className="fade-in mt-1 rounded border border-line overflow-hidden [&_li+li]:border-t [&_li+li]:border-line">
             <StepsList route={route} leg={leg} legIndex={legIndex} />
           </div>
         )}

@@ -534,14 +534,17 @@ export function MapView() {
       maxZoom: 20,
       minZoom: 5,
       maxBounds: MAX_BOUNDS,
-      attributionControl: { compact: true },
+      attributionControl: false,
       canvasContextAttributes: { antialias: true },
     });
     mapRef.current = map;
     const detachGestures = attachWheelGestures(map, getScrollMode);
-    const ctrlPos = lang === "he" ? "top-left" : "top-right";
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), ctrlPos);
-    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
+    // The sidebar floats on the start side (right in Hebrew); every map control goes to the
+    // other side so the panel never hides it (the OSM attribution is a licence requirement).
+    const freeSide = lang === "he" ? "left" : "right";
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), `top-${freeSide}`);
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), `bottom-${freeSide}`);
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), `bottom-${freeSide}`);
     map.on("mousemove", (e) => setCursor([e.lngLat.lng, e.lngLat.lat]));
     map.on("moveend", () => useStore.getState().setMapView([map.getCenter().lng, map.getCenter().lat], map.getZoom()));
     map.on("contextmenu", (e) => {
@@ -634,18 +637,24 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- style rebuild
+  // ---- style rebuild (not on mount: the map was just created with this very style, and a
+  // second setStyle would load glyphs, sprites, first tiles and the POI icons twice)
+  const firstStyle = useRef(true);
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme });
-    setMapReady(false);
-    map.setStyle(style, { diff: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     // with a world basemap the map may leave Israel and zoom out to the planet
     const planet = !!worldUrl || isMergedTiles(tilesUrl) || (!tilesUrl && !!onlineTilesUrl);
     map.setMaxBounds(planet ? null : MAX_BOUNDS);
     map.setMinZoom(planet ? 1 : 5);
+    if (firstStyle.current) {
+      firstStyle.current = false;
+      return;
+    }
+    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme });
+    setMapReady(false);
+    map.setStyle(style, { diff: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
@@ -901,7 +910,16 @@ export function MapView() {
     });
   }, [waypoints]);
 
-  // ---- search marker
+  // ---- a map bubble belongs to the moment it was opened: once the trip, the routes or the
+  // panel change it would only cover the pins (declared before the marker effect, so a marker
+  // set in the same render still gets its bubble)
+  const panelNow = useStore((s) => s.panel);
+  useEffect(() => {
+    popupRef.current?.remove();
+    popupRef.current = null;
+  }, [waypoints, routes, panelNow]);
+
+  // ---- search marker (the search panel shows the place card, so no bubble there)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -912,6 +930,8 @@ export function MapView() {
     el.className = "poi-marker";
     poiMarkerRef.current = new maplibregl.Marker({ element: el }).setLngLat(marker.lonlat).addTo(map);
     popupRef.current?.remove();
+    popupRef.current = null;
+    if (useStore.getState().panel === "search" && !useStore.getState().sidebarCollapsed) return;
     popupRef.current = new maplibregl.Popup({ offset: 12, closeButton: true }).setLngLat(marker.lonlat).setText(marker.label).addTo(map);
   }, [marker]);
 
@@ -952,7 +972,7 @@ export function MapView() {
     <div className="absolute inset-0">
       <div ref={containerRef} className="absolute inset-0" />
       {cursor && (
-        <div className="absolute bottom-2 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 rounded-md px-2 h-5 flex items-center text-[11px] text-muted num bg-[color-mix(in_srgb,var(--surface-raised)_80%,transparent)] pointer-events-none no-print">
+        <div className="absolute bottom-2 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 rounded px-2 h-5 flex items-center text-[11px] text-muted num bg-[color-mix(in_srgb,var(--surface-raised)_80%,transparent)] pointer-events-none no-print">
           <bdi dir="ltr">{fmtCoords(cursor[0], cursor[1])}</bdi>
         </div>
       )}
@@ -971,10 +991,10 @@ export function MapView() {
         </div>
       )}
       {onlineMap && (
-        <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 popover rounded-full ps-3 pe-1.5 h-9 flex items-center gap-2 text-xs no-print fade-in">
+        <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 popover rounded-[var(--radius)] ps-3 pe-1.5 h-9 flex items-center gap-2 text-xs no-print fade-in">
           <Wifi size={14} className="text-accent shrink-0" />
           <span>{t("onlineMapBanner")}</span>
-          <button className="btn btn-primary btn-sm !h-6 !text-[12px] !px-2.5 rounded-full" onClick={() => setPanel("data")}>
+          <button className="btn btn-primary btn-sm !h-6 !text-[12px] !px-2.5" onClick={() => setPanel("data")}>
             {t("onlineMapDownload")}
           </button>
         </div>

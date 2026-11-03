@@ -6,6 +6,9 @@ import type { Leg, Route } from "../lib/api";
 import { fmtDistance, fmtDuration, fmtTime, tagLabel } from "../lib/format";
 import { RouteDetails } from "./RouteDetails";
 
+/** Display names of the online routing services (the backend sends lowercase ids). */
+const PROVIDER_NAMES: Record<string, string> = { osrm: "OSRM", transitous: "Transitous" };
+
 export function vehicleIcon(leg: Leg, size = 14) {
   if (!leg.transit) return <Footprints size={size} />;
   switch (leg.transit.vehicle) {
@@ -36,7 +39,7 @@ function TransitStrip({ route, rtl }: { route: Route; rtl: boolean }) {
           {i > 0 && <Sep size={12} className="text-subtle" />}
           {l.transit ? (
             <span
-              className="inline-flex items-center gap-1 h-[22px] px-1.5 rounded-md text-white text-xs font-semibold num"
+              className="inline-flex items-center gap-1 h-[22px] px-1.5 rounded text-white text-xs font-semibold num"
               style={{ background: legColorHex(l) }}
             >
               {vehicleIcon(l, 12)}
@@ -74,7 +77,7 @@ export function RouteResults() {
             {routeSource === "online" ? <Wifi size={13} /> : <WifiOff size={13} />}
             <span className="truncate">
               {routeSource === "online" ? t("sourceOnline") : t("sourceOffline")}
-              {routeProvider && <span className="text-subtle"> · {routeProvider}</span>}
+              {routeProvider && <span className="text-subtle"> · {PROVIDER_NAMES[routeProvider] ?? routeProvider}</span>}
               {routes[0]?.mode === "car" && <span className="text-subtle"> · {t("noTraffic")}</span>}
             </span>
           </div>

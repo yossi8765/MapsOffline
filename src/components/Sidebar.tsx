@@ -49,7 +49,7 @@ export function Sidebar() {
                 aria-pressed={active}
                 onClick={() => (panel === it.id ? toggle() : setPanel(it.id))}
                 className={clsx(
-                  "relative w-10 h-10 rounded-[10px] flex items-center justify-center transition-colors duration-150",
+                  "relative w-10 h-10 rounded flex items-center justify-center transition-colors duration-150",
                   active ? "bg-accent-soft text-accent" : "text-muted hover:text-fg hover:bg-hover",
                 )}
               >
@@ -63,7 +63,7 @@ export function Sidebar() {
           })}
           <div className="flex-1" />
           <button
-            className="w-10 h-10 rounded-[10px] flex items-center justify-center text-muted hover:text-fg hover:bg-hover transition-colors duration-150"
+            className="w-10 h-10 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-hover transition-colors duration-150"
             onClick={toggle}
             title={collapsed ? t("expand") : t("collapse")}
             aria-label={collapsed ? t("expand") : t("collapse")}

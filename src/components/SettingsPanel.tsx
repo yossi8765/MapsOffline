@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { useState } from "react";
-import { FolderOpen, RotateCcw, Download, RefreshCw } from "lucide-react";
+import { ChevronDown, FolderOpen, RotateCcw, Download, RefreshCw } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
@@ -21,6 +21,8 @@ export function SettingsPanel() {
   const updateProgress = useStore((s) => s.appUpdateProgress);
   const { checkAppUpdate, installAppUpdate } = useStore.getState();
   const update = useStore((s) => s.updateSettings);
+  const statusDir = useStore((s) => s.dataStatus?.dir);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const chooseDir = async () => {
     try {
@@ -53,8 +55,8 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
-        <Row label={t("accentColor")}>
-          <div className="flex gap-1.5" role="radiogroup" aria-label={t("accentColor")}>
+        <Row label={t("accentColor")} hint={t("accentColorHint")}>
+          <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label={t("accentColor")}>
             {(["blue", "green", "purple", "orange", "teal", "rose", "slate", "pastel"] as const).map((a) => (
               <button
                 key={a}
@@ -123,34 +125,6 @@ export function SettingsPanel() {
         </Row>
       </Section>
 
-      <Section title={t("gestures")} hint={t("gesturesHint")}>
-        <Row label={t("twoFingerScroll")}>
-          <div className="seg seg-sm seg-fit">
-            {(["pan", "zoom"] as const).map((m) => (
-              <button key={m} aria-pressed={scrollMode === m} onClick={() => pickScroll(m)}>
-                <span>{t(m === "pan" ? "scrollPan" : "scrollZoom")}</span>
-              </button>
-            ))}
-          </div>
-        </Row>
-      </Section>
-
-      <Section title={t("dataDir")}>
-        <div className="row">
-          <div className="flex-1 min-w-0 text-xs text-muted truncate" dir="ltr" style={{ textAlign: "start" }} title={settings.dataDir ?? ""}>
-            {settings.dataDir || useStore.getState().dataStatus?.dir || "\u2014"}
-          </div>
-        </div>
-        <div className="row gap-2">
-          <button className="btn btn-sm flex-1" onClick={() => void chooseDir()}>
-            <FolderOpen size={14} strokeWidth={1.75} /> {t("chooseFolder")}
-          </button>
-          <button className="btn btn-sm btn-ghost text-muted" disabled={!settings.dataDir} onClick={() => void update({ dataDir: null })}>
-            <RotateCcw size={14} strokeWidth={1.75} /> {t("resetFolder")}
-          </button>
-        </div>
-      </Section>
-
       <Section title={t("shortcuts")}>
         {[
           ["Ctrl+F", t("shortcutSearch")],
@@ -167,6 +141,50 @@ export function SettingsPanel() {
           </div>
         ))}
       </Section>
+
+      {/* rarely changed: data folder, touchpad behaviour */}
+      <section className="flex flex-col gap-2">
+        <button
+          type="button"
+          className="flex items-center gap-1 section-label m-0 self-start hover:text-fg transition-colors"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((v) => !v)}
+        >
+          {t("advanced")}
+          <ChevronDown size={14} className={clsx("transition-transform duration-150", advancedOpen && "rotate-180")} />
+        </button>
+        {advancedOpen && (
+          <div className="flex flex-col gap-5 fade-in">
+      <Section title={t("gestures")} hint={t("gesturesHint")}>
+        <Row label={t("twoFingerScroll")}>
+          <div className="seg seg-sm seg-fit">
+            {(["pan", "zoom"] as const).map((m) => (
+              <button key={m} aria-pressed={scrollMode === m} onClick={() => pickScroll(m)}>
+                <span>{t(m === "pan" ? "scrollPan" : "scrollZoom")}</span>
+              </button>
+            ))}
+          </div>
+        </Row>
+      </Section>
+
+      <Section title={t("dataDir")}>
+        <div className="row">
+          <bdi dir="ltr" className="flex-1 min-w-0 text-xs text-muted truncate selectable" title={settings.dataDir || statusDir || ""}>
+            {settings.dataDir || statusDir || "\u2014"}
+          </bdi>
+        </div>
+        <div className="row gap-2">
+          <button className="btn btn-sm flex-1" onClick={() => void chooseDir()}>
+            <FolderOpen size={14} strokeWidth={1.75} /> {t("chooseFolder")}
+          </button>
+          <button className="btn btn-sm btn-ghost text-muted" disabled={!settings.dataDir} onClick={() => void update({ dataDir: null })}>
+            <RotateCcw size={14} strokeWidth={1.75} /> {t("resetFolder")}
+          </button>
+        </div>
+      </Section>
+          </div>
+        )}
+      </section>
 
       <div className="flex flex-col gap-1 px-0.5 text-sm">
         <h2 className="section-label m-0 p-0 mb-1">{t("about")}</h2>
@@ -242,10 +260,15 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/** Label above its control, the control full width: long Hebrew labels never wrap into a
+ *  narrow column next to a segmented control. */
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="row justify-between">
-      <span className="text-base">{label}</span>
+    <div className="flex flex-col gap-2 px-3 py-2.5 [&>.seg]:w-full">
+      <span className="flex flex-col">
+        <span className="text-base">{label}</span>
+        {hint && <span className="text-xs text-muted">{hint}</span>}
+      </span>
       {children}
     </div>
   );

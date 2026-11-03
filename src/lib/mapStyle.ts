@@ -117,6 +117,19 @@ export function flavorFor(name: FlavorName): Flavor {
 }
 
 /** Build the full MapLibre style. Without tiles the map is only a background. */
+/** Protomaps sets sea, lake, river and island names in "Noto Sans Italic", whose glyph ranges
+ *  have no Hebrew or Arabic: MapLibre then draws nothing (no "הים התיכון" at zoom 8). Use the
+ *  regular face, which covers every script we ship. */
+function withoutItalic(ls: LayerSpecification[]): LayerSpecification[] {
+  return ls.map((l) => {
+    if (l.type !== "symbol" || !l.layout) return l;
+    const font = l.layout["text-font"];
+    if (!font || !JSON.stringify(font).includes("Italic")) return l;
+    const fixed = JSON.parse(JSON.stringify(font).replace(/Noto Sans Italic/g, "Noto Sans Regular"));
+    return { ...l, layout: { ...l.layout, "text-font": fixed } } as LayerSpecification;
+  });
+}
+
 export function buildStyle(o: StyleOptions): StyleSpecification {
   const flavor = flavorFor(o.flavor);
   const base: StyleSpecification = {
@@ -131,7 +144,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   let worldLayers: LayerSpecification[] = [];
   if (o.worldUrl) {
     base.sources.world = { type: "vector", url: `pmtiles://${o.worldUrl}`, maxzoom: WORLD_MAX_ZOOM, attribution: "" };
-    worldLayers = layers("world", flavor, { lang: o.lang })
+    worldLayers = withoutItalic(layers("world", flavor, { lang: o.lang }))
       .filter((l) => l.id !== "background" && l.id !== "pois")
       .map((l) => {
         const c = { ...l, id: `world-${l.id}` } as LayerSpecification;
@@ -176,7 +189,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     ...(merged ? { tiles: [tilesUrl], minzoom: 0, maxzoom: 15 } : { url: `pmtiles://${tilesUrl}` }),
     attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
   };
-  let ls: LayerSpecification[] = applyTheme(layers("protomaps", flavor, { lang: o.lang }), o.theme ?? "standard", o.flavor === "dark");
+  let ls: LayerSpecification[] = applyTheme(withoutItalic(layers("protomaps", flavor, { lang: o.lang })), o.theme ?? "standard", o.flavor === "dark");
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
   // Road numbers: the stock shields are tiny (8 px) and sparse; make them readable at every
   // zoom and place them before the street names so they win collisions.

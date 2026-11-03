@@ -4,7 +4,8 @@
 /*
  * Design tokens
  * Type scale 12 / 13 / 14 / 16 / 20 / 24 · spacing on a 4 px grid
- * Radii: 6 (chips/kbd) · 8 (inner controls) · 10 (controls) · 12 (cards) · 14 (panels)
+ * Radii: 8 (panels, cards, popovers) · 4 (controls, chips, kbd) · 999 (switches only)
+ * One shadow (--shadow-pop == --shadow-panel). Surfaces are opaque: the map never shows through.
  * Control heights: 28 (small) · 36 (default) · 40 (primary / inputs)
  */
 :root {
@@ -15,8 +16,8 @@
   --bg: #eceef1;
   --fg: #15171c;
   --fg-muted: #5c6370;
-  --fg-subtle: #8b919c;
-  --surface: rgba(255, 255, 255, 0.9); /* floating sidebar (blurred) */
+  --fg-subtle: #656c78; /* 4.5:1 on white and on --surface-2 */
+  --surface: #ffffff; /* floating sidebar (opaque) */
   --surface-solid: #ffffff;
   --surface-raised: #ffffff; /* popovers, menus, toasts */
   --surface-2: #f3f4f6; /* fields, sunken tracks */
@@ -38,13 +39,13 @@
   --warning: #b86e00;
   --warning-soft: rgba(184, 110, 0, 0.1);
 
-  --shadow-panel: 0 1px 2px rgba(16, 18, 24, 0.06), 0 8px 28px -6px rgba(16, 18, 24, 0.16);
-  --shadow-pop: 0 2px 6px rgba(16, 18, 24, 0.06), 0 12px 32px -8px rgba(16, 18, 24, 0.22);
+  --shadow-panel: 0 1px 2px rgba(16, 18, 24, 0.06), 0 8px 24px -8px rgba(16, 18, 24, 0.18);
+  --shadow-pop: var(--shadow-panel);
   --shadow-sm: 0 1px 2px rgba(16, 18, 24, 0.08), 0 0 0 1px rgba(16, 18, 24, 0.04);
   --shadow: var(--shadow-pop);
-  --radius: 14px;
-  --radius-card: 12px;
-  --radius-sm: 10px;
+  --radius: 8px;
+  --radius-card: 8px;
+  --radius-sm: 4px;
   --route-car: #1a66d9;
   --route-foot: #1f8a4c;
   --route-bike: #b86e00;
@@ -58,9 +59,9 @@
 :root[data-theme="dark"] {
   --bg: #111214;
   --fg: rgba(255, 255, 255, 0.9);
-  --fg-muted: rgba(255, 255, 255, 0.6);
-  --fg-subtle: rgba(255, 255, 255, 0.4);
-  --surface: rgba(27, 29, 33, 0.92);
+  --fg-muted: rgba(255, 255, 255, 0.7);
+  --fg-subtle: rgba(255, 255, 255, 0.56); /* about 5:1 on the panel */
+  --surface: #1b1d21;
   --surface-solid: #1b1d21;
   --surface-raised: #24272c;
   --surface-2: #232529;
@@ -82,8 +83,8 @@
   --warning: #e5a63a;
   --warning-soft: rgba(229, 166, 58, 0.13);
 
-  --shadow-panel: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 10px 32px -8px rgba(0, 0, 0, 0.55);
-  --shadow-pop: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 14px 36px -8px rgba(0, 0, 0, 0.6);
+  --shadow-panel: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 10px 28px -8px rgba(0, 0, 0, 0.55);
+  --shadow-pop: var(--shadow-panel);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
   --route-car: #4b8df8;
   --route-foot: #4cc27e;
@@ -150,19 +151,14 @@
     touch-action: pan-x pan-y;
   }
 
-  /* Running text (hints, descriptions, messages) is justified; the last line keeps the start
-     edge. Centered blocks (empty states, dialogs) opt out through their parent's text-center. */
-  p,
-  .justify {
-    text-align: justify;
-    text-align-last: start;
-    text-justify: inter-word;
+  /* Running text keeps the start edge: justified Hebrew in narrow columns leaves uneven gaps. */
+  p {
+    text-align: start;
     hyphens: none;
   }
   .text-center p,
   p.text-center {
     text-align: center;
-    text-align-last: center;
   }
 
   body {
@@ -190,6 +186,22 @@
   textarea {
     user-select: text;
   }
+  /* Chrome (buttons, tabs, the rail) is not selectable; content is: names, addresses,
+     coordinates, stop codes, directions. */
+  .selectable,
+  .card,
+  .group-list,
+  li,
+  p,
+  bdi,
+  .maplibregl-popup-content {
+    user-select: text;
+  }
+  button,
+  [role="button"],
+  [role="tab"] {
+    user-select: none;
+  }
 
   button {
     cursor: pointer;
@@ -209,11 +221,9 @@
 }
 
 @layer components {
-  /* the one blurred surface: floating sidebar */
+  /* floating sidebar: opaque, so map symbols never show through it */
   .panel-surface {
     background: var(--surface);
-    backdrop-filter: blur(20px) saturate(1.3);
-    -webkit-backdrop-filter: blur(20px) saturate(1.3);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-panel);
   }
@@ -337,7 +347,7 @@
     height: 28px;
     padding: 0 10px;
     font-size: 13px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
   }
   .btn-icon {
     width: 36px;
@@ -382,7 +392,7 @@
     gap: 4px;
     height: 20px;
     padding: 0 7px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     line-height: 16px;
     font-weight: 500;
@@ -417,7 +427,7 @@
     gap: 6px;
     height: 20px;
     padding: 0 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
@@ -451,7 +461,7 @@
     gap: 6px;
     height: 28px;
     padding: 0 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
@@ -508,7 +518,7 @@
     gap: 6px;
     height: 32px;
     padding: 0 8px;
-    border-radius: 8px;
+    border-radius: 3px;
     color: var(--fg-muted);
     font-size: 13px;
     font-weight: 500;
@@ -584,14 +594,13 @@
     align-items: center;
     height: 22px;
     padding: 0 6px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 500;
     color: var(--fg-muted);
     background: var(--surface-2);
     border: 1px solid var(--border);
-    border-bottom-width: 2px;
   }
 
   /* icon tile used in list rows */
@@ -602,7 +611,7 @@
     flex-shrink: 0;
     width: 32px;
     height: 32px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     color: var(--fg-muted);
   }
@@ -612,19 +621,6 @@
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
   }
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-  *::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 10px;
-    border: 3px solid transparent;
-    background-clip: padding-box;
-  }
-  *::-webkit-scrollbar-track {
-    background: transparent;
-  }
 
   .scroll-y {
     overflow-y: auto;
@@ -633,18 +629,33 @@
   }
 
   /* skeleton */
+  /* placeholder block while loading: static, no shimmer */
   .skeleton {
-    background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-active) 50%, var(--surface-2) 75%);
-    background-size: 200% 100%;
-    animation: shimmer 1.4s linear infinite;
+    background: var(--surface-2);
     border-radius: var(--radius-card);
   }
-  @keyframes shimmer {
-    0% {
-      background-position: 200% 0;
+  /* thin indeterminate progress line (route computing, loading lists) */
+  .progress-line {
+    position: relative;
+    height: 2px;
+    overflow: hidden;
+    background: var(--accent-soft);
+    border-radius: 1px;
+  }
+  .progress-line::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    width: 30%;
+    background: var(--accent);
+    animation: progress-slide 1.1s var(--ease) infinite;
+  }
+  @keyframes progress-slide {
+    from {
+      inset-inline-start: -30%;
     }
-    100% {
-      background-position: -200% 0;
+    to {
+      inset-inline-start: 100%;
     }
   }
 
@@ -687,8 +698,8 @@
   --bg: #f4f1fa;
   --fg: #3f3a5a;
   --fg-muted: #726c8e;
-  --fg-subtle: #9c96b4;
-  --surface: rgba(250, 248, 255, 0.92);
+  --fg-subtle: #6f6992;
+  --surface: #faf8ff;
   --surface-solid: #faf8ff;
   --surface-raised: #fffdfd;
   --surface-2: #eee9f8;
@@ -713,8 +724,8 @@
   --route-bike: #c98b3a;
   --route-alt: #a7a1c2;
   --ring-color: rgba(124, 108, 240, 0.4);
-  --shadow-panel: 0 1px 2px rgba(90, 70, 140, 0.06), 0 8px 28px -6px rgba(90, 70, 140, 0.18);
-  --shadow-pop: 0 2px 6px rgba(90, 70, 140, 0.07), 0 12px 32px -8px rgba(90, 70, 140, 0.24);
+  --shadow-panel: 0 1px 2px rgba(90, 70, 140, 0.06), 0 8px 24px -8px rgba(90, 70, 140, 0.2);
+  --shadow-pop: var(--shadow-panel);
 }
 
 /* ---------- maplibre ---------- */
@@ -727,7 +738,7 @@
 .maplibregl-ctrl-group {
   background: var(--surface-raised) !important;
   border: 1px solid var(--border);
-  border-radius: 10px !important;
+  border-radius: var(--radius-sm) !important;
   box-shadow: var(--shadow-sm) !important;
   overflow: hidden;
 }
@@ -760,12 +771,15 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   padding: 0 6px !important;
+  /* MapLibre writes "30 m"; under the RTL root it would read "m 30" */
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 .maplibregl-popup-content {
   background: var(--surface-raised) !important;
   color: var(--fg) !important;
   border: 1px solid var(--border);
-  border-radius: 12px !important;
+  border-radius: var(--radius) !important;
   box-shadow: var(--shadow-pop) !important;
   padding: 12px 14px !important;
   padding-inline-end: 40px !important;
@@ -807,7 +821,8 @@
   background: color-mix(in srgb, var(--surface-raised) 80%, transparent) !important;
   color: var(--fg-muted) !important;
   font-size: 11px;
-  border-radius: 8px 0 0 0;
+  border-radius: var(--radius-sm);
+  direction: ltr;
 }
 .maplibregl-ctrl-attrib a {
   color: var(--fg-muted) !important;

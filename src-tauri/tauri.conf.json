@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "MapsOffline",
+        "title": "מפות אופליין",
         "width": 1400,
         "height": 900,
         "minWidth": 1000,

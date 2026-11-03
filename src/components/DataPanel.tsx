@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bus, Download, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
@@ -19,6 +19,21 @@ const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc:
   geocode: { icon: <MapPin size={16} strokeWidth={1.75} />, label: "compGeocode", desc: "compGeocodeDesc" },
   transit: { icon: <Bus size={16} strokeWidth={1.75} />, label: "compTransit", desc: "compTransitDesc" },
 };
+
+/** Rough download sizes of a first install (prebuilt packages), for the "update all" summary. */
+const NEW_BYTES: Record<DataComponent, number> = {
+  tiles: 190e6,
+  world: 45e6,
+  satellite: 2.5e9,
+  terrain: 55e6,
+  routing: 50e6,
+  geocode: 22e6,
+  transit: 37e6,
+};
+const SAT_ORTHO_BYTES: Record<string, number> = { low: 150e6, medium: 600e6, high: 2.5e9, max: 10e9 };
+const SAT_SENTINEL_BYTES: Record<string, number> = { low: 15e6, medium: 45e6, high: 120e6, max: 120e6 };
+/** Big or optional components: not ticked by default when they are not installed yet. */
+const OPTIONAL_EXTRAS: DataComponent[] = ["satellite", "world"];
 
 const PHASE_KEY: Record<ProgressPhase, I18nKey> = {
   queued: "phaseQueued",
@@ -96,12 +111,26 @@ export function DataPanel() {
   }, [refreshDataStatus, checkUpdates]);
 
   // After an update finishes, the check result is stale: re-check so the pills flip to "up to date".
+  // Only on the true -> false edge: on mount `updating` is already false, and re-checking there
+  // would hit the network on every opening of the panel (the 10-minute throttle covers that).
+  const wasUpdating = useRef(updating);
   useEffect(() => {
-    if (!updating && check) void checkUpdates(true);
+    if (wasUpdating.current && !updating && check) void checkUpdates(true);
+    wasUpdating.current = updating;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updating]);
 
   const available = DATA_COMPONENTS.filter((c) => check?.[c]?.available);
+  // "Update all" first shows what it is about to download and how big it is: on a fresh install
+  // it would otherwise start the satellite imagery (up to many GB, hours) and the world map
+  // without a word. Optional extras that are not installed yet start unticked.
+  const [plan, setPlan] = useState<DataComponent[] | null>(null);
+  const estimate = (c: DataComponent): number => {
+    const st = status?.[c];
+    if (st?.present && st.sizeBytes) return st.sizeBytes;
+    if (c === "satellite") return (ortho ? SAT_ORTHO_BYTES : SAT_SENTINEL_BYTES)[satelliteQuality] ?? SAT_ORTHO_BYTES.high;
+    return NEW_BYTES[c];
+  };
   const pending = DATA_COMPONENTS.filter((c) => (status && !status[c]?.present) || check?.[c]?.available);
   const checkErrors = DATA_COMPONENTS.filter((c) => check?.[c]?.error);
 
@@ -143,9 +172,45 @@ export function DataPanel() {
           </button>
         ) : pending.length > 0 ? (
           // only when there is something to do: an available update or a missing component
-          <button className="btn btn-primary w-full" onClick={() => void startUpdate(pending)}>
-            <Download size={16} strokeWidth={2} /> {t("updateAll")}
-          </button>
+          plan ? (
+            <div className="card p-3 flex flex-col gap-2 fade-in">
+              <div className="text-sm font-semibold">{t("updatePlanTitle")}</div>
+              <div className="flex flex-col">
+                {pending.map((c) => (
+                  <label key={c} className="flex items-center gap-2.5 min-h-9 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-[var(--accent)]"
+                      checked={plan.includes(c)}
+                      onChange={(e) => setPlan(e.target.checked ? [...plan, c] : plan.filter((x) => x !== c))}
+                    />
+                    <span className="flex-1 min-w-0 truncate">{t(META[c].label)}</span>
+                    <bdi dir="ltr" className="text-xs text-muted num shrink-0">~{fmtBytes(estimate(c))}</bdi>
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  className="btn btn-primary flex-1"
+                  disabled={plan.length === 0}
+                  onClick={() => {
+                    const comps = pending.filter((c) => plan.includes(c));
+                    setPlan(null);
+                    void startUpdate(comps);
+                  }}
+                >
+                  <Download size={16} strokeWidth={2} /> {t("updatePlanStart")} <bdi dir="ltr" className="num font-normal">(~{fmtBytes(plan.reduce((n, c) => n + estimate(c), 0))})</bdi>
+                </button>
+                <button className="btn" onClick={() => setPlan(null)}>
+                  {t("cancel")}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button className="btn btn-primary w-full" onClick={() => setPlan(pending.filter((c) => !(OPTIONAL_EXTRAS.includes(c) && !status?.[c]?.present)))}>
+              <Download size={16} strokeWidth={2} /> {t("updateAll")}
+            </button>
+          )
         ) : null}
         <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
         <div className="group-list">
@@ -173,7 +238,7 @@ export function DataPanel() {
                     <label className="flex flex-col gap-1 text-xs text-muted">
                       <span>{t("satelliteSource")}</span>
                       <select
-                        className="input h-8 !py-0 text-xs w-full min-w-0"
+                        className="input h-9 text-sm w-full min-w-0"
                         value={satelliteSource}
                         disabled={updating}
                         onChange={(e) => {
@@ -187,7 +252,7 @@ export function DataPanel() {
                     <label className="flex flex-col gap-1 text-xs text-muted">
                       <span>{t("satelliteQuality")}</span>
                       <select
-                        className="input h-8 !py-0 text-xs w-full min-w-0"
+                        className="input h-9 text-sm w-full min-w-0"
                         value={!ortho && satelliteQuality === "max" ? "high" : satelliteQuality}
                         disabled={updating}
                         onChange={(e) => {
@@ -404,7 +469,7 @@ function ComponentCard({
         <div className="fade-in ps-11">
           <div className="flex justify-between gap-2 text-xs mb-1.5">
             <span
-              className={clsx(prog.phase === "failed" ? "text-danger whitespace-normal break-words justify" : "truncate", prog.phase === "done" ? "text-success" : prog.phase !== "failed" && "text-muted")}
+              className={clsx(prog.phase === "failed" ? "text-danger whitespace-normal break-words" : "truncate", prog.phase === "done" ? "text-success" : prog.phase !== "failed" && "text-muted")}
               title={prog.phase === "failed" ? prog.message : undefined}
             >
               {active ? (showPaused ? t("phasePaused") : prog.message || t(PHASE_KEY[prog.phase])) : prog.phase === "failed" && prog.message ? `${t("phaseFailed")}: ${prog.message}` : t(PHASE_KEY[prog.phase])}

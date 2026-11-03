@@ -135,7 +135,7 @@ export function RoutePanel() {
       {/* options */}
       <div>
         <button
-          className="w-full flex items-center gap-2 h-9 px-1 rounded-lg text-sm text-muted hover:text-fg transition-colors"
+          className="w-full flex items-center gap-2 h-9 px-1 rounded text-sm text-muted hover:text-fg transition-colors"
           onClick={() => setShowOptions((v) => !v)}
           aria-expanded={showOptions}
         >
@@ -155,7 +155,8 @@ export function RoutePanel() {
             )}
             {mode !== "transit" && (
               <Toggle
-                label={t(avoid.unpaved && avoid.unpavedLongOnly ? "avoidUnpavedLong" : "avoidUnpaved")}
+                label={t("avoidUnpaved")}
+                hint={avoid.unpaved && avoid.unpavedLongOnly ? t("avoidUnpavedLongHint") : undefined}
                 checked={avoid.unpaved}
                 onChange={(v) => setAvoid({ unpaved: v, unpavedLongOnly: v && useStore.getState().settings.unpaved !== "avoid" })}
               />
@@ -206,23 +207,20 @@ export function RoutePanel() {
         )}
       </div>
 
-      <button className={clsx("btn btn-primary w-full", loading && "opacity-80")} disabled={!canCompute || loading} onClick={() => void computeRoute()}>
-        {loading ? t("computing") : t("computeRoute")}
-      </button>
-
+      {/* Every change recomputes the route by itself, so there is no "compute" button: only a
+          thin progress line while it runs, and "try again" when it failed. */}
       {!canCompute && routes.length === 0 && !error && <p className="m-0 text-sm text-muted">{t("pickPointsHint")}</p>}
 
-      {loading && (
-        <div className="flex flex-col gap-2">
-          <div className="skeleton h-3 w-16 my-1 rounded" />
-          <div className="skeleton h-[76px]" />
-          <div className="skeleton h-[76px] opacity-70" />
-        </div>
-      )}
+      {loading && <div className="progress-line" role="progressbar" aria-label={t("computing")} />}
       {error && !loading && (
         <div className="flex items-start gap-2.5 rounded-[var(--radius-card)] px-3 py-2.5 text-sm bg-danger-soft text-danger" role="alert">
           <AlertCircle size={16} className="shrink-0 mt-px" />
-          <span className="min-w-0">{error}</span>
+          <span className="min-w-0 flex-1">{error}</span>
+          {canCompute && (
+            <button className="btn btn-ghost btn-sm -my-1 -me-1.5 text-danger shrink-0" onClick={() => void computeRoute()}>
+              {t("retry")}
+            </button>
+          )}
         </div>
       )}
       {!loading && routes.length > 0 && <RouteResults />}
@@ -230,10 +228,13 @@ export function RoutePanel() {
   );
 }
 
-export function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="row justify-between cursor-pointer">
-      <span className="text-base">{label}</span>
+      <span className="flex flex-col min-w-0">
+        <span className="text-base">{label}</span>
+        {hint && <span className="text-xs text-muted">{hint}</span>}
+      </span>
       <button type="button" role="switch" aria-checked={checked} className="switch" onClick={() => onChange(!checked)} />
     </label>
   );

@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::data::Cancel;
 use crate::types::{ProgressFn, ProgressPhase};
 
-pub const USER_AGENT: &str = "MapsOffline/0.1";
+/// One User-Agent for every HTTP request (data updates, online routing, tiles): app name,
+/// version and project page, as Transitous and the OSRM demo server ask for.
+pub const USER_AGENT: &str = concat!("MapsOffline/", env!("CARGO_PKG_VERSION"), " (+https://gitlab.com/RecoveryAdvancedFree/MapsOffline)");
 const CHUNK: usize = 1 << 20;
 const MAX_ATTEMPTS: u32 = 5;
 

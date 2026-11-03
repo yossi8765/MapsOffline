@@ -143,7 +143,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
           {(i === 0 || items[i - 1].group !== it.group) && <div className="h-px bg-line my-1 -mx-1" />}
           <button
             role="menuitem"
-            className="w-full flex items-center gap-2.5 px-2.5 h-8 rounded-md text-start text-sm hover:bg-hover focus-visible:bg-hover transition-colors duration-100"
+            className="w-full flex items-center gap-2.5 px-2.5 h-8 rounded text-start text-sm hover:bg-hover focus-visible:bg-hover transition-colors duration-100"
             onClick={() => {
               close();
               void it.run();

@@ -74,6 +74,19 @@ export function resultLabel(r: GeoResult): string {
   return r.name;
 }
 
+/** English-layout keys → the Hebrew letters on the same keys (standard Israeli layout). */
+const EN_TO_HE: Record<string, string> = {
+  q: "/", w: "'", e: "ק", r: "ר", t: "א", y: "ט", u: "ו", i: "ן", o: "ם", p: "פ",
+  a: "ש", s: "ד", d: "ג", f: "כ", g: "ע", h: "י", j: "ח", k: "ל", l: "ך", ";": "ף",
+  z: "ז", x: "ס", c: "ב", v: "ה", b: "נ", n: "מ", m: "צ", ",": "ת", ".": "ץ", "/": ".",
+};
+
+/** The query as it was meant when typed with the English layout on, or null when it was not. */
+export function keyboardFix(q: string): string | null {
+  if (!/[a-z]/i.test(q) || /[֐-׿]/.test(q)) return null;
+  return [...q.toLowerCase()].map((ch) => EN_TO_HE[ch] ?? ch).join("");
+}
+
 const PRECISION_KEY: Record<GeoResult["precision"], I18nKey> = {
   exact: "precisionExact",
   interpolated: "precisionInterpolated",
@@ -110,6 +123,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
     const q = text.trim();
     if (!open) return;
     if (!q) {
+      // invalidate a request still in flight, or its results would land in the empty box
+      seq.current++;
       setResults([]);
       setLoading(false);
       return;
@@ -147,6 +162,12 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
     }
     return out;
   }, [text, results, favorites, history, noLocation]);
+
+  // the backend silently retries a Latin query as Hebrew typed on the wrong layout: say so
+  const fixedQuery = useMemo(() => {
+    const fixed = keyboardFix(text.trim());
+    return fixed && results.length > 0 && /[֐-׿]/.test(resultLabel(results[0])) ? fixed : null;
+  }, [text, results]);
 
   const removeRecent = async (id: number) => {
     try {
@@ -231,7 +252,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
         />
         {(text || value) && (
           <button
-            className="absolute end-1.5 w-7 h-7 rounded-md flex items-center justify-center text-subtle hover:text-fg hover:bg-hover transition-colors"
+            className="absolute end-1.5 w-7 h-7 rounded flex items-center justify-center text-subtle hover:text-fg hover:bg-hover transition-colors"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               setText("");
@@ -239,7 +260,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
               onClear?.();
               inputRef.current?.focus();
             }}
-            aria-label={t("close")}
+            aria-label={t("searchClear")}
+            title={t("searchClear")}
           >
             <X size={14} />
           </button>
@@ -248,17 +270,10 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
 
       {open && (rows.length > 0 || loading || text.trim()) && (
         <div className="absolute z-40 mt-1.5 w-full popover rounded-[var(--radius-card)] overflow-hidden max-h-80 scroll-y py-1 fade-in" role="listbox" onMouseDown={(e) => e.preventDefault()}>
-          {loading && rows.length === 0 && (
-            <div className="flex flex-col">
-              {[0, 1, 2].map((k) => (
-                <div key={k} className="flex items-center gap-3 px-3 h-12">
-                  <div className="skeleton w-8 h-8 rounded-lg" />
-                  <div className="flex-1 flex flex-col gap-1.5">
-                    <div className="skeleton h-3 w-2/3 rounded" />
-                    <div className="skeleton h-2.5 w-1/3 rounded" />
-                  </div>
-                </div>
-              ))}
+          {loading && rows.length === 0 && <div className="progress-line mx-3 my-3" role="progressbar" aria-busy="true" />}
+          {fixedQuery && (
+            <div className="px-3 pt-1.5 pb-1 text-xs text-muted">
+              {t("keyboardFixed")} <bdi className="font-medium text-fg">{fixedQuery}</bdi>
             </div>
           )}
           {!loading && text.trim() && rows.length === 0 && (
@@ -316,8 +331,9 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
                   <span className="block truncate text-base">{name}</span>
                   {secondary && <span className="block truncate text-xs text-muted">{secondary}</span>}
                 </span>
-                {r && r.kind === "address" && (
-                  <span className={clsx("chip", r.precision === "exact" ? "chip-success" : r.precision === "interpolated" ? "chip-warning" : "chip-muted")}>
+                {/* precision is news only when it is not exact */}
+                {r && r.kind === "address" && r.precision !== "exact" && (
+                  <span className={clsx("chip", r.precision === "interpolated" ? "chip-warning" : "chip-muted")}>
                     {t(PRECISION_KEY[r.precision])}
                   </span>
                 )}
