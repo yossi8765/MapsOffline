@@ -151,14 +151,19 @@
     touch-action: pan-x pan-y;
   }
 
-  /* Running text keeps the start edge: justified Hebrew in narrow columns leaves uneven gaps. */
-  p {
-    text-align: start;
+  /* Running text (hints, descriptions, messages) is justified – the user's standing rule; the
+     last line keeps the start edge. Centered blocks opt out through text-center. */
+  p,
+  .justify {
+    text-align: justify;
+    text-align-last: start;
+    text-justify: inter-word;
     hyphens: none;
   }
   .text-center p,
   p.text-center {
     text-align: center;
+    text-align-last: center;
   }
 
   body {

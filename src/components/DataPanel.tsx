@@ -469,7 +469,7 @@ function ComponentCard({
         <div className="fade-in ps-11">
           <div className="flex justify-between gap-2 text-xs mb-1.5">
             <span
-              className={clsx(prog.phase === "failed" ? "text-danger whitespace-normal break-words" : "truncate", prog.phase === "done" ? "text-success" : prog.phase !== "failed" && "text-muted")}
+              className={clsx(prog.phase === "failed" ? "text-danger whitespace-normal break-words justify" : "truncate", prog.phase === "done" ? "text-success" : prog.phase !== "failed" && "text-muted")}
               title={prog.phase === "failed" ? prog.message : undefined}
             >
               {active ? (showPaused ? t("phasePaused") : prog.message || t(PHASE_KEY[prog.phase])) : prog.phase === "failed" && prog.message ? `${t("phaseFailed")}: ${prog.message}` : t(PHASE_KEY[prog.phase])}

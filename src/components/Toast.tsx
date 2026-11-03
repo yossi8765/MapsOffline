@@ -27,7 +27,7 @@ export function Toasts() {
           ) : (
             <Info size={16} className="text-muted shrink-0" />
           )}
-          <span className="flex-1 py-1">{t.text}</span>
+          <span className="flex-1 py-1 justify">{t.text}</span>
           <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => dismiss(t.id)} aria-label={tr("close")} title={tr("close")}>
             <X size={14} />
           </button>
