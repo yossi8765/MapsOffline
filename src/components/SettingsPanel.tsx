@@ -98,7 +98,7 @@ export function SettingsPanel() {
         <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
       </Section>
 
-      <Section title={t("navigation")} hint={t("avoidAreasHint")}>
+      <Section title={t("navigationDefaults")} hint={`${t("navDefaultsHint")} ${t("avoidAreasHint")}`}>
         <Toggle label={t("avoidTollsDefault")} checked={settings.avoidTolls} onChange={(v) => void update({ avoidTolls: v })} />
         <Toggle label={t("avoidMotorwaysDefault")} checked={settings.avoidMotorways} onChange={(v) => void update({ avoidMotorways: v })} />
         <Toggle label={t("avoidFerriesDefault")} checked={settings.avoidFerries} onChange={(v) => void update({ avoidFerries: v })} />

@@ -373,7 +373,7 @@ pub fn update(
                     let tmp = paths.geocode_file().with_extension("sqlite.tmp");
                     let _ = std::fs::remove_file(&tmp);
                     crate::geocode::build(&paths.pbf_file(), &tmp, progress)?;
-                    crate::paths::atomic_replace(&paths.geocode_file(), &tmp)?;
+                    crate::geocode::replace_index(&paths.geocode_file(), &tmp)?;
                     Ok(())
                 });
             }

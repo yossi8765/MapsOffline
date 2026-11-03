@@ -626,8 +626,11 @@ pub struct Settings {
     #[serde(default = "default_unpaved")]
     pub unpaved: String,
     /// Default for the route panel: avoid difficult junctions (unsignalised left / U-turns).
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub avoid_hard_turns: bool,
+    /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
+    #[serde(default = "default_transit_pref")]
+    pub transit_preference: String,
 }
 
 pub fn default_avoid_areas() -> String {
@@ -648,6 +651,10 @@ fn default_accent() -> String {
 
 fn default_sat_quality() -> String {
     "high".into()
+}
+
+fn default_transit_pref() -> String {
+    "fastest".into()
 }
 
 fn default_sat_source() -> String {
@@ -694,7 +701,8 @@ impl Default for Settings {
             avoid_motorways: false,
             avoid_ferries: false,
             unpaved: default_unpaved(),
-            avoid_hard_turns: false,
+            avoid_hard_turns: true,
+            transit_preference: default_transit_pref(),
         }
     }
 }

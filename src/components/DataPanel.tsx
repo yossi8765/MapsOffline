@@ -100,6 +100,7 @@ export function DataPanel() {
   }, [updating]);
 
   const available = DATA_COMPONENTS.filter((c) => check?.[c]?.available);
+  const pending = DATA_COMPONENTS.filter((c) => (status && !status[c]?.present) || check?.[c]?.available);
   const checkErrors = DATA_COMPONENTS.filter((c) => check?.[c]?.error);
 
   const openDir = async () => {
@@ -138,11 +139,12 @@ export function DataPanel() {
           <button className="btn btn-danger w-full !h-10" onClick={() => void cancelUpdate()}>
             <X size={16} strokeWidth={1.75} /> {t("cancelUpdate")}
           </button>
-        ) : (
-          <button className="btn btn-primary w-full" onClick={() => void startUpdate(DATA_COMPONENTS)}>
+        ) : pending.length > 0 ? (
+          // only when there is something to do: an available update or a missing component
+          <button className="btn btn-primary w-full" onClick={() => void startUpdate(pending)}>
             <Download size={16} strokeWidth={2} /> {t("updateAll")}
           </button>
-        )}
+        ) : null}
         <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
         </div>
         <div className="group-list">

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Bike, Bus, Car, ChevronDown, Circle, Footprints, MapPin, Plus, SlidersHorizontal, Trash2, X, Route } from "lucide-react";
 import clsx from "clsx";
-import { useStore } from "../lib/store";
+import { sortTransit, useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import type { Mode, TimeKind } from "../lib/api";
 import { isoToLocalInput, localInputToIso } from "../lib/format";
@@ -21,6 +21,7 @@ export function RoutePanel() {
   const mode = useStore((s) => s.mode);
   const time = useStore((s) => s.time);
   const avoid = useStore((s) => s.avoid);
+  const transitPref = useStore((s) => s.settings.transitPreference);
   const avoidAreasPref = useStore((s) => s.settings.avoidAreas);
   const alternativesCount = useStore((s) => s.alternativesCount);
   const routes = useStore((s) => s.routes);
@@ -160,6 +161,30 @@ export function RoutePanel() {
               />
             )}
             {mode === "car" && <Toggle label={t("avoidHardTurns")} checked={avoid.hardTurns} onChange={(v) => setAvoid({ hardTurns: v })} />}
+            {mode === "transit" && (
+              <div className="row justify-between gap-2 flex-wrap">
+                <span>{t("transitPref")}</span>
+                <div className="seg seg-sm seg-fit">
+                  {(["fastest", "fewestTransfers", "leastWalking"] as const).map((p) => (
+                    <button
+                      key={p}
+                      aria-pressed={(transitPref ?? "fastest") === p}
+                      onClick={() => {
+                        const st = useStore.getState();
+                        void st.updateSettings({ transitPreference: p });
+                        // re-order what is already on screen; the best one becomes the selected route
+                        if (st.routes.length && st.routes[0].mode === "transit") {
+                          const routes = sortTransit(st.routes, p, st.time.kind);
+                          useStore.setState({ routes, selectedRouteId: routes[0].id, routeTick: st.routeTick + 1 });
+                        }
+                      }}
+                    >
+                      <span>{t(p === "fastest" ? "transitPrefFastest" : p === "fewestTransfers" ? "transitPrefTransfers" : "transitPrefWalking")}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {mode !== "transit" && (
               <Toggle
                 label={t(avoidAreasPref === "a" ? "avoidAreaA" : "avoidAreasAB")}

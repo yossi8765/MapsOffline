@@ -353,6 +353,8 @@ export interface Settings {
   avoidFerries: boolean;
   unpaved: UnpavedMode;
   avoidHardTurns: boolean;
+  /** Order of public-transport results. */
+  transitPreference: TransitPreference;
 }
 
 export interface AppInfo {
@@ -427,6 +429,8 @@ export interface InstalledRegion {
   busy: boolean;
 }
 
+export type TransitPreference = "fastest" | "fewestTransfers" | "leastWalking";
+
 export type RegionPart = "map" | "search" | "routing";
 
 /** Emitted as tauri event `region-progress`. */
@@ -479,6 +483,8 @@ export const api = {
   regionsCatalog: (refresh = false) => invoke<RegionEntry[]>("regions_catalog", { refresh }),
   /** True when countries besides Israel are installed: use the merged tile source. */
   mapTilesAvailable: () => invoke<boolean>("map_tiles_available"),
+  /** Write a text file chosen in the save dialog. */
+  saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   regionsInstalled: () => invoke<InstalledRegion[]>("regions_installed"),
   regionSize: (id: string) => invoke<RegionSize>("region_size", { id }),
   /** Install or update a region (long running; progress on `region-progress`). Resolves when done. */

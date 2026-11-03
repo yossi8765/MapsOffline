@@ -48,6 +48,7 @@ pub fn run() {
             commands::geocode_search,
             commands::geocode_reverse,
             commands::regions_catalog,
+            commands::save_text_file,
             commands::regions_installed,
             commands::region_size,
             commands::region_install,

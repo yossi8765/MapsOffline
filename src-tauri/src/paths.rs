@@ -151,9 +151,23 @@ impl DataPaths {
 }
 
 /// Write `bytes` to `tmp` next to `dest` then atomically rename over `dest`.
+/// On Windows a file that is open (a map tile being read, an index being searched) cannot be
+/// removed; such holds are short, so retry for a few seconds before giving up.
 pub fn atomic_replace(dest: &Path, tmp: &Path) -> std::io::Result<()> {
-    if dest.exists() {
-        std::fs::remove_file(dest)?;
+    let mut attempt = 0;
+    loop {
+        let r = (|| {
+            if dest.exists() {
+                std::fs::remove_file(dest)?;
+            }
+            std::fs::rename(tmp, dest)
+        })();
+        match r {
+            Err(e) if attempt < 15 && e.kind() != std::io::ErrorKind::NotFound => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            r => return r,
+        }
     }
-    std::fs::rename(tmp, dest)
 }

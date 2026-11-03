@@ -855,3 +855,9 @@ pub fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
     state.refresh_map_files();
     Ok(!crate::data::regions::ready_maps(&state.paths()).is_empty())
 }
+
+/// Write a text file the user picked in the save dialog (route export: GPX / KML).
+#[tauri::command]
+pub fn save_text_file(path: String, contents: String) -> R<()> {
+    std::fs::write(&path, contents).map_err(|e| format!("SAVE_FAILED: {e}"))
+}

@@ -888,6 +888,12 @@
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  /* entry animations start at opacity 0: on paper they would never finish (blank steps) */
+  .print-sheet,
+  .print-sheet * {
+    animation: none !important;
+    transition: none !important;
+  }
   .print-sheet .card {
     box-shadow: none;
     border: 1px solid #c9ced6;

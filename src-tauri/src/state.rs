@@ -42,6 +42,8 @@ struct GeoPool {
     gen: u64,
     idle: Vec<Geocoder>,
     cache: Option<SharedCache>,
+    /// `geocode::EPOCH` the pooled connections belong to
+    epoch: u64,
 }
 
 const MAX_IDLE_GEOCODERS: usize = 4;
@@ -249,8 +251,20 @@ impl AppState {
 
     /// Run `f` with a geocoder connection (opened lazily). No lock is held while `f` runs.
     pub fn with_geocoder<R>(&self, f: impl FnOnce(&Geocoder) -> anyhow::Result<R>) -> anyhow::Result<R> {
+        use std::sync::atomic::Ordering as O;
+        if crate::geocode::REPLACING.load(O::SeqCst) {
+            anyhow::bail!("NO_GEOCODE_DATA");
+        }
         let (gen, geo) = {
             let mut pool = self.geocoder.lock();
+            let epoch = crate::geocode::EPOCH.load(O::SeqCst);
+            if pool.epoch != epoch {
+                // the index file was replaced: forget every connection to the old one
+                pool.idle.clear();
+                pool.cache = None;
+                pool.gen += 1;
+                pool.epoch = epoch;
+            }
             let gen = pool.gen;
             match pool.idle.pop() {
                 Some(g) => (gen, g),
@@ -268,7 +282,8 @@ impl AppState {
         };
         let r = f(&geo);
         let mut pool = self.geocoder.lock();
-        if pool.gen == gen && pool.idle.len() < MAX_IDLE_GEOCODERS {
+        let replacing = crate::geocode::REPLACING.load(O::SeqCst) || pool.epoch != crate::geocode::EPOCH.load(O::SeqCst);
+        if !replacing && pool.gen == gen && pool.idle.len() < MAX_IDLE_GEOCODERS {
             pool.idle.push(geo);
         }
         r

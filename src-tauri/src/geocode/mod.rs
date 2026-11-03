@@ -22,6 +22,28 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     builder::build(pbf, out, progress)
 }
 
+/// While true the app opens no connection to the Israel index (it is being replaced); bumping
+/// [`EPOCH`] makes pooled connections be dropped instead of reused.
+pub static REPLACING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replace the installed index with a freshly built one while the app may be searching it:
+/// stop new connections, let running searches finish, drop pooled ones, then swap the file.
+pub fn replace_index(dest: &Path, tmp: &Path) -> std::io::Result<()> {
+    use std::sync::atomic::Ordering;
+    struct Unblock;
+    impl Drop for Unblock {
+        fn drop(&mut self) {
+            REPLACING.store(false, Ordering::SeqCst);
+        }
+    }
+    REPLACING.store(true, Ordering::SeqCst);
+    let _unblock = Unblock;
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    crate::paths::atomic_replace(dest, tmp)
+}
+
 /// Index of another country (`ref_lat` = middle latitude of its bbox).
 pub fn build_region(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
     builder::build_at(pbf, out, ref_lat, progress)

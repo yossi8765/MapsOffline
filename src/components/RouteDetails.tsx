@@ -23,7 +23,8 @@ import clsx from "clsx";
 import { findLineFavorite, useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import type { Leg, Maneuver, Route } from "../lib/api";
-import { copyText, downloadFile, fmtDistance, fmtDuration, fmtTime, routeToGpx, routeToKml, routeToText } from "../lib/format";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { copyText, fmtDistance, fmtDuration, fmtTime, routeToGpx, routeToKml, routeToText } from "../lib/format";
 import { api } from "../lib/api";
 import { printPage } from "../lib/print";
 import { legColorHex, vehicleIcon } from "./RouteResults";
@@ -306,6 +307,19 @@ function ElevationProfile({ route }: { route: Route }) {
   );
 }
 
+/** Ask where to save, write the file, and say where it went. */
+async function exportRoute(fileName: string, ext: "gpx" | "kml", content: string, t: ReturnType<typeof useT>) {
+  const st = useStore.getState();
+  try {
+    const path = await saveDialog({ defaultPath: fileName, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+    if (!path) return; // cancelled
+    await api.saveTextFile(path, content);
+    st.toast("success", `${t("exportSaved")} ${path}`);
+  } catch (e) {
+    st.toastError(e);
+  }
+}
+
 export function RouteDetails({ route, embedded = false }: { route: Route; embedded?: boolean }) {
   const t = useT();
   const lang = useStore((s) => s.settings.language);
@@ -336,10 +350,10 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
       </div>
       <ElevationProfile route={route} />
       <div className="flex flex-wrap gap-1.5 no-print">
-        <button className="btn btn-sm" onClick={() => downloadFile(`${safe}.gpx`, routeToGpx(route, name), "application/gpx+xml")}>
+        <button className="btn btn-sm" onClick={() => void exportRoute(`${safe}.gpx`, "gpx", routeToGpx(route, name), t)}>
           <Download size={14} strokeWidth={1.75} /> {t("exportGpx")}
         </button>
-        <button className="btn btn-sm" onClick={() => downloadFile(`${safe}.kml`, routeToKml(route, name), "application/vnd.google-earth.kml+xml")}>
+        <button className="btn btn-sm" onClick={() => void exportRoute(`${safe}.kml`, "kml", routeToKml(route, name), t)}>
           <Download size={14} strokeWidth={1.75} /> {t("exportKml")}
         </button>
         <button

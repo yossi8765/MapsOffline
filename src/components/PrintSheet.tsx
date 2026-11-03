@@ -14,7 +14,8 @@ export function PrintSheet() {
   const waypoints = useStore((s) => s.waypoints);
   const units = useStore((s) => s.settings.units);
   const lang = useStore((s) => s.settings.language);
-  const route = routes.find((r) => r.id === selectedId);
+  // the selected route, else the first one (never an empty page)
+  const route = routes.find((r) => r.id === selectedId) ?? routes[0];
   if (!route) return null;
 
   const from = waypoints[0]?.label ?? "A";
