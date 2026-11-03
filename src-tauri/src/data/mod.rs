@@ -3,6 +3,7 @@
 pub mod download;
 pub mod manifest;
 pub mod orthophoto;
+pub mod osmdiff;
 pub mod regions;
 pub mod package;
 pub mod satellite;
@@ -199,7 +200,21 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             }
             Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
         });
-        let o = s.spawn(|| source_check(PBF_URL, &[DataComponent::Routing, DataComponent::Geocode]));
+        let o = s.spawn(|| {
+            // The OSM extract is versioned by Geofabrik's replication sequence (see `osmdiff`), the
+            // same string the full download and the incremental update tag the PBF with.
+            let remote = download::http_client().and_then(|c| osmdiff::remote_state(&c));
+            [DataComponent::Routing, DataComponent::Geocode]
+                .into_iter()
+                .map(|c| match &remote {
+                    Ok(st) => {
+                        let expected = Some(build_tag(c, &st.version()));
+                        UpdateCheck { available: local(c).is_none() || expected != local(c), remote_version: expected, error: None }
+                    }
+                    Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+                })
+                .collect::<Vec<_>>()
+        });
         let g = s.spawn(|| source_check(GTFS_URL, &[DataComponent::Transit]));
         (t.join().unwrap_or_default(), world.join().unwrap_or_default(), sat.join().unwrap_or_default(), dem.join().unwrap_or_default(), o.join().unwrap_or_default(), g.join().unwrap_or_default())
     });
@@ -327,7 +342,7 @@ pub fn update(
             s.spawn(move || {
                 let rep = Reporter::new(emit, &comps, cancel);
                 let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
-                download::ensure_fresh(PBF_URL, &paths.pbf_file(), &progress, &rep.cancel)
+                osmdiff::update_pbf(&paths.pbf_file(), &progress, &rep.cancel)
             })
         });
         let gtfs = wants(DataComponent::Transit).then(|| {

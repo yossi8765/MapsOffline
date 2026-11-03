@@ -28,6 +28,10 @@ pub struct DownloadMeta {
     pub content_length: Option<u64>,
     #[serde(default)]
     pub completed: bool,
+    /// Replication sequence number of the last *full* download of an OSM extract; incremental
+    /// updates (`osmdiff`) keep it so the extract is re-cut from scratch now and then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_sequence: Option<i64>,
 }
 
 impl DownloadMeta {
@@ -90,6 +94,7 @@ fn meta_from_headers(url: &str, h: &HeaderMap, len: Option<u64>) -> DownloadMeta
         last_modified: hdr(h, LAST_MODIFIED),
         content_length: len.or_else(|| hdr(h, CONTENT_LENGTH).and_then(|s| s.parse().ok())),
         completed: false,
+        full_sequence: None,
     }
 }
 
@@ -400,6 +405,7 @@ mod tests {
             last_modified: Some("Mon, 01 Jan 2026 00:00:00 GMT".into()),
             content_length: Some(123),
             completed: true,
+            full_sequence: Some(4937),
         };
         let s = serde_json::to_string(&m).unwrap();
         assert_eq!(DownloadMeta::parse(&s).unwrap(), m);
