@@ -452,12 +452,9 @@ fn resolve(span: Span, arena: &[i64], needed: &[i64], coords: &[(i32, i32)]) -> 
     out
 }
 
-pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
-    build_at(pbf, out, 31.5, progress)
-}
-
-/// Build for a region centred around latitude `ref_lat` (degrees).
-pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
+/// Build for a region centred around latitude `ref_lat` (degrees); `extra` points of interest
+/// (open-data sources) join the OSM ones unless OSM has the same category within ~100 m.
+pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::ExtPoi], progress: ProgressFn) -> Result<()> {
     COS_LAT_TL.with(|c| c.set(ref_lat.to_radians().cos().max(0.2)));
     let t0 = Instant::now();
     let p = |done: u64, msg: &str| progress(ProgressPhase::Processing, done, 100, msg);
@@ -778,6 +775,28 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> R
                 continue;
             }
             list.push(PoiFinal { names: pr.names.clone(), cat: pr.cat, lon, lat, city: cities.nearest(lon, lat) });
+        }
+        // open-data points: skip those OSM already has (same category, neighbouring ~100 m cell)
+        let cell = |lon: f64, lat: f64| ((lon * 1000.0).floor() as i64, (lat * 1000.0).floor() as i64);
+        let mut osm_cells: FxHashSet<(u32, i64, i64)> = FxHashSet::default();
+        for f in &list {
+            let (x, y) = cell(f.lon, f.lat);
+            osm_cells.insert((f.cat, x, y));
+        }
+        let mut n_extra = 0usize;
+        for e in extra {
+            let cat = st.strs.id(e.cat);
+            let (x, y) = cell(e.lon, e.lat);
+            if (-1..=1).any(|dx| (-1..=1).any(|dy| osm_cells.contains(&(cat, x + dx, y + dy)))) {
+                continue;
+            }
+            osm_cells.insert((cat, x, y));
+            let names = Names { he: e.name.clone(), ..Default::default() };
+            list.push(PoiFinal { names, cat, lon: e.lon, lat: e.lat, city: cities.nearest(e.lon, e.lat) });
+            n_extra += 1;
+        }
+        if !extra.is_empty() {
+            log::info!("geocode: {n_extra} of {} open-data points added (the rest are in OSM)", extra.len());
         }
         list.sort_by(|a, b| city_pop(b.city).cmp(&city_pop(a.city)));
         let mut ins = tx.prepare("INSERT INTO pois(id,name,category,lon,lat,city) VALUES (?,?,?,?,?,?)")?;

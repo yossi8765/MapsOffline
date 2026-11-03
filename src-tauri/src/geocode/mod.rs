@@ -3,6 +3,7 @@
 //! * `build` creates the index (places / streets / addresses / pois).
 //! * `open` opens it read-only; `search` and `reverse` answer queries.
 mod builder;
+pub mod datagov;
 pub use builder::SCHEMA_VERSION;
 pub mod categories;
 pub mod norm;
@@ -18,8 +19,12 @@ use crate::geo::haversine_m;
 use crate::types::{GeoKind, GeoPrecision, GeoResult, LonLat, ProgressFn};
 use norm::{norm, AddrCand, address_candidates, canon, canon_tokens, expand_abbreviations, from_latin_keyboard, is_type_word, levenshtein2, prefix_variants, spell_fold, tokens};
 
+/// Israel: OSM plus the open-data points of data.gov.il (fetched now; skipped when offline).
 pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
-    builder::build(pbf, out, progress)
+    let extra = datagov::fetch_all(&|m| {
+        progress(crate::types::ProgressPhase::Processing, 0, 100, m);
+    });
+    builder::build_at(pbf, out, 31.5, &extra, progress)
 }
 
 /// While true the app opens no connection to the Israel index (it is being replaced); bumping
@@ -46,7 +51,7 @@ pub fn replace_index(dest: &Path, tmp: &Path) -> std::io::Result<()> {
 
 /// Index of another country (`ref_lat` = middle latitude of its bbox).
 pub fn build_region(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
-    builder::build_at(pbf, out, ref_lat, progress)
+    builder::build_at(pbf, out, ref_lat, &[], progress)
 }
 
 struct PlaceMem {

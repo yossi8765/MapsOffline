@@ -208,6 +208,30 @@ pub mod itm {
         let (e, n) = tm(c, la, lo);
         (X0 + e, Y0 + (n - c.north0))
     }
+
+    /// ITM metres → WGS 84 lon/lat (degrees): Newton iteration on [`from_wgs84`] (it is smooth;
+    /// 4–5 steps reach millimetres inside Israel).
+    pub fn to_wgs84(e: f64, n: f64) -> (f64, f64) {
+        let (mut lon, mut lat) = (LON0_DEG + (e - X0) / 94_000.0, LAT0_DEG + (n - Y0) / 110_900.0);
+        for _ in 0..8 {
+            let (fe, fn_) = from_wgs84(lon, lat);
+            let (de, dn) = (fe - e, fn_ - n);
+            if de.abs() < 1e-4 && dn.abs() < 1e-4 {
+                break;
+            }
+            const H: f64 = 1e-5;
+            let (e1, n1) = from_wgs84(lon + H, lat);
+            let (e2, n2) = from_wgs84(lon, lat + H);
+            let (a, b, c, d) = ((e1 - fe) / H, (e2 - fe) / H, (n1 - fn_) / H, (n2 - fn_) / H);
+            let det = a * d - b * c;
+            if det.abs() < 1e-12 {
+                break;
+            }
+            lon -= (d * de - b * dn) / det;
+            lat -= (-c * de + a * dn) / det;
+        }
+        (lon, lat)
+    }
 }
 
 // ---------------------------------------------------------------- source tiles
@@ -628,6 +652,14 @@ mod tests {
         assert!((e - REF_TA.0).abs() < 0.01 && (n - REF_TA.1).abs() < 0.01, "{e} {n}");
         let (e, n) = itm::from_wgs84(35.2045169444444, 31.7343936111111);
         assert!((e - REF_ORIGIN.0).abs() < 0.01 && (n - REF_ORIGIN.1).abs() < 0.01, "{e} {n}");
+    }
+    #[test]
+    fn itm_inverse_roundtrip() {
+        for (lon, lat) in [(34.774_082, 32.077_885), (34.95, 29.55), (35.6, 33.2)] {
+            let (e, n) = itm::from_wgs84(lon, lat);
+            let (lo, la) = itm::to_wgs84(e, n);
+            assert!((lo - lon).abs() < 1e-8 && (la - lat).abs() < 1e-8, "{lo} {la}");
+        }
     }
     const REF_TA: (f64, f64) = (178_824.110_426_244_38, 665_036.013_644_147_5);
     const REF_ORIGIN: (f64, f64) = (219_463.547_987_584_72, 626_866.426_598_637_7);
