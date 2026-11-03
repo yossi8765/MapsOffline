@@ -316,7 +316,7 @@ fn entries() -> &'static [Entry] {
             .filter(|e| !e.toks.is_empty())
             .collect();
         // longest phrases first so the scan below prefers them
-        v.sort_by(|a, b| b.toks.len().cmp(&a.toks.len()));
+        v.sort_by_key(|c| std::cmp::Reverse(c.toks.len()));
         v
     })
 }

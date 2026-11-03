@@ -69,7 +69,7 @@ pub fn latest(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
     let list: Vec<serde_json::Value> = r.error_for_status()?.json()?;
     let p = list
         .iter()
-        .find(|p| p["name"].as_str() == Some(PACKAGE) && p["status"].as_str().map_or(true, |s| s == "default"))
+        .find(|p| p["name"].as_str() == Some(PACKAGE) && p["status"].as_str().is_none_or(|s| s == "default"))
         .ok_or_else(|| anyhow!("no published data package"))?;
     let version = p["version"].as_str().ok_or_else(|| anyhow!("package without version"))?.to_string();
     let created = p["created_at"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
@@ -113,7 +113,9 @@ pub fn usable(paths: &DataPaths, l: &Latest, comps: &[DataComponent]) -> Vec<(Da
 /// Install what the package can provide for `comps`; returns the installed components (the
 /// caller builds the rest). Failures only mean "build it locally".
 pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: &Cancel) -> Vec<DataComponent> {
-    let wanted: Vec<DataComponent> = comps.iter().copied().filter(|c| PUBLISHED.contains(c)).collect();
+    // components cancelled before the start are not asked for at all: the GitLab request below
+    // can take up to 15 s and would delay the "cancelled" answer
+    let wanted: Vec<DataComponent> = comps.iter().copied().filter(|&c| PUBLISHED.contains(&c) && !cancel.is_cancelled_for(c)).collect();
     if wanted.is_empty() {
         return Vec::new();
     }
@@ -130,7 +132,9 @@ pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: 
     };
     let mut done = Vec::new();
     for (c, version) in usable(paths, &l, &wanted) {
-        if cancel.is_cancelled_for(c) {
+        // a handle that answers for this component only: cancelling it stops its download
+        let cancel = &cancel.bound_to(&[c]);
+        if cancel.is_cancelled() {
             continue;
         }
         let file = paths.downloads_dir().join(format!("prebuilt-{}", file_name(c)));

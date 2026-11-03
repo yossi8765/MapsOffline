@@ -48,6 +48,12 @@ struct GeoPool {
 
 const MAX_IDLE_GEOCODERS: usize = 4;
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         let root = DataPaths::default_root();
@@ -307,11 +313,18 @@ impl AppState {
         f(guard.as_ref().unwrap())
     }
 
+    /// settings.json always lives in the default root: that is where `new()` reads it, and only
+    /// there does `data_dir` point onward to a custom folder. (Writing it into the custom folder
+    /// lost every change made after switching folders.) Written to a temp file and renamed, so a
+    /// crash mid-write cannot leave a truncated file.
     pub fn save_settings(&self) -> anyhow::Result<()> {
-        let paths = self.paths();
+        let paths = DataPaths::new(DataPaths::default_root());
         let s = self.settings.read().clone();
         std::fs::create_dir_all(&paths.root)?;
-        std::fs::write(paths.settings_file(), serde_json::to_vec_pretty(&s)?)?;
+        let file = paths.settings_file();
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&s)?)?;
+        std::fs::rename(&tmp, &file)?;
         Ok(())
     }
 }

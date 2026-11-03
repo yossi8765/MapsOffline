@@ -180,7 +180,7 @@ fn ensure_cli(
     let assets = rel["assets"].as_array().ok_or_else(|| anyhow!("no assets in release"))?;
     let url = assets
         .iter()
-        .find(|a| a["name"].as_str().map_or(false, |n| n.to_lowercase().ends_with("windows_x86_64.zip")))
+        .find(|a| a["name"].as_str().is_some_and(|n| n.to_lowercase().ends_with("windows_x86_64.zip")))
         .and_then(|a| a["browser_download_url"].as_str())
         .ok_or_else(|| anyhow!("no windows_x86_64.zip asset in latest go-pmtiles release"))?
         .to_string();
@@ -204,6 +204,11 @@ fn ensure_cli(
             break;
         }
     }
+    drop(z);
+    // pmtiles.exe is what is used from now on (it is only fetched again when missing); the
+    // 18 MB release zip and its meta can go
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_file(download::meta_path(&zip_path));
     if !found {
         bail!("pmtiles.exe not found inside {}", zip_path.display());
     }
@@ -362,7 +367,7 @@ pub(crate) fn update_extract(paths: &DataPaths, ex: &Extract, progress: Progress
     }
     args.push(format!("--maxzoom={}", ex.maxzoom));
     let src = format!("{BUILD_BASE}{key}");
-    progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", &ex.label));
+    progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", ex.label));
 
     let mut last_err = None;
     let mut attempt = 0;

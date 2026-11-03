@@ -40,7 +40,7 @@ pub async fn geocode_search(
         let in_box = |b: &[f64; 4], p: &LonLat| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
         let mut groups: Vec<(bool, Vec<GeoResult>)> = Vec::new();
         match st.with_geocoder(|g| g.search(&q, near, limit)) {
-            Ok(v) => groups.push((near.map_or(true, |p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
+            Ok(v) => groups.push((near.is_none_or(|p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
             Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
             Err(e) if regions.is_empty() => return Err(err(e)),
             Err(e) => log::warn!("geocode (Israel): {e:#}"),
@@ -227,7 +227,7 @@ pub fn route_hybrid(st: &AppState, req: &RouteRequest, settings: &Settings) -> R
                 if matches!(req.mode, Mode::Foot | Mode::Bike) {
                     if let (Some(online), Ok(local)) = (resp.routes.first().map(|r| r.duration_sec), route_offline(st, req)) {
                         if let Some(l) = local.routes.first() {
-                            if (l.duration_sec as f64) < online as f64 * 0.7 {
+                            if l.duration_sec < online * 0.7 {
                                 log::info!("online {:?} route {}s vs local {}s: using local", req.mode, online, l.duration_sec);
                                 return Ok(local);
                             }
@@ -291,11 +291,11 @@ pub async fn transit_stops(state: State<'_, Arc<AppState>>, bbox: [f64; 4], limi
 /// The longest stop pattern of a transit line (by short name + agency, preferring the given
 /// headsign), with its shape, for the favorites panel. LINE_NOT_FOUND when the feed has none.
 #[tauri::command]
-pub async fn transit_line(state: State<'_, Arc<AppState>>, short_name: String, agency: String, headsign: Option<String>) -> R<crate::types::LineShape> {
+pub async fn transit_line(state: State<'_, Arc<AppState>>, short_name: String, agency: String, headsign: Option<String>, long_name: Option<String>) -> R<crate::types::LineShape> {
     let st = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || -> R<crate::types::LineShape> {
         let t = st.transit().map_err(err)?;
-        t.line_shape(&short_name, &agency, headsign.as_deref()).ok_or_else(|| "LINE_NOT_FOUND".to_string())
+        t.line_shape_of(&short_name, &agency, headsign.as_deref(), long_name.as_deref()).ok_or_else(|| "LINE_NOT_FOUND".to_string())
     })
     .await
     .map_err(err)?
@@ -325,11 +325,11 @@ pub async fn transit_lines(state: State<'_, Arc<AppState>>, agency: String) -> R
 
 /// Departures of a line from now until the end of today's service (both directions).
 #[tauri::command]
-pub async fn transit_line_times(state: State<'_, Arc<AppState>>, short_name: String, agency: String, headsign: Option<String>) -> R<crate::types::LineTimes> {
+pub async fn transit_line_times(state: State<'_, Arc<AppState>>, short_name: String, agency: String, headsign: Option<String>, long_name: Option<String>) -> R<crate::types::LineTimes> {
     let st = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || -> R<crate::types::LineTimes> {
         let t = st.transit().map_err(err)?;
-        crate::transit::board::line_times(&t, &short_name, &agency, headsign.as_deref()).ok_or_else(|| "NO_SERVICE_TODAY".to_string())
+        crate::transit::board::line_times_of(&t, &short_name, &agency, headsign.as_deref(), long_name.as_deref()).ok_or_else(|| "NO_SERVICE_TODAY".to_string())
     })
     .await
     .map_err(err)?
@@ -499,11 +499,8 @@ pub async fn app_update_download(app: AppHandle, state: State<'_, Arc<AppState>>
 /// Start the verified installer and quit, so the installer can replace the running program.
 #[tauri::command]
 pub fn app_update_install(app: AppHandle, path: String) -> R<()> {
-    let p = std::path::PathBuf::from(&path);
-    if !p.starts_with(crate::app_update::update_dir()) || !p.exists() {
-        return Err("UPDATE_FILE_INVALID".into());
-    }
-    crate::app_update::launch_installer(&p).map_err(err)?;
+    // launch_installer checks the canonical path and re-hashes the file against the signed list
+    crate::app_update::launch_installer(std::path::Path::new(&path)).map_err(err)?;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(400));
         app.exit(0);
@@ -542,7 +539,7 @@ pub async fn optimize_order(state: State<'_, Arc<AppState>>, req: RouteRequest, 
                 let sub = RouteRequest { waypoints: vec![req.waypoints[a].clone(), req.waypoints[b].clone()], alternatives: 0, ..req.clone() };
                 if let Ok(resp) = g.route(&sub) {
                     if let Some(r) = resp.routes.first() {
-                        cost[a][b] = r.duration_sec as f64;
+                        cost[a][b] = r.duration_sec;
                     }
                 }
             }
@@ -729,7 +726,7 @@ pub fn settings_get(state: State<'_, Arc<AppState>>) -> R<Settings> {
 }
 
 #[tauri::command(async)]
-pub fn settings_set(state: State<'_, Arc<AppState>>, settings: Settings) -> R<Settings> {
+pub fn settings_set(app: AppHandle, state: State<'_, Arc<AppState>>, settings: Settings) -> R<Settings> {
     let dir_changed = settings.data_dir != state.settings.read().data_dir;
     *state.settings.write() = settings.clone();
     state.save_settings().map_err(err)?;
@@ -742,10 +739,10 @@ pub fn settings_set(state: State<'_, Arc<AppState>>, settings: Settings) -> R<Se
             .unwrap_or_else(crate::paths::DataPaths::default_root);
         let p = crate::paths::DataPaths::new(new_root);
         let _ = p.ensure_dirs();
+        crate::allow_asset_dir(&app, &p.root);
         *state.paths.write() = p;
         state.unload_all();
         *state.history.lock() = None;
-        state.save_settings().map_err(err)?;
     }
     Ok(settings)
 }
@@ -772,9 +769,10 @@ pub async fn regions_catalog(state: State<'_, Arc<AppState>>, refresh: Option<bo
 }
 
 #[tauri::command]
-pub fn regions_installed(state: State<'_, Arc<AppState>>) -> R<Vec<crate::types::InstalledRegion>> {
+pub async fn regions_installed(state: State<'_, Arc<AppState>>) -> R<Vec<crate::types::InstalledRegion>> {
+    // reads every country's meta and sizes: off the UI thread
     let st = state.inner().clone();
-    Ok(crate::data::regions::installed(&st.paths(), &|id| st.region_busy(id)))
+    tauri::async_runtime::spawn_blocking(move || crate::data::regions::installed(&st.paths(), &|id| st.region_busy(id))).await.map_err(err)
 }
 
 #[tauri::command]
@@ -851,15 +849,26 @@ pub async fn region_delete(state: State<'_, Arc<AppState>>, id: String) -> R<()>
 /// True when the merged map source (`http://mo-map.localhost/{z}/{x}/{y}.mvt`) should be used:
 /// at least one country besides Israel is installed.
 #[tauri::command]
-pub fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
-    state.refresh_map_files();
-    Ok(!crate::data::regions::ready_maps(&state.paths()).is_empty())
+pub async fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        st.refresh_map_files();
+        !crate::data::regions::ready_maps(&st.paths()).is_empty()
+    })
+    .await
+    .map_err(err)
 }
 
 /// Write a text file the user picked in the save dialog (route export: GPX / KML).
 #[tauri::command]
-pub fn save_text_file(path: String, contents: String) -> R<()> {
-    std::fs::write(&path, contents).map_err(|e| format!("SAVE_FAILED: {e}"))
+pub async fn save_text_file(path: String, contents: String) -> R<()> {
+    // Only the route-export kinds the save dialog offers: the path comes from the webview, and
+    // this must not become a way to overwrite arbitrary files (programs, settings).
+    let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if !matches!(ext.as_deref(), Some("gpx" | "kml" | "txt")) {
+        return Err("SAVE_FAILED: unsupported file type".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, contents).map_err(|e| format!("SAVE_FAILED: {e}"))).await.map_err(err)?
 }
 
 /// Find a city or country by name and the downloadable regions that contain it.

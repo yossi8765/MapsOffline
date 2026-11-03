@@ -478,13 +478,14 @@ export const api = {
   /** Adds a favorite; returns the existing one when the same place / line is already saved. */
   favoritesAdd: (name: string, icon: string, lon: number, lat: number, address?: string, kind: FavoriteKind = "address", data?: Record<string, unknown>) =>
     invoke<Favorite>("favorites_add", { name, icon, lon, lat, address, kind, data: data ?? null }),
-  transitLine: (shortName: string, agency: string, headsign?: string) => invoke<LineShape>("transit_line", { shortName, agency, headsign: headsign ?? null }),
+  // longName ("Eilat <-> Eilat") tells apart lines of one agency that share a number
+  transitLine: (shortName: string, agency: string, headsign?: string, longName?: string) => invoke<LineShape>("transit_line", { shortName, agency, headsign: headsign ?? null, longName: longName ?? null }),
   /** POIs of the given geocoder categories inside the viewport; `category` is the raw id. */
   poiLayer: (cats: string[], bbox: [number, number, number, number], limit?: number) => invoke<GeoResult[]>("poi_layer", { cats, bbox, limit: limit ?? null }),
   transitAgencies: () => invoke<string[]>("transit_agencies"),
   transitLines: (agency: string) => invoke<LineSummary[]>("transit_lines", { agency }),
   /** Departures of a line from now to the end of today's service, both directions. */
-  transitLineTimes: (shortName: string, agency: string, headsign?: string) => invoke<LineTimes>("transit_line_times", { shortName, agency, headsign: headsign ?? null }),
+  transitLineTimes: (shortName: string, agency: string, headsign?: string, longName?: string) => invoke<LineTimes>("transit_line_times", { shortName, agency, headsign: headsign ?? null, longName: longName ?? null }),
   /** Departure board of a stop (by code, else the nearest served stop within 40 m). */
   transitStopBoard: (code: string | undefined, lon: number, lat: number) => invoke<StopBoard>("transit_stop_board", { code: code ?? null, lon, lat }),
   favoritesUpdate: (id: number, name: string, icon: string) => invoke<void>("favorites_update", { id, name, icon }),

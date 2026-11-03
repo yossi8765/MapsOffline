@@ -150,18 +150,16 @@ impl DataPaths {
     }
 }
 
-/// Write `bytes` to `tmp` next to `dest` then atomically rename over `dest`.
-/// On Windows a file that is open (a map tile being read, an index being searched) cannot be
-/// removed; such holds are short, so retry for a few seconds before giving up.
+/// Move the finished `tmp` over `dest` in one step. `std::fs::rename` replaces an existing file
+/// (MoveFileExW with MOVEFILE_REPLACE_EXISTING on Windows), so there is never a moment without
+/// `dest`: deleting first and renaming after lost the old file when the rename then failed or
+/// the process stopped in between.
+/// On Windows a file that is open without delete sharing (a map tile being read, an index being
+/// searched) cannot be replaced; such holds are short, so retry for a few seconds.
 pub fn atomic_replace(dest: &Path, tmp: &Path) -> std::io::Result<()> {
     let mut attempt = 0;
     loop {
-        let r = (|| {
-            if dest.exists() {
-                std::fs::remove_file(dest)?;
-            }
-            std::fs::rename(tmp, dest)
-        })();
+        let r = std::fs::rename(tmp, dest);
         match r {
             Err(e) if attempt < 15 && e.kind() != std::io::ErrorKind::NotFound => {
                 attempt += 1;

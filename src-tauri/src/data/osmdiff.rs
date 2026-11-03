@@ -671,7 +671,7 @@ pub fn apply(src: &Path, dest: &Path, mut ch: Changes, bbox: Option<&HeaderBBox>
             if let BlobDecode::OsmData(block) = d {
                 for el in block.elements() {
                     seen += 1;
-                    if seen % 1_000_000 == 0 && !progress(ProgressPhase::Processing, seen, 0, "מחיל את השינויים על נתוני OSM") {
+                    if seen.is_multiple_of(1_000_000) && !progress(ProgressPhase::Processing, seen, 0, "מחיל את השינויים על נתוני OSM") {
                         bail!("cancelled");
                     }
                     handle(el)?;

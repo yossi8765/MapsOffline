@@ -60,7 +60,7 @@ static CATALOG: Mutex<Option<(SystemTime, Arc<Vec<Feature>>)>> = Mutex::new(None
 pub fn catalog(paths: &DataPaths, refresh: bool) -> anyhow::Result<Arc<Vec<Feature>>> {
     let file = catalog_file(paths);
     let age = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-    if refresh || age.map_or(true, |a| a > CATALOG_MAX_AGE) {
+    if refresh || age.is_none_or(|a| a > CATALOG_MAX_AGE) {
         match download_catalog(&file) {
             Ok(()) => {}
             Err(e) if file.exists() => log::warn!("region catalogue refresh failed, using the cached copy: {e:#}"),
@@ -383,6 +383,7 @@ pub fn ready_geocoders(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
 /// Install or update `parts` of region `id`. `emit` gets every progress step; the parts run in
 /// parallel (the map extract and the PBF download use different hosts).
 pub fn install(paths: &DataPaths, id: &str, parts: &[RegionPart], emit: &(dyn Fn(RegionProgress) + Sync), cancel: &Cancel) -> anyhow::Result<()> {
+    anyhow::ensure!(valid_region_id(id), "invalid region id {id:?}");
     let f = find(paths, id)?;
     if f.entry.builtin {
         bail!("ישראל כבר כלולה בנתונים הבסיסיים");
@@ -512,8 +513,21 @@ pub fn install(paths: &DataPaths, id: &str, parts: &[RegionPart], emit: &(dyn Fn
     Ok(())
 }
 
+/// A Geofabrik region id ("europe/germany", "us-west") names exactly one folder under
+/// `regions/`: letters, digits, '-', '_' and '/' only, and no empty / "." / ".." segment.
+/// ("..": `regions/..` is the data root, which `delete` would have wiped.)
+pub fn valid_region_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'))
+        && id.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
 pub fn delete(paths: &DataPaths, id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(valid_region_id(id), "invalid region id {id:?}");
     let dir = paths.region_dir(id);
+    // belt and braces: the folder must sit directly inside regions/
+    anyhow::ensure!(dir.parent() == Some(paths.regions_dir().as_path()), "invalid region folder {}", dir.display());
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
     }
@@ -523,6 +537,18 @@ pub fn delete(paths: &DataPaths, id: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn region_ids_cannot_escape_the_regions_folder() {
+        for ok in ["europe/germany", "us-west", "asia/israel-and-palestine", "a_b"] {
+            assert!(valid_region_id(ok), "{ok}");
+        }
+        for bad in ["", "..", ".", "../x", "europe/..", "a//b", "/abs", r"c:\x", r"a\..", "x y"] {
+            assert!(!valid_region_id(bad), "{bad}");
+        }
+        let paths = DataPaths::new(std::env::temp_dir().join("mo-region-id-test"));
+        assert!(delete(&paths, "..").is_err());
+    }
 
     #[test]
     fn point_in_multipolygon_with_hole() {

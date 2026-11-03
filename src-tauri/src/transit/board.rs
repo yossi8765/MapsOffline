@@ -7,7 +7,7 @@ use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::Asia::Jerusalem;
 
 use super::journey::iso_at;
-use super::model::{Transit, NONE};
+use super::model::{line_group, Transit, NONE};
 use crate::types::{LineDirection, LineSummary, LineTimes, StopBoard, StopInfo, StopLine};
 
 /// (day index, seconds since that service day's midnight) for the current moment, plus the
@@ -50,16 +50,18 @@ fn line_key(s: &str) -> (u64, String) {
     (digits.parse().unwrap_or(u64::MAX), s.to_string())
 }
 
-/// Lines of one agency with their headsigns (first trip of every pattern).
+/// Lines of one agency with their headsigns (first trip of every pattern). Same-numbered lines
+/// in different towns ("Egged 1" in Gedera, Eilat, Jerusalem...) are separate entries; their
+/// `long_name` tells them apart and is what [`line_times_of`] / `line_shape_of` filter by.
 pub fn lines(t: &Transit, agency: &str) -> Vec<LineSummary> {
-    let mut map: BTreeMap<String, LineSummary> = BTreeMap::new();
+    let mut map: BTreeMap<(String, String), LineSummary> = BTreeMap::new();
     for pt in &t.patterns {
         if agency_of(t, pt.route) != agency {
             continue;
         }
         let r = &t.routes[pt.route as usize];
         let short = t.s(r.short_name).to_string();
-        let e = map.entry(short.clone()).or_insert_with(|| LineSummary { short_name: short, long_name: t.s(r.long_name).to_string(), color: color_of(t, pt.route), headsigns: Vec::new() });
+        let e = map.entry((short.clone(), line_group(t.s(r.long_name)))).or_insert_with(|| LineSummary { short_name: short, long_name: t.s(r.long_name).to_string(), color: color_of(t, pt.route), headsigns: Vec::new() });
         if pt.ntrips > 0 {
             let hs = t.s(t.trip_headsign[pt.trips_start as usize]).to_string();
             if !hs.is_empty() && !e.headsigns.contains(&hs) {
@@ -74,6 +76,13 @@ pub fn lines(t: &Transit, agency: &str) -> Vec<LineSummary> {
 
 /// Every departure of the line from now until the end of today's service, per direction.
 pub fn line_times(t: &Transit, short_name: &str, agency: &str, headsign: Option<&str>) -> Option<LineTimes> {
+    line_times_of(t, short_name, agency, headsign, None)
+}
+
+/// [`line_times`] of one line among the agency's same-numbered lines: `long_name` is any
+/// route_long_name of it (favorites store it), see [`line_group`].
+pub fn line_times_of(t: &Transit, short_name: &str, agency: &str, headsign: Option<&str>, long_name: Option<&str>) -> Option<LineTimes> {
+    let group = long_name.filter(|l| !l.is_empty()).map(line_group);
     let days = now_in_feed(t)?;
     let mut dirs: BTreeMap<String, LineDirection> = BTreeMap::new();
     let mut dir_len: BTreeMap<String, u32> = BTreeMap::new(); // stops of the pattern that named the direction's terminals
@@ -82,6 +91,9 @@ pub fn line_times(t: &Transit, short_name: &str, agency: &str, headsign: Option<
     for (pi, pt) in t.patterns.iter().enumerate() {
         let r = &t.routes[pt.route as usize];
         if t.s(r.short_name) != short_name || agency_of(t, pt.route) != agency {
+            continue;
+        }
+        if group.as_ref().is_some_and(|g| line_group(t.s(r.long_name)) != *g) {
             continue;
         }
         long_name = t.s(r.long_name).to_string();
@@ -111,7 +123,7 @@ pub fn line_times(t: &Transit, short_name: &str, agency: &str, headsign: Option<
                 });
                 // terminals and duration come from the direction's longest pattern (short
                 // variants exist: a few trips start mid-route)
-                if dir_len.get(&hs).map_or(true, |&n| pt.n > n) {
+                if dir_len.get(&hs).is_none_or(|&n| pt.n > n) {
                     dir_len.insert(hs.clone(), pt.n);
                     d.from_stop = t.stop_name(first).to_string();
                     d.to_stop = t.stop_name(last).to_string();
@@ -147,6 +159,7 @@ fn find_stop(t: &Transit, code: Option<&str>, lon: f64, lat: f64) -> Option<u32>
 pub fn stop_board(t: &Transit, code: Option<&str>, lon: f64, lat: f64) -> Option<StopBoard> {
     let s = find_stop(t, code, lon, lat)?;
     let days = now_in_feed(t)?;
+    let today = days[0].0;
     let ll = t.lonlat(s);
     let stop = StopInfo { id: s, name: t.stop_name(s).to_string(), code: t.stop_code(s), lon: ll[0], lat: ll[1] };
     let mut map: BTreeMap<(String, String, String), StopLine> = BTreeMap::new();
@@ -172,7 +185,11 @@ pub fn stop_board(t: &Transit, code: Option<&str>, lon: f64, lat: f64) -> Option
                     total_today: 0,
                     next: Vec::new(),
                 });
-                e.total_today += 1;
+                // today's service day only: yesterday's entry is there for its trips after
+                // midnight that are still ahead, not to be counted a second time
+                if day == today {
+                    e.total_today += 1;
+                }
                 let rel = tm - now_secs; // seconds from now
                 if rel >= -60 {
                     e.next.push((rel, iso_at(t.date_of_day(day), tm)));

@@ -419,6 +419,8 @@ impl Source {
                 Ok(r) if matches!(r.status().as_u16(), 403 | 404 | 204) => return Ok(None),
                 Ok(r) if r.status().as_u16() == 418 => bail!("{}", download::blocked_message(url)),
                 Ok(r) => last = Some(anyhow!("HTTP {} for {url}", r.status())),
+                // the live map does not retry a dead connection: the next screenful asks again
+                Err(e) if !self.patient && (e.is_connect() || e.is_timeout()) => return Err(e.into()),
                 Err(e) => last = Some(e.into()),
             }
         }
@@ -609,7 +611,7 @@ pub fn render(src: &Source, z: u8, x: u32, y: u32, cancel: &Cancel) -> anyhow::R
         return Ok(None);
     }
     if opaque == 256 * 256 {
-        let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
         let mut out = Vec::with_capacity(40_000);
         jpeg_encoder::Encoder::new(&mut out, JPEG_QUALITY).encode(&rgb, 256, 256, jpeg_encoder::ColorType::Rgb)?;
         return Ok(Some(out));

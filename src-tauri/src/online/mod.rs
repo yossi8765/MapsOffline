@@ -1,6 +1,7 @@
 //! Online routing providers (used first when the routing mode is "auto"/"online"):
 //! - OSRM (FOSSGIS public instances by default) for car / bike / foot.
 //! - MOTIS / Transitous for public transport.
+//!
 //! Every function here fails fast (short timeouts) so the caller can fall back to the offline engines.
 
 pub mod motis;
@@ -16,8 +17,9 @@ pub const USER_AGENT: &str = crate::data::download::USER_AGENT;
 pub fn client() -> anyhow::Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(15))
+        // a stalled connection must not hold every route back: ~6 s and the local engine answers
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(6))
         .build()?)
 }
 

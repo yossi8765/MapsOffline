@@ -182,10 +182,24 @@ impl Profile {
         t * k
     }
 
-    /// Cost of turning from state `a` (arriving at its head) into state `b` (leaving the same vertex).
+    /// Search cost of turning from state `a` (arriving at its head) into state `b` (leaving the
+    /// same vertex): the real delay plus the route preference ("avoid difficult junctions").
     /// `None` = forbidden (turn restriction / illegal U-turn).
     #[inline]
     pub fn turn_cost(&self, g: &Graph, a: u32, b: u32) -> Option<f32> {
+        self.turn_parts(g, a, b).map(|(time, pref)| time + pref)
+    }
+
+    /// The time a turn really takes (what reported durations add up): [`turn_cost`](Self::turn_cost)
+    /// without the preference penalties, so avoiding left turns never inflates the ETA.
+    #[inline]
+    pub fn turn_time(&self, g: &Graph, a: u32, b: u32) -> Option<f32> {
+        self.turn_parts(g, a, b).map(|(time, _)| time)
+    }
+
+    /// (real delay, preference penalty) of a turn; `None` = forbidden.
+    #[inline]
+    fn turn_parts(&self, g: &Graph, a: u32, b: u32) -> Option<(f32, f32)> {
         let ea = a >> 1;
         let eb = b >> 1;
         let via = g.head(a);
@@ -194,13 +208,13 @@ impl Profile {
             return match self.mode {
                 Mode::Car => {
                     if g.degree(via) <= 1 {
-                        Some(20.0)
+                        Some((20.0, 0.0))
                     } else {
                         None
                     }
                 }
-                Mode::Bike => Some(15.0),
-                _ => Some(0.0),
+                Mode::Bike => Some((15.0, 0.0)),
+                _ => Some((0.0, 0.0)),
             };
         }
         if self.mode != Mode::Foot && self.mode != Mode::Transit {
@@ -222,7 +236,7 @@ impl Profile {
             }
         }
         if self.mode == Mode::Foot || self.mode == Mode::Transit {
-            return Some(0.0);
+            return Some((0.0, 0.0));
         }
         let d = turn_delta(g.bearing_in(a), g.bearing_out(b));
         let fa = g.e_flags[ea as usize];
@@ -253,18 +267,21 @@ impl Profile {
         }
         // difficult junctions: a left turn crosses oncoming traffic (right-hand driving), a U-turn
         // crosses it twice; both are cheap at traffic lights and inside roundabouts.
+        // (a preference, not time: it steers the search but stays out of the ETA)
+        let mut pref = 0.0;
         if self.avoid.hard_turns
             && (d < -45.0 || d.abs() >= 160.0)
             && (fa | fb) & flags::ROUNDABOUT == 0
             && !g.has_signal(via)
         {
             let biggest = Class::from_u8(g.e_class[ea as usize].min(g.e_class[eb as usize]));
-            c += hard_turn_penalty(biggest);
+            pref += hard_turn_penalty(biggest);
         }
         if self.mode == Mode::Bike {
             c *= 0.5;
+            pref *= 0.5;
         }
-        Some(c)
+        Some((c, pref))
     }
 
     /// Road hierarchy tier used to prune long searches: tier 0 edges are always searched,

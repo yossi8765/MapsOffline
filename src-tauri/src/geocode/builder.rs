@@ -13,9 +13,10 @@ use super::norm::{canon, housenumber_key, index_tokens};
 use crate::types::{ProgressFn, ProgressPhase};
 
 pub const SCHEMA_VERSION: &str = "3";
-/// Builder revision (same file format): 1 = data.gov.il points of interest. Part of the
-/// manifest version so a new revision shows up as an available update.
-pub const BUILD_REV: u32 = 1;
+/// Builder revision (same file format): 1 = data.gov.il points of interest, 2 = numbered roads
+/// indexed as streets "כביש N". Part of the manifest version so a new revision shows up as an
+/// available update.
+pub const BUILD_REV: u32 = 2;
 thread_local! {
     /// cos(reference latitude) for the flat-earth distances of one build (the build runs on one
     /// thread; countries are built concurrently on different threads). Israel: cos(31.5°).
@@ -58,6 +59,23 @@ struct Roles {
     addr_city: Option<String>,
     poi: Option<&'static str>, // category key index; value stored in poi_val
     poi_val: String,
+    /// Route numbers of a numbered road ("6", "1;20" -> ["1", "20"]): indexed as streets named
+    /// "כביש N" so "כביש 6" can be searched (most stretches of national roads have no name).
+    road_refs: Vec<String>,
+}
+
+fn road_highway(v: &str) -> bool {
+    matches!(v, "motorway" | "trunk" | "primary" | "secondary" | "tertiary")
+}
+
+/// The numeric route numbers in a `ref` tag ("1;20", "6", "443"); anything else (letters,
+/// "כביש 6 (מנהרה)") is ignored.
+fn numeric_refs(v: &str) -> Vec<String> {
+    v.split(';')
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && r.len() <= 4 && r.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
 }
 
 fn has_arabic(s: &str) -> bool {
@@ -119,6 +137,7 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
     let (mut name, mut name_he, mut name_en, mut name_ar) = ("", "", "", "");
     let (mut place, mut highway, mut hn, mut street, mut addr_place, mut city) = ("", "", "", "", "", "");
     let mut religion = "";
+    let mut road_ref = "";
     let mut pop = 0i64;
     let mut pc: [&str; 11] = [""; 11];
     for (k, v) in tags {
@@ -129,6 +148,7 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
             "name:ar" => name_ar = v,
             "place" => place = v,
             "highway" => highway = v,
+            "ref" => road_ref = v,
             "addr:housenumber" => hn = v,
             "addr:street" => street = v,
             "addr:place" => addr_place = v,
@@ -143,7 +163,8 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
         }
     }
     let primary = if !name_he.is_empty() { name_he } else { name };
-    if primary.is_empty() && hn.is_empty() {
+    let road_refs = if road_highway(highway) { numeric_refs(road_ref) } else { Vec::new() };
+    if primary.is_empty() && hn.is_empty() && road_refs.is_empty() {
         return None;
     }
     let mut names = Names { he: primary.to_string(), en: name_en.to_string(), ar: name_ar.to_string() };
@@ -172,7 +193,7 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
             }
         }
     }
-    if place.is_none() && !street_role && addr.is_none() && poi.is_none() {
+    if place.is_none() && !street_role && addr.is_none() && poi.is_none() && road_refs.is_empty() {
         return None;
     }
     Some(Roles {
@@ -183,6 +204,7 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
         addr_city: if city.is_empty() { None } else { Some(city.to_string()) },
         poi,
         poi_val,
+        road_refs,
     })
 }
 
@@ -258,6 +280,12 @@ impl State {
         }
         if r.street && pos.is_none() {
             self.streets.push(StreetRaw { names: r.names.clone(), refs: span });
+        }
+        if pos.is_none() {
+            for n in &r.road_refs {
+                let names = Names { he: format!("כביש {n}"), en: format!("Route {n}"), ar: String::new() };
+                self.streets.push(StreetRaw { names, refs: span });
+            }
         }
         if let Some((hn, st)) = r.addr {
             let street = self.strs.id(&st);
@@ -382,7 +410,7 @@ impl CityIndex {
             if d > 30_000.0 {
                 continue;
             }
-            if best.map_or(true, |(b, _)| eff < b) {
+            if best.is_none_or(|(b, _)| eff < b) {
                 best = Some((eff, c.idx as usize));
             }
         }
@@ -801,7 +829,7 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
         if !extra.is_empty() {
             log::info!("geocode: {n_extra} of {} open-data points added (the rest are in OSM)", extra.len());
         }
-        list.sort_by(|a, b| city_pop(b.city).cmp(&city_pop(a.city)));
+        list.sort_by_key(|p| std::cmp::Reverse(city_pop(p.city)));
         let mut ins = tx.prepare("INSERT INTO pois(id,name,category,lon,lat,city) VALUES (?,?,?,?,?,?)")?;
         let mut fts = tx.prepare("INSERT INTO pois_fts(rowid, search) VALUES (?,?)")?;
         let mut rt = tx.prepare("INSERT INTO pois_rt(id,minlon,maxlon,minlat,maxlat) VALUES (?,?,?,?,?)")?;
@@ -853,4 +881,27 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
     );
     progress(ProgressPhase::Finalizing, 100, 100, "אינדקס הכתובות מוכן");
     Ok(())
+}
+
+#[cfg(test)]
+mod real_data {
+    /// Build the address index from the installed OSM extract into a temp file (no network, no
+    /// data.gov.il points) and query it: `cargo test --release --features cli --lib
+    /// build_real_geocoder -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn build_real_geocoder() {
+        let root = crate::paths::DataPaths::default_root();
+        let pbf = root.join("downloads").join("israel-and-palestine-latest.osm.pbf");
+        let out = std::env::temp_dir().join("mo-geocode-test.sqlite");
+        super::build_at(&pbf, &out, 31.5, &[], &|_, _, _, _| true).unwrap();
+        let g = crate::geocode::open(&out).unwrap();
+        for q in ["כביש 6", "כביש 443", "דרך 1", "כביש 90", "הרצל 12 תל אביב"] {
+            let r = g.search(q, Some([34.78, 32.08]), 5).unwrap();
+            println!("== {q}");
+            for x in &r {
+                println!("  {:?} {} {:?} ({:.5},{:.5})", x.kind, x.name, x.city, x.lon, x.lat);
+            }
+        }
+    }
 }

@@ -142,8 +142,8 @@ const CITY_ABBREV: &[(&str, &str)] = &[
     ("רשלצ", "ראשון לציון"),
     ("קש", "קריית שמונה"),
     ("קג", "קריית גת"),
-    ("מודיעין עילית", "מודיעין עילית"),
-    ("רחל", "רמת השרון"),
+    // Ramat HaSharon is written רמה"ש; "רחל" is a common street name (Rachel Imenu), never a city
+    ("רמהש", "רמת השרון"),
 ];
 
 /// Expand city abbreviations that stand as whole tokens ("הרצל 12 תא" -> "הרצל 12 תל אביב").
@@ -343,6 +343,14 @@ mod tests {
         assert_eq!(norm("רמב\"ם"), "רמבמ");
         assert_eq!(norm("  Café  Roma "), "cafe roma");
         assert_eq!(norm("מלך"), "מלכ");
+    }
+
+    #[test]
+    fn city_abbreviations() {
+        assert_eq!(expand_abbreviations("הרצל 12 ת\"א"), "הרצל 12 תל אביב");
+        assert_eq!(expand_abbreviations("סוקולוב 5 רמה\"ש"), "סוקולוב 5 רמת השרון");
+        // "רחל" is a street (Rachel Imenu), not Ramat HaSharon
+        assert_eq!(expand_abbreviations("רחל 12 ירושלים"), "רחל 12 ירושלימ");
     }
 
     #[test]

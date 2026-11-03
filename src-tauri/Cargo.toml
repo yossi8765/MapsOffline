@@ -61,7 +61,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 sha2 = "0.10"
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-chrono-tz = "0.10"
+chrono-tz = { version = "0.10", features = ["filter-by-regex"] }
 anyhow = "1"
 log = "0.4"
 # No regex filter syntax / ANSI auto-colour (RUST_LOG=module=level still works).

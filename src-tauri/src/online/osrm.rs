@@ -178,8 +178,11 @@ pub fn route(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse
     }
     let client = super::client()?;
     let mut resp: OsrmResponse = client.get(&url).send().context("OSRM request failed")?.json().context("OSRM: bad JSON")?;
-    if resp.code != "Ok" && !exclude.is_empty() {
-        // Some servers reject `exclude`; retry without it rather than failing.
+    // "NoRoute" with exclusions means there is no route that avoids them: retrying without
+    // `exclude` would silently hand back a toll / motorway route, so it is an error and the local
+    // engine (which honours the avoid options) answers instead.
+    if resp.code != "Ok" && !exclude.is_empty() && !matches!(resp.code.as_str(), "NoRoute" | "NoSegment") {
+        // Some servers reject `exclude` (InvalidValue / InvalidQuery); retry without it.
         let url2 = url.split("&exclude=").next().unwrap_or(&url).to_string();
         resp = client.get(&url2).send().context("OSRM request failed")?.json().context("OSRM: bad JSON")?;
     }

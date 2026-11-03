@@ -279,6 +279,12 @@ impl Geocoder {
         if let Some(c) = parse_coord(q) {
             return Ok(vec![c]);
         }
+        if let Some(n) = road_number(q) {
+            let roads = self.search_road(&n, near, limit)?;
+            if !roads.is_empty() {
+                return Ok(roads);
+            }
+        }
         let r = dedupe_addresses(self.search_rewritten(q, near, limit)?);
         // Keyboard left in English ("shzbdu; 50" -> "דיזנגוף 50"): try the Hebrew reading too and
         // keep whichever answers better (a city-only hit for the Hebrew part must not win).
@@ -290,6 +296,42 @@ impl Geocoder {
             }
         }
         Ok(r)
+    }
+
+    /// "כביש 6": the stretches of road N, one per nearby town (the builder indexes numbered roads
+    /// as streets named "כביש N"), nearest to `near` first, else in town-size order.
+    fn search_road(&self, n: &str, near: Option<LonLat>, limit: usize) -> Result<Vec<GeoResult>> {
+        let name = format!("כביש {n}");
+        let mut st = self.conn.prepare_cached("SELECT id,name,city,lon,lat FROM streets WHERE ckey = ?1 ORDER BY id LIMIT 200")?;
+        let rows = st.query_map(params![canon(&name)], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, f64>(3)?, r.get::<_, f64>(4)?))
+        })?;
+        let mut out: Vec<(f64, GeoResult)> = Vec::new();
+        for (i, row) in rows.enumerate() {
+            let (id, sname, city, lon, lat) = row?;
+            let d = near.map_or(i as f64, |p| haversine_m(p, [lon, lat]));
+            out.push((
+                d,
+                GeoResult {
+                    id: format!("street:{id}"),
+                    name: sname.clone(),
+                    kind: GeoKind::Street,
+                    precision: GeoPrecision::Street,
+                    lon,
+                    lat,
+                    city: if city.is_empty() { None } else { Some(city) },
+                    street: Some(sname),
+                    house_number: None,
+                    category: None,
+                    score: 100.0,
+                },
+            ));
+        }
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(out.into_iter().take(limit).enumerate().map(|(i, (_, mut g))| {
+            g.score = 100.0 - i as f64;
+            g
+        }).collect())
     }
 
     fn search_rewritten(&self, q: &str, near: Option<LonLat>, limit: usize) -> Result<Vec<GeoResult>> {
@@ -365,11 +407,10 @@ impl Geocoder {
                 let prefix_ok = qc.chars().count() >= 3;
                 let mut best: Option<&PlaceMem> = None;
                 for p in &self.places().list {
-                    if p.canon == *qc || (prefix_ok && p.canon.starts_with(qc.as_str())) {
-                        if best.map_or(true, |b| p.pop > b.pop) {
+                    if (p.canon == *qc || (prefix_ok && p.canon.starts_with(qc.as_str())))
+                        && best.is_none_or(|b| p.pop > b.pop) {
                             best = Some(p);
                         }
-                    }
                 }
                 if let Some(p) = best {
                     res.push(self.place_result(p, 60.0 - near_penalty(near, p.lon, p.lat)));
@@ -591,17 +632,17 @@ impl Geocoder {
                     let same = (num - c.num) % 2 == 0;
                     let pt = (num, lon, lat, id);
                     if num < c.num {
-                        if g.lo_any.map_or(true, |p| num > p.0) {
+                        if g.lo_any.is_none_or(|p| num > p.0) {
                             g.lo_any = Some(pt);
                         }
-                        if same && g.lo_same.map_or(true, |p| num > p.0) {
+                        if same && g.lo_same.is_none_or(|p| num > p.0) {
                             g.lo_same = Some(pt);
                         }
                     } else {
-                        if g.hi_any.map_or(true, |p| num < p.0) {
+                        if g.hi_any.is_none_or(|p| num < p.0) {
                             g.hi_any = Some(pt);
                         }
-                        if same && g.hi_same.map_or(true, |p| num < p.0) {
+                        if same && g.hi_same.is_none_or(|p| num < p.0) {
                             g.hi_same = Some(pt);
                         }
                     }
@@ -990,7 +1031,7 @@ impl Geocoder {
                 .filter(|n| !n.is_empty())
                 .map(|n| canon_tokens(&tokens(n)))
                 .collect();
-            let city_t = if c.kind == GeoKind::Place && c.pop > 0 && c.category.as_deref().map_or(false, |k| matches!(k, "city" | "town" | "village" | "hamlet")) {
+            let city_t = if c.kind == GeoKind::Place && c.pop > 0 && c.category.as_deref().is_some_and(|k| matches!(k, "city" | "town" | "village" | "hamlet")) {
                 vec![]
             } else {
                 canon_tokens(&tokens(&c.city))
@@ -1007,7 +1048,7 @@ impl Geocoder {
                 _ => pop_boost_city(c.pop),
             };
             let base = if !fuzzy {
-                nts.iter().map(|nt| name_quality(nt, &city_t, &qcanon)).fold(0.0, f64::max)
+                nts.iter().map(|nt| name_quality(nt, &city_t, qcanon)).fold(0.0, f64::max)
             } else {
                 // typo tolerant: per query token, best (scaled) edit distance to any name/city token
                 let mut best_total: Option<u32> = None;
@@ -1031,7 +1072,7 @@ impl Geocoder {
                         }
                         total += best;
                     }
-                    if ok && best_total.map_or(true, |b| total < b) {
+                    if ok && best_total.is_none_or(|b| total < b) {
                         best_total = Some(total);
                     }
                 }
@@ -1096,7 +1137,7 @@ impl Geocoder {
             for row in rows {
                 let (id, street, hn, city, alon, alat) = row?;
                 let d = haversine_m(here, [alon, alat]);
-                if d <= r && best.as_ref().map_or(true, |b| d < b.0) {
+                if d <= r && best.as_ref().is_none_or(|b| d < b.0) {
                     let g = self.addr_result(format!("addr:{id}"), &street, &hn, &city, alon, alat, GeoPrecision::Exact, 200.0 - d, None);
                     best = Some((d, g));
                 }
@@ -1122,7 +1163,7 @@ impl Geocoder {
                 for way in builder::decode_geom(&geom) {
                     for w in way.windows(2) {
                         let (d, p) = point_segment_m(here, w[0], w[1]);
-                        if d <= r && best.as_ref().map_or(true, |b| d < b.0) {
+                        if d <= r && best.as_ref().is_none_or(|b| d < b.0) {
                             best = Some((d, id, name.clone(), city.clone(), p));
                         }
                     }
@@ -1166,7 +1207,7 @@ impl Geocoder {
             for row in rows {
                 let (id, name, cat, city, plon, plat) = row?;
                 let d = haversine_m(here, [plon, plat]);
-                if d <= r && best.as_ref().map_or(true, |b| d < b.0) {
+                if d <= r && best.as_ref().is_none_or(|b| d < b.0) {
                     best = Some((
                         d,
                         GeoResult {
@@ -1194,7 +1235,7 @@ impl Geocoder {
         let mut best: Option<(f64, &PlaceMem)> = None;
         for p in &self.places().list {
             let d = haversine_m(here, [p.lon, p.lat]);
-            if best.map_or(true, |b| d < b.0) {
+            if best.is_none_or(|b| d < b.0) {
                 best = Some((d, p));
             }
         }
@@ -1206,6 +1247,14 @@ impl Geocoder {
 /// second street reading): equal normalised street and house number, the same city (one city
 /// name may extend the other by whole words) and less than 50 m apart. Keeps the best score and
 /// takes the most precise, then the longer (official) city name. Order is preserved.
+/// The route number of a road query: "כביש 6", "כביש443", "דרך 1", "road 90", "route 6".
+fn road_number(q: &str) -> Option<String> {
+    let t = q.trim().to_lowercase();
+    let rest = ["כביש", "דרך", "road", "route", "highway", "rd"].iter().find_map(|w| t.strip_prefix(w))?;
+    let n = rest.trim();
+    (!n.is_empty() && n.len() <= 4 && n.chars().all(|c| c.is_ascii_digit())).then(|| n.to_string())
+}
+
 pub fn dedupe_addresses(v: Vec<GeoResult>) -> Vec<GeoResult> {
     fn same_city(a: &str, b: &str) -> bool {
         let (a, b) = (canon(a), canon(b));
@@ -1322,6 +1371,16 @@ mod tests {
             category: None,
             score,
         }
+    }
+
+    #[test]
+    fn road_queries() {
+        assert_eq!(road_number("כביש 6").as_deref(), Some("6"));
+        assert_eq!(road_number("כביש443").as_deref(), Some("443"));
+        assert_eq!(road_number("דרך 1").as_deref(), Some("1"));
+        assert_eq!(road_number("Route 90").as_deref(), Some("90"));
+        assert_eq!(road_number("דרך בגין 12"), None);
+        assert_eq!(road_number("כביש"), None);
     }
 
     #[test]

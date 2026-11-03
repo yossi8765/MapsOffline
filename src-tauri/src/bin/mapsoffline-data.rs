@@ -4,6 +4,7 @@
 //! mapsoffline-data status [--dir <data dir>]
 //! mapsoffline-data route --from lon,lat --to lon,lat [--mode car|foot|bike|transit]
 //! mapsoffline-data search "<query>"
+#![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::needless_range_loop)]
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -123,6 +124,9 @@ enum Cmd {
     LineTimes {
         agency: String,
         line: String,
+        /// Any route_long_name of the line, to pick one of the agency's same-numbered lines
+        #[arg(long)]
+        long_name: Option<String>,
     },
     /// Departure board of a stop by stop code (favorites view)
     StopBoard {
@@ -342,7 +346,7 @@ fn main() -> anyhow::Result<()> {
                             if let Some(Err(e)) = &local {
                                 eprintln!("local comparison route failed: {e:#}");
                             }
-                            local.and_then(|l| l.ok()).and_then(|l| l.routes.first().map(|x| x.duration_sec)).is_some_and(|ld| (ld as f64) < r.routes[0].duration_sec as f64 * 0.7)
+                            local.and_then(|l| l.ok()).and_then(|l| l.routes.first().map(|x| x.duration_sec)).is_some_and(|ld| ld < r.routes[0].duration_sec * 0.7)
                         } {
                             // same rule as commands::route_hybrid: OSRM's foot/bike profiles detour around trunk roads
                             eprintln!("online {:?} route is far longer than the local one; using local routing", req.mode);
@@ -419,10 +423,10 @@ fn main() -> anyhow::Result<()> {
             }
             println!("computed in {} ms", resp.compute_ms);
         }
-        Cmd::LineTimes { agency, line } => {
+        Cmd::LineTimes { agency, line, long_name } => {
             let t = mapsoffline_lib::transit::load(&paths.transit_file())?;
             let t0 = std::time::Instant::now();
-            match mapsoffline_lib::transit::board::line_times(&t, &line, &agency, None) {
+            match mapsoffline_lib::transit::board::line_times_of(&t, &line, &agency, None, long_name.as_deref()) {
                 None => println!("no service today / unknown line"),
                 Some(lt) => {
                     println!("{} {} ({}) directions={} in {:?}", lt.agency, lt.short_name, lt.long_name, lt.directions.len(), t0.elapsed());

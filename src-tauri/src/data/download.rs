@@ -69,11 +69,22 @@ pub fn meta_path(dest: &Path) -> PathBuf {
 pub fn part_path(dest: &Path) -> PathBuf {
     append_ext(dest, ".part")
 }
+/// Description of the remote file a `.part` belongs to (what a resume must match). Kept apart
+/// from the finished file's meta, which must survive a failed download: it says "a complete
+/// copy is here" (used offline) and carries the OSM extract's `full_sequence`.
+fn part_meta_path(dest: &Path) -> PathBuf {
+    append_ext(dest, ".part.meta.json")
+}
 pub fn load_meta(dest: &Path) -> Option<DownloadMeta> {
     DownloadMeta::parse(&std::fs::read_to_string(meta_path(dest)).ok()?)
 }
 pub fn save_meta(dest: &Path, m: &DownloadMeta) -> anyhow::Result<()> {
-    std::fs::write(meta_path(dest), serde_json::to_vec_pretty(m)?)?;
+    write_json_atomic(&meta_path(dest), m)
+}
+fn write_json_atomic(path: &Path, m: &DownloadMeta) -> anyhow::Result<()> {
+    let tmp = append_ext(path, ".tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(m)?)?;
+    crate::paths::atomic_replace(path, &tmp)?;
     Ok(())
 }
 
@@ -126,11 +137,15 @@ pub(crate) fn remote_version(client: &Client, url: &str) -> anyhow::Result<Optio
 }
 
 /// Probe the remote: HEAD, falling back to GET with Range 0-0.
+///
+/// A HEAD answer counts only when it carries a validator (ETag / Last-Modified) besides the
+/// size: gtfs.mot.gov.il answers HEAD with a 3,382-byte HTML page and nothing else, and that
+/// "size" never matched the downloaded 149 MB, so the GTFS was fetched again on every update.
 pub(crate) fn probe(client: &Client, url: &str) -> anyhow::Result<DownloadMeta> {
     if let Ok(r) = client.head(url).send() {
         if r.status().is_success() {
             let m = meta_from_headers(url, r.headers(), None);
-            if m.content_length.is_some() {
+            if m.content_length.is_some() && m.version().is_some() {
                 return Ok(m);
             }
         }
@@ -143,13 +158,37 @@ pub(crate) fn probe(client: &Client, url: &str) -> anyhow::Result<DownloadMeta> 
         }
         bail!("server returned HTTP {} for {}", st, url);
     }
-    let total = if st.as_u16() == 206 {
-        hdr(r.headers(), CONTENT_RANGE).and_then(|s| s.rsplit('/').next().and_then(|t| t.parse().ok()))
-    } else {
-        None
-    };
+    let total = if st.as_u16() == 206 { hdr(r.headers(), CONTENT_RANGE).and_then(|s| content_range(&s)).and_then(|cr| cr.total) } else { None };
     // Dropping the response without reading the body (could be a full 200).
     Ok(meta_from_headers(url, r.headers(), total))
+}
+
+/// Parsed `Content-Range`: "bytes 100-199/1234" or "bytes */1234" (start None).
+#[derive(Debug, PartialEq)]
+struct ContentRange {
+    start: Option<u64>,
+    total: Option<u64>,
+}
+
+fn content_range(v: &str) -> Option<ContentRange> {
+    let rest = v.trim().strip_prefix("bytes")?.trim_start();
+    let (range, total) = rest.split_once('/')?;
+    let total = total.trim().parse().ok();
+    let start = if range.trim() == "*" { None } else { Some(range.split_once('-')?.0.trim().parse().ok()?) };
+    Some(ContentRange { start, total })
+}
+
+/// The copy described by `dest`'s meta was downloaded completely from `url`, and the server still
+/// offers the same content. Lets a caller that deleted the downloaded source after using it (the
+/// GTFS zip) tell "nothing new" from "must download". Ok(None) = changed or unknown; Err = the
+/// server could not be asked.
+pub fn unchanged_remote(url: &str, dest: &Path) -> anyhow::Result<Option<String>> {
+    let Some(old) = load_meta(dest) else { return Ok(None) };
+    if !old.completed || old.url != url {
+        return Ok(None);
+    }
+    let remote = probe(&http_client()?, url)?;
+    Ok(if old.same_content(&remote) { old.version() } else { None })
 }
 
 fn fmt_mb(b: u64) -> String {
@@ -180,7 +219,7 @@ pub fn ensure_fresh(
         Ok(m) => Some(m),
         Err(e) => {
             // Offline but we have a complete copy: keep it.
-            if dest.exists() && old.as_ref().map_or(false, |m| m.completed) {
+            if dest.exists() && old.as_ref().is_some_and(|m| m.completed) {
                 progress(ProgressPhase::Processing, 1, 1, "השרת אינו זמין – נעשה שימוש בקובץ הקיים");
                 return Ok(old.and_then(|m| m.version()));
             }
@@ -204,16 +243,21 @@ pub fn ensure_fresh(
     }
 
     let part = part_path(dest);
+    let part_meta = part_meta_path(dest);
     let mut meta = remote.clone().unwrap_or_else(|| DownloadMeta { url: url.into(), ..Default::default() });
     meta.completed = false;
-    let resumable = match (&old, &remote) {
-        (Some(o), Some(r)) => !o.completed && o.url == url && o.same_content(r),
+    meta.full_sequence = None;
+    // resume only a .part of the very same remote content
+    let old_part = std::fs::read_to_string(&part_meta).ok().and_then(|s| DownloadMeta::parse(&s));
+    let resumable = match (&old_part, &remote) {
+        (Some(o), Some(r)) => o.url == url && o.same_content(r),
         _ => false,
     };
     if !resumable {
         let _ = std::fs::remove_file(&part);
     }
-    save_meta(dest, &meta)?;
+    // the finished file's meta stays as it is until the new copy is complete
+    write_json_atomic(&part_meta, &meta)?;
 
     let mut last_err = anyhow!("download failed");
     let mut attempt = 0u32;
@@ -246,16 +290,18 @@ pub fn ensure_fresh(
                 } else {
                     meta.content_length = Some(sz);
                 }
-                if dest.exists() {
-                    std::fs::remove_file(dest)?;
-                }
-                std::fs::rename(&part, dest)?;
+                crate::paths::atomic_replace(dest, &part)?;
                 meta.completed = true;
                 save_meta(dest, &meta)?;
+                let _ = std::fs::remove_file(&part_meta);
                 return Ok(meta.version());
             }
             Err(AttemptErr::Fatal(e)) => return Err(e),
-            Err(AttemptErr::Retry(e)) => last_err = e,
+            Err(AttemptErr::Retry(e)) => {
+                last_err = e;
+                // keep the .part's description current (Content-Range may have corrected the size)
+                let _ = write_json_atomic(&part_meta, &meta);
+            }
             Err(AttemptErr::Paused) => {
                 attempt -= 1; // a pause is not a failed attempt
                 progress(ProgressPhase::Downloading, 0, 0, "ההורדה מושהית");
@@ -304,9 +350,21 @@ async fn attempt_download_async(
     let mut offset = start;
     let mut file: File;
     if st.as_u16() == 416 {
+        // "bytes */N": a .part that already holds all N bytes (stopped right at the end) is done
+        let total = hdr(resp.headers(), CONTENT_RANGE).and_then(|v| content_range(&v)).and_then(|cr| cr.total);
+        if start > 0 && total == Some(start) {
+            meta.content_length = Some(start);
+            return Ok(());
+        }
         let _ = std::fs::remove_file(part);
         return Err(AttemptErr::Retry(anyhow!("range not satisfiable, restarting")));
     } else if st.as_u16() == 206 {
+        // the server must continue exactly where the .part ends, or appending would corrupt it
+        let cr = hdr(resp.headers(), CONTENT_RANGE).and_then(|v| content_range(&v));
+        if cr.as_ref().and_then(|c| c.start) != Some(start) {
+            let _ = std::fs::remove_file(part);
+            return Err(AttemptErr::Retry(anyhow!("server resumed at another offset ({cr:?}, wanted {start}), restarting")));
+        }
         file = OpenOptions::new().append(true).open(part).map_err(|e| AttemptErr::Fatal(e.into()))?;
     } else if st.is_success() {
         offset = 0;
@@ -322,7 +380,7 @@ async fn attempt_download_async(
     if st.as_u16() == 206 {
         // Content-Range's total is authoritative: the probe's Content-Length may describe a stub
         // page (gtfs.mot.gov.il), which made a resumed download report a bogus percentage.
-        let cr_total = hdr(resp.headers(), CONTENT_RANGE).and_then(|v| v.rsplit('/').next().and_then(|t| t.trim().parse::<u64>().ok()));
+        let cr_total = hdr(resp.headers(), CONTENT_RANGE).and_then(|v| content_range(&v)).and_then(|cr| cr.total);
         if let Some(total) = cr_total {
             meta.content_length = Some(total);
         } else if let Some(r) = hdr_len {
@@ -425,6 +483,14 @@ mod tests {
         let d = DownloadMeta { content_length: Some(6), ..Default::default() };
         assert!(!c.same_content(&d));
         assert!(!DownloadMeta::default().same_content(&DownloadMeta::default()));
+    }
+
+    #[test]
+    fn content_range_forms() {
+        assert_eq!(content_range("bytes 100-199/1234"), Some(ContentRange { start: Some(100), total: Some(1234) }));
+        assert_eq!(content_range("bytes */1234"), Some(ContentRange { start: None, total: Some(1234) }));
+        assert_eq!(content_range("bytes 0-0/*"), Some(ContentRange { start: Some(0), total: None }));
+        assert_eq!(content_range("items 1-2/3"), None);
     }
 
     #[test]

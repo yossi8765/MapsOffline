@@ -300,6 +300,40 @@ impl Finisher<'_> {
     }
 }
 
+/// Where the transit build's source comes from.
+enum GtfsSource {
+    /// Downloaded (or already present) zip; its version.
+    Fresh(Option<String>),
+    /// The zip was deleted after the last build and the server still has that same timetable
+    /// (or cannot be reached): transit.bin is current.
+    Unchanged(String),
+}
+
+/// Version of the timetable transit.bin was built from, when that is still the latest one and
+/// the zip is gone (it is deleted after a successful build). None = download and build.
+fn gtfs_unchanged(paths: &DataPaths) -> Option<String> {
+    let zip = paths.gtfs_zip();
+    if zip.exists() || !paths.transit_file().exists() {
+        return None;
+    }
+    let meta = download::load_meta(&zip).filter(|m| m.completed && m.url == GTFS_URL)?;
+    let version = meta.version()?;
+    let built = manifest::Manifest::load(paths).entry(DataComponent::Transit).and_then(|e| e.version.clone());
+    // transit.bin must come from exactly this timetable and this program's format
+    if built.as_deref() != Some(build_tag(DataComponent::Transit, &version).as_str()) {
+        return None;
+    }
+    match download::unchanged_remote(GTFS_URL, &zip) {
+        Ok(Some(v)) => Some(v),
+        Ok(None) => None,
+        // offline: keep what is installed, like the "server unavailable, using the existing file" path
+        Err(e) => {
+            log::info!("GTFS server not reachable ({e:#}); transit stays as installed");
+            Some(version)
+        }
+    }
+}
+
 /// Run the update for the given components. Blocking; call from a blocking thread.
 ///
 /// Every download runs in parallel (satellite imagery is limited by its server, not by the
@@ -349,16 +383,25 @@ pub fn update(
             let (comps, emit) = (osm_comps.clone(), &emit);
             s.spawn(move || {
                 let rep = Reporter::new(emit, &comps, cancel);
+                if rep.cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
                 osmdiff::update_pbf(&paths.pbf_file(), &progress, &rep.cancel)
             })
         });
         let gtfs = wants(DataComponent::Transit).then(|| {
             let emit = &emit;
-            s.spawn(move || {
+            s.spawn(move || -> anyhow::Result<GtfsSource> {
                 let rep = Reporter::new(emit, &[DataComponent::Transit], cancel);
+                if rep.cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                if let Some(v) = gtfs_unchanged(paths) {
+                    return Ok(GtfsSource::Unchanged(v));
+                }
                 let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
-                download::ensure_fresh(GTFS_URL, &paths.gtfs_zip(), &progress, &rep.cancel)
+                download::ensure_fresh(GTFS_URL, &paths.gtfs_zip(), &progress, &rep.cancel).map(GtfsSource::Fresh)
             })
         });
 
@@ -403,12 +446,31 @@ pub fn update(
         }
         if let Some(h) = gtfs {
             let src = h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("download thread panicked"))).map_err(|e| format!("{e:#}"));
-            build(DataComponent::Transit, &src, &|progress| {
-                let tmp = paths.transit_file().with_extension("bin.tmp");
-                crate::transit::build(&paths.gtfs_zip(), &tmp, progress)?;
-                crate::paths::atomic_replace(&paths.transit_file(), &tmp)?;
-                Ok(())
-            });
+            match src {
+                // the timetable is the one transit.bin was built from: nothing to download or build
+                Ok(GtfsSource::Unchanged(v)) if !cancel.is_cancelled_for(DataComponent::Transit) => {
+                    emit(DataProgress { component: DataComponent::Transit, phase: ProgressPhase::Processing, done: 1, total: 1, message: "הקובץ כבר מעודכן".into() });
+                    fin.finish(DataComponent::Transit, Ok(Some(build_tag(DataComponent::Transit, &v))));
+                }
+                src => {
+                    let src = src.map(|g| match g {
+                        GtfsSource::Fresh(v) => v,
+                        GtfsSource::Unchanged(v) => Some(v),
+                    });
+                    build(DataComponent::Transit, &src, &|progress| {
+                        let tmp = paths.transit_file().with_extension("bin.tmp");
+                        crate::transit::build(&paths.gtfs_zip(), &tmp, progress)?;
+                        crate::paths::atomic_replace(&paths.transit_file(), &tmp)?;
+                        // The 149 MB zip is not needed any more: transit.bin holds everything, and
+                        // its meta (kept) is enough to tell next time whether the server has a newer
+                        // timetable (`gtfs_unchanged`).
+                        if let Err(e) = std::fs::remove_file(paths.gtfs_zip()) {
+                            log::warn!("could not delete the used GTFS zip: {e}");
+                        }
+                        Ok(())
+                    });
+                }
+            }
         }
     });
 
@@ -454,6 +516,30 @@ mod tests {
         assert!(!t.is_finished(), "check() must block while paused");
         c.cancel();
         assert!(t.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn gtfs_unchanged_needs_matching_build() {
+        let dir = std::env::temp_dir().join(format!("mo-gtfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = DataPaths::new(&dir);
+        paths.ensure_dirs().unwrap();
+        // nothing installed: download
+        assert_eq!(gtfs_unchanged(&paths), None);
+        std::fs::write(paths.transit_file(), b"t").unwrap();
+        let meta = download::DownloadMeta { url: GTFS_URL.into(), last_modified: Some("Mon, 03 Nov 2026 00:00:00 GMT".into()), content_length: Some(9), completed: true, ..Default::default() };
+        download::save_meta(&paths.gtfs_zip(), &meta).unwrap();
+        // transit.bin built from another timetable (or format): download and build again
+        let mut m = manifest::Manifest::default();
+        m.set(DataComponent::Transit, Some(build_tag(DataComponent::Transit, "Sun, 02 Nov 2026 00:00:00 GMT")));
+        m.save(&paths).unwrap();
+        assert_eq!(gtfs_unchanged(&paths), None);
+        // zip still there: the normal download path decides
+        m.set(DataComponent::Transit, Some(build_tag(DataComponent::Transit, "Mon, 03 Nov 2026 00:00:00 GMT")));
+        m.save(&paths).unwrap();
+        std::fs::write(paths.gtfs_zip(), b"z").unwrap();
+        assert_eq!(gtfs_unchanged(&paths), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

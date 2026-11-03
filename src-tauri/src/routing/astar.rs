@@ -416,7 +416,7 @@ pub fn details(g: &Graph, prof: &Profile, path: &PathResult) -> PathDetails {
         let dist: f64 = part.windows(2).map(|w| haversine_m(w[0], w[1])).sum();
         let mut dur = prof.traverse_time(g, e) as f64 * (f1 - f0).max(0.0);
         if let Some(ps) = prev_state {
-            dur += prof.turn_cost(g, ps, s).unwrap_or(0.0) as f64;
+            dur += prof.turn_time(g, ps, s).unwrap_or(0.0) as f64;
         }
         d.state_starts.push(if d.geometry.is_empty() { 0 } else { d.geometry.len() - 1 });
         if d.geometry.is_empty() {

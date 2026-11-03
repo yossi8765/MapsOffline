@@ -135,7 +135,7 @@ mod tests {
         }
         let t = decode_png(&png_bytes).unwrap();
         assert_eq!(t.w, 2);
-        let i = (0 * 2 + 1) * 3;
+        let i = 3; // pixel (x 1, y 0) of the 2-pixel-wide tile, 3 bytes per pixel
         let h = t.rgb[i] as f32 * 256.0 + t.rgb[i + 1] as f32 + t.rgb[i + 2] as f32 / 256.0 - 32768.0;
         assert!((h - 10.5).abs() < 1e-3);
     }

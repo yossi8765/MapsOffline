@@ -12,8 +12,8 @@
 //! offline machine answers at once.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::http::{header, Request, Response, StatusCode};
 
@@ -35,7 +35,15 @@ static STORED: AtomicU64 = AtomicU64::new(0);
 static TRIMMING: AtomicBool = AtomicBool::new(false);
 
 static SOURCE: OnceLock<Option<Source>> = OnceLock::new();
-static EOX_LAYER: OnceLock<Option<String>> = OnceLock::new();
+static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+/// Latest Sentinel-2 layer name once known, else when to ask again (unix seconds): a first probe
+/// made offline must not hide the layer for the whole session.
+static EOX_LAYER: Mutex<(Option<String>, u64)> = Mutex::new((None, 0));
+const EOX_RETRY_SECS: u64 = 300;
+/// Live tiles are for a map on screen: give up quickly so an offline machine answers at once
+/// (the download client waits 30 s for a connection).
+const LIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const LIVE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Unix seconds until which the live part is skipped (after a network error).
 static REST_UNTIL: AtomicU64 = AtomicU64::new(0);
 
@@ -43,17 +51,62 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn source() -> Option<&'static Source> {
-    SOURCE.get_or_init(|| crate::data::download::http_client().ok().map(Source::interactive)).as_ref()
+fn live_client() -> Option<reqwest::blocking::Client> {
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent(crate::data::download::USER_AGENT)
+                .connect_timeout(LIVE_CONNECT_TIMEOUT)
+                .timeout(LIVE_TIMEOUT)
+                .build()
+                .ok()
+        })
+        .clone()
 }
 
-fn eox_layer() -> Option<&'static str> {
-    EOX_LAYER
-        .get_or_init(|| {
-            let c = crate::data::download::http_client().ok()?;
-            satellite::latest_layer(&c).ok()
-        })
-        .as_deref()
+fn source() -> Option<&'static Source> {
+    SOURCE.get_or_init(|| live_client().map(Source::interactive)).as_ref()
+}
+
+fn eox_layer() -> Option<String> {
+    let mut g = EOX_LAYER.lock().unwrap_or_else(|e| e.into_inner());
+    if g.0.is_none() && now_secs() >= g.1 {
+        g.0 = live_client().and_then(|c| satellite::latest_layer(&c).ok());
+        if g.0.is_none() {
+            g.1 = now_secs() + EOX_RETRY_SECS;
+        }
+    }
+    g.0.clone()
+}
+
+/// No network (refused, unreachable, timed out) or a content filter blocking the host: worth a
+/// rest of the live part. A rate-limit pause is handled by the pacer and is not one of these.
+fn is_offline_error(e: &anyhow::Error) -> bool {
+    // the content-filter message names the host first; compare the text after it
+    let blocked = crate::data::download::blocked_message("http://x/");
+    let blocked_tail = blocked.split_once(" x ").map_or("", |t| t.1);
+    e.chain().any(|c| c.downcast_ref::<reqwest::Error>().is_some_and(|r| r.is_connect() || r.is_timeout() || r.is_request()))
+        || (!blocked_tail.is_empty() && format!("{e:#}").contains(blocked_tail))
+}
+
+/// Is the downloaded archive the govmap orthophoto? Read from manifest.json, which is parsed
+/// again only when it changed (this runs for every tile on screen).
+fn local_is_ortho(paths: &crate::paths::DataPaths) -> bool {
+    static CACHE: Mutex<Option<(PathBuf, Option<SystemTime>, bool)>> = Mutex::new(None);
+    let file = paths.manifest_file();
+    let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((f, t, v)) = g.as_ref() {
+        if *f == file && *t == mtime {
+            return *v;
+        }
+    }
+    let v = crate::data::manifest::Manifest::load(paths)
+        .entry(crate::types::DataComponent::Satellite)
+        .and_then(|e| e.version.as_deref())
+        .is_some_and(orthophoto::is_govmap_version);
+    *g = Some((file, mtime, v));
+    v
 }
 
 fn cache_base(dir: &Path, z: u8, x: u32, y: u32) -> PathBuf {
@@ -93,7 +146,7 @@ fn store(base: &Path, tile: Option<&[u8]>) {
 /// Every [`TRIM_EVERY`] stores: in the background, delete the oldest cached tiles while the
 /// cache is over [`CACHE_MAX`].
 fn maybe_trim(dir: &Path) {
-    if STORED.fetch_add(1, Ordering::Relaxed) % TRIM_EVERY != 0 || TRIMMING.swap(true, Ordering::AcqRel) {
+    if !STORED.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRIM_EVERY) || TRIMMING.swap(true, Ordering::AcqRel) {
         return;
     }
     let dir = dir.to_path_buf();
@@ -150,8 +203,9 @@ fn live(govmap: bool, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> 
     }
     if z <= EOX_MAX_ZOOM {
         if let Some(layer) = eox_layer() {
-            let client = crate::data::download::http_client()?;
-            return satellite::fetch_tile(&client, &satellite::tile_url(layer, z, x, y), true, &cancel);
+            let client = live_client().ok_or_else(|| anyhow::anyhow!("no http client"))?;
+            // one attempt: the map asks again when the tile is needed again
+            return satellite::fetch_tile_attempts(&client, &satellite::tile_url(&layer, z, x, y), true, &cancel, 1);
         }
         if govmap && orthophoto::wanted(z, x, y) {
             return orthophoto::render(src, z, x, y, &cancel);
@@ -166,10 +220,7 @@ fn tile(state: &AppState, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     let govmap = state.settings.read().satellite_source != "sentinel";
     // a downloaded Sentinel-2 archive is blurry next to the orthophoto: with govmap chosen it
     // only serves the low zooms (and stands in when the live tile cannot be had)
-    let local_ortho = crate::data::manifest::Manifest::load(&paths)
-        .entry(crate::types::DataComponent::Satellite)
-        .and_then(|e| e.version.as_deref())
-        .is_some_and(orthophoto::is_govmap_version);
+    let local_ortho = local_is_ortho(&paths);
     let local_first = !govmap || local_ortho || z <= orthophoto::EOX_MAX_ZOOM || !orthophoto::wanted(z, x, y);
     let from_local = || -> Option<Vec<u8>> {
         if local.exists() && crate::map_tiles::archive_max_zoom(&local).is_some_and(|m| z <= m) {
@@ -207,10 +258,10 @@ fn tile(state: &AppState, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
             }
         }
         Err(e) => {
-            let msg = format!("{e:#}");
-            log::debug!("live satellite {z}/{x}/{y}: {msg}");
-            // a rate-limit pause is handled by the pacer; anything else looks like no network
-            if !msg.contains("govmap") {
+            log::debug!("live satellite {z}/{x}/{y}: {e:#}");
+            // Rest only when the network is the problem. (The old test, "the message does not
+            // mention govmap", never fired: every reqwest error carries the govmap URL.)
+            if is_offline_error(&e) {
                 REST_UNTIL.store(now_secs() + OFFLINE_REST_SECS, Ordering::Relaxed);
             }
             if local_first {
@@ -247,6 +298,19 @@ pub fn serve(state: Arc<AppState>, request: Request<Vec<u8>>) -> Response<Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_errors_are_recognised() {
+        // a refused connection on a closed local port is a real reqwest connect error
+        let c = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(2)).build().unwrap();
+        let e: anyhow::Error = c.get("http://127.0.0.1:9/x").send().unwrap_err().into();
+        assert!(is_offline_error(&e.context("govmap tile")));
+        let rate = anyhow::anyhow!("{}", orthophoto::RATE_LIMITED_MSG);
+        assert!(!is_offline_error(&rate));
+        let blocked = anyhow::anyhow!("{}", crate::data::download::blocked_message("https://cdn.govmap.gov.il/a.jpg"));
+        assert!(is_offline_error(&blocked));
+        assert!(!is_offline_error(&anyhow::anyhow!("HTTP 500 for https://cdn.govmap.gov.il/a.jpg")));
+    }
 
     #[test]
     fn parses_paths() {

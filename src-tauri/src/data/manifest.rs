@@ -31,7 +31,11 @@ impl Manifest {
     }
     pub fn save(&self, paths: &DataPaths) -> anyhow::Result<()> {
         std::fs::create_dir_all(&paths.root)?;
-        std::fs::write(paths.manifest_file(), serde_json::to_vec_pretty(self)?)?;
+        // tmp + rename: a crash while writing must not leave a truncated manifest behind
+        let dest = paths.manifest_file();
+        let tmp = dest.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        crate::paths::atomic_replace(&dest, &tmp)?;
         Ok(())
     }
     pub fn entry(&self, c: DataComponent) -> Option<&Entry> {

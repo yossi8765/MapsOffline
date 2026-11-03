@@ -1,4 +1,7 @@
 //! MapsOffline – library crate (tauri app + reusable modules for the data CLI).
+// Deliberate style in this codebase (algorithm code indexes parallel arrays; the Tauri commands
+// and builders take many plain parameters; callback types are spelled out where used).
+#![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub mod commands;
 pub mod data;
 pub mod geo;
@@ -53,6 +56,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        // The asset protocol (PMTiles opened by the webview) may read the active data folder
+        // only, not the whole disk; settings_set adds a newly chosen folder.
+        .setup(|app| {
+            use tauri::Manager;
+            let root = app.state::<Arc<AppState>>().paths().root;
+            allow_asset_dir(app.handle(), &root);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::geocode_search,
             commands::geocode_reverse,
@@ -106,4 +117,13 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapsOffline");
+}
+
+/// Let the webview read files under `dir` through the asset protocol (the static scope in
+/// tauri.conf.json is empty; the data folder can be the default, a portable or a custom one).
+pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &std::path::Path) {
+    use tauri::Manager;
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+        log::warn!("asset scope {}: {e}", dir.display());
+    }
 }

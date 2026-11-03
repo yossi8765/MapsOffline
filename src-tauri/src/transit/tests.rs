@@ -351,3 +351,16 @@ fn infeasible_road_transfer_is_rejected() {
         assert!(!transit_lines(rt).contains(&"R3".to_string()), "infeasible connection returned");
     }
 }
+
+/// Build transit.bin from the downloaded GTFS zip into `MO_TRANSIT_OUT` (no network):
+/// `MO_TRANSIT_OUT=... cargo test --release --features cli --lib build_real_transit -- --ignored`.
+#[test]
+#[ignore]
+fn build_real_transit() {
+    let root = crate::paths::DataPaths::default_root();
+    let zip = root.join("downloads").join("israel-public-transportation.zip");
+    let out = std::path::PathBuf::from(std::env::var("MO_TRANSIT_OUT").expect("MO_TRANSIT_OUT"));
+    crate::transit::build(&zip, &out, &|_, _, _, _| true).unwrap();
+    let t = crate::transit::load(&out).unwrap();
+    println!("built {} bytes, dep stored: {}", std::fs::metadata(&out).unwrap().len(), !t.dep.is_empty());
+}

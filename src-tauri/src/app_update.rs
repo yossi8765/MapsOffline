@@ -41,7 +41,7 @@ pub fn current_version() -> Version {
 }
 
 fn hex_to_bytes(h: &str) -> Option<Vec<u8>> {
-    if h.len() % 2 != 0 {
+    if !h.len().is_multiple_of(2) {
         return None;
     }
     (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).ok()).collect()
@@ -134,7 +134,7 @@ fn parse_releases(json: &str) -> anyhow::Result<Vec<Candidate>> {
             links,
         });
     }
-    out.sort_by(|a, b| b.version.cmp(&a.version));
+    out.sort_by_key(|c| std::cmp::Reverse(c.version));
     Ok(out)
 }
 
@@ -161,8 +161,15 @@ pub fn check() -> anyhow::Result<AppUpdate> {
             last_problem = Some(format!("{}: unsigned release", c.tag));
             continue;
         };
-        let sums = small_file(&client, sums_url)?;
-        let sig = small_file(&client, sig_url)?;
+        // a transient failure on one release must not end the whole check (5.30)
+        let (sums, sig) = match (small_file(&client, sums_url), small_file(&client, sig_url)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                log::warn!("release {}: {e:#}", c.tag);
+                last_problem = Some(format!("{}: {e}", c.tag));
+                continue;
+            }
+        };
         let Some(signed) = verify_sums(&sums, &sig, PUBLIC_KEY_HEX) else {
             log::warn!("release {}: signature check failed", c.tag);
             last_problem = Some(format!("{}: bad signature", c.tag));
@@ -209,7 +216,11 @@ fn sha256_file(p: &Path) -> anyhow::Result<[u8; 32]> {
 /// Download the installer of the newest signed release and verify it. Returns the file path.
 pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf> {
     let client = http_client()?;
-    let json = client.get(RELEASES_API).send()?.error_for_status()?.text()?;
+    let r = client.get(RELEASES_API).send()?;
+    if r.status().as_u16() == 418 {
+        bail!("{}", download::blocked_message(RELEASES_API));
+    }
+    let json = r.error_for_status()?.text()?;
     let c = parse_releases(&json)?.into_iter().find(|c| link(&c.links, SUMS_NAME).is_some() && link(&c.links, SIG_NAME).is_some()).ok_or_else(|| anyhow!("no signed release"))?;
     let sums = small_file(&client, link(&c.links, SUMS_NAME).unwrap())?;
     let sig = small_file(&client, link(&c.links, SIG_NAME).unwrap())?;
@@ -229,12 +240,24 @@ pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf
         let _ = std::fs::remove_dir_all(&dir);
         bail!("טביעת האצבע של הקובץ שהורד אינה תואמת לרשימה החתומה");
     }
+    *VERIFIED.lock() = Some((dest.canonicalize()?, expected));
     Ok(dest)
 }
 
-/// Start the installer detached (the caller quits the app right after).
+/// The installer `download` verified in this session, by canonical path and SHA-256.
+static VERIFIED: parking_lot::Mutex<Option<(PathBuf, [u8; 32])>> = parking_lot::Mutex::new(None);
+
+/// Start the installer detached (the caller quits the app right after). Only the exact file
+/// `download` verified against the signed list may run, and its hash is checked again right
+/// before it starts: the path comes from the webview, and the file sat on disk in between.
 pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
-    std::process::Command::new(path).spawn().with_context(|| format!("starting {}", path.display()))?;
+    let canon = path.canonicalize().context("installer not found")?;
+    let dir = update_dir().canonicalize().context("update folder not found")?;
+    let Some((ok_path, ok_hash)) = VERIFIED.lock().clone() else { bail!("UPDATE_FILE_INVALID") };
+    if !canon.starts_with(&dir) || canon != ok_path || sha256_file(&canon)? != ok_hash {
+        bail!("UPDATE_FILE_INVALID");
+    }
+    std::process::Command::new(&canon).spawn().with_context(|| format!("starting {}", canon.display()))?;
     Ok(())
 }
 

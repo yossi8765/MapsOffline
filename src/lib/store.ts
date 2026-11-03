@@ -791,7 +791,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     const d = (f.data ?? {}) as Partial<LineRef>;
     if (!d.routeShortName) return;
     try {
-      const shape = await api.transitLine(d.routeShortName, d.agency ?? "", d.headsign);
+      const shape = await api.transitLine(d.routeShortName, d.agency ?? "", d.headsign, d.routeLongName);
       set({ linePreview: { favId: f.id, shape } });
     } catch (e) {
       get().toastError(e);

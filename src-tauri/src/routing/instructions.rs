@@ -196,11 +196,10 @@ pub fn build_steps(g: &Graph, prof: &Profile, states: &[u32], det: &PathDetails,
         let mut m = classify(delta);
         let degree = g.degree(v);
         // entering / leaving links
-        if m == Maneuver::Straight || matches!(m, Maneuver::SlightLeft | Maneuver::SlightRight) {
-            if fp & flags::LINK != 0 && fs & flags::LINK == 0 && g.e_class[(s >> 1) as usize] <= 4 {
+        if (m == Maneuver::Straight || matches!(m, Maneuver::SlightLeft | Maneuver::SlightRight))
+            && fp & flags::LINK != 0 && fs & flags::LINK == 0 && g.e_class[(s >> 1) as usize] <= 4 {
                 m = Maneuver::Merge;
             }
-        }
         let slight = matches!(m, Maneuver::SlightLeft | Maneuver::SlightRight);
         let continue_same = (m == Maneuver::Straight && (same_name(&cur.street, &name) || name.is_none() || degree <= 2))
             || (slight && name.is_some() && same_name(&cur.street, &name));

@@ -139,10 +139,10 @@ impl Areas {
         if self.kind.is_empty() {
             return if self.off.len() <= 1 && self.pts.is_empty() { Ok(()) } else { Err("areas") };
         }
-        if self.off.len() != self.kind.len() + 1 || self.off[0] != 0 || self.pts.len() % 2 != 0 {
+        if self.off.len() != self.kind.len() + 1 || self.off[0] != 0 || !self.pts.len().is_multiple_of(2) {
             return Err("areas");
         }
-        if self.off.last().map_or(true, |&o| o as usize * 2 != self.pts.len()) || self.off.windows(2).any(|w| w[1] < w[0] + 4) {
+        if self.off.last().is_none_or(|&o| o as usize * 2 != self.pts.len()) || self.off.windows(2).any(|w| w[1] < w[0] + 4) {
             return Err("areas");
         }
         Ok(())

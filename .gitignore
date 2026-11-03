@@ -36,4 +36,4 @@ src-tauri/target/
 
 ci-data/
 ci-out/
-.cargo/
+/.cargo/

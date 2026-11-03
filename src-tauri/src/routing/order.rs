@@ -30,7 +30,7 @@ pub fn best_order(cost: &[Vec<f64>], fixed_end: bool) -> Vec<usize> {
                 }
                 let nc = c + cost[middle[last]][middle[next]];
                 let key = (mask | (1 << next), next);
-                if dp.get(&key).map_or(true, |&(old, _)| nc < old) {
+                if dp.get(&key).is_none_or(|&(old, _)| nc < old) {
                     dp.insert(key, (nc, last));
                 }
             }
@@ -41,7 +41,7 @@ pub fn best_order(cost: &[Vec<f64>], fixed_end: bool) -> Vec<usize> {
     for last in 0..m {
         if let Some(&(c, _)) = dp.get(&(full, last)) {
             let total = if fixed_end { c + cost[middle[last]][n - 1] } else { c };
-            if best.map_or(true, |(b, _)| total < b) {
+            if best.is_none_or(|(b, _)| total < b) {
                 best = Some((total, last));
             }
         }

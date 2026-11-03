@@ -469,7 +469,7 @@ impl Graph {
     /// Is vertex `v` a signalised junction?
     #[inline]
     pub fn has_signal(&self, v: u32) -> bool {
-        self.v_signal.get((v / 8) as usize).map_or(false, |b| b & (1 << (v % 8)) != 0)
+        self.v_signal.get((v / 8) as usize).is_some_and(|b| b & (1 << (v % 8)) != 0)
     }
     pub fn count_signals(&self) -> usize {
         self.v_signal.iter().map(|b| b.count_ones() as usize).sum()
@@ -696,7 +696,7 @@ impl Graph {
         }
         self.vlon = vorder.iter().map(|&o| self.vlon[o as usize]).collect();
         self.vlat = vorder.iter().map(|&o| self.vlat[o as usize]).collect();
-        let mut sig = vec![0u8; (nv + 7) / 8];
+        let mut sig = vec![0u8; nv.div_ceil(8)];
         for (n, &o) in vorder.iter().enumerate() {
             if self.has_signal(o) {
                 sig[n / 8] |= 1 << (n % 8);
@@ -750,7 +750,7 @@ impl Graph {
     /// Spatial renumbering plus derived runtime fields (restriction offsets, grid, projected
     /// coords, speed bound). Called by the builder before saving; all of it is stored in the file.
     pub fn finish_build(&mut self) {
-        let nv8 = (self.num_vertices() + 7) / 8;
+        let nv8 = self.num_vertices().div_ceil(8);
         if self.v_signal.len() != nv8 {
             self.v_signal.resize(nv8, 0);
         }
@@ -1013,7 +1013,7 @@ impl Graph {
     /// Cheap structural checks so a damaged file fails at load instead of panicking mid-search.
     fn validate(&self) -> Result<(), &'static str> {
         let (nv, ne) = (self.vlon.len(), self.e_from.len());
-        if self.vlat.len() != nv || self.vpx.len() != nv || self.vpy.len() != nv || self.v_signal.len() != (nv + 7) / 8 {
+        if self.vlat.len() != nv || self.vpx.len() != nv || self.vpy.len() != nv || self.v_signal.len() != nv.div_ceil(8) {
             return Err("vertex arrays");
         }
         let edge_arrays = [
@@ -1029,21 +1029,21 @@ impl Graph {
         if edge_arrays.iter().any(|&l| l != ne) || self.e_geom_off.len() != ne + 1 {
             return Err("edge arrays");
         }
-        if self.e_geom_off.last().map_or(true, |&o| o as usize * 2 != self.geom.len()) {
+        if self.e_geom_off.last().is_none_or(|&o| o as usize * 2 != self.geom.len()) {
             return Err("geometry");
         }
-        if self.adj_off.len() != nv + 1 || self.adj_off.last().map_or(true, |&o| o as usize != self.adj.len()) {
+        if self.adj_off.len() != nv + 1 || self.adj_off.last().is_none_or(|&o| o as usize != self.adj.len()) {
             return Err("adjacency");
         }
-        if self.restr_off.len() != nv + 1 || self.restr_off.last().map_or(true, |&o| o as usize != self.restrictions.len()) {
+        if self.restr_off.len() != nv + 1 || self.restr_off.last().is_none_or(|&o| o as usize != self.restrictions.len()) {
             return Err("restrictions");
         }
-        if self.name_off.last().map_or(false, |&o| o as usize != self.name_buf.len()) {
+        if self.name_off.last().is_some_and(|&o| o as usize != self.name_buf.len()) {
             return Err("names");
         }
         self.areas.validate()?;
         let cells = self.grid.nx as usize * self.grid.ny as usize;
-        if self.grid.off.len() != cells + 1 || self.grid.off.last().map_or(true, |&o| o as usize != self.grid.items.len()) {
+        if self.grid.off.len() != cells + 1 || self.grid.off.last().is_none_or(|&o| o as usize != self.grid.items.len()) {
             return Err("grid");
         }
         let nv32 = nv as u32;
@@ -1395,7 +1395,7 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     let acc: Acc = reader.par_map_reduce(
         |el| {
             let c = counter.fetch_add(1, Ordering::Relaxed);
-            if c % 2_000_000 == 0 {
+            if c.is_multiple_of(2_000_000) {
                 progress(ProgressPhase::Processing, 5, 100, &format!("סורק נתוני OSM... {} מיליון רכיבים", c / 1_000_000));
             }
             match el {
@@ -1476,8 +1476,8 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     let mut coords: Vec<(i64, i32, i32, bool)> = reader.par_map_reduce(
         move |el| {
             let c = counter2.fetch_add(1, Ordering::Relaxed);
-            if c % 2_000_000 == 0 {
-                progress(ProgressPhase::Processing, 30 + ((c / 1_000_000).min(20) as u64), 100, "קורא קואורדינטות");
+            if c.is_multiple_of(2_000_000) {
+                progress(ProgressPhase::Processing, 30 + (c / 1_000_000).min(20), 100, "קורא קואורדינטות");
             }
             // `highway=traffic_signals` on a junction node (not `crossing=traffic_signals`)
             fn is_signal<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
@@ -1657,7 +1657,7 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     g.build_adjacency();
 
     // signalised junctions (only vertices that survived compaction, i.e. real junctions / ends)
-    g.v_signal = vec![0u8; (nv + 7) / 8];
+    g.v_signal = vec![0u8; nv.div_ceil(8)];
     let mut n_sig = 0usize;
     for (id, &v) in &vid {
         if signal_nodes.contains(id) {
@@ -1742,6 +1742,184 @@ mod tests {
         let tags = vec![("highway", "service"), ("access", "private"), ("foot", "yes")];
         let (_, f, _, _) = parse_way_tags(tags.into_iter()).unwrap();
         assert!(f & flags::FOOT != 0 && f & flags::CAR_FWD == 0);
+    }
+
+    /// xorshift64*: deterministic randomness without a dependency.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn chance(&mut self, pct: u64) -> bool {
+            self.below(100) < pct
+        }
+    }
+
+    /// Random street network on a jittered grid (~150 m spacing): mixed classes / speeds,
+    /// one-way streets, roundabout pieces, turn bans and "only" turns, real bearings so the
+    /// turn costs apply.
+    fn random_graph(rng: &mut Rng, side: usize) -> Graph {
+        let mut g = Graph::default();
+        let (lon0, lat0) = (34.80, 32.05);
+        for y in 0..side {
+            for x in 0..side {
+                let jx = (rng.below(600) as f64 - 300.0) * 1e-6;
+                let jy = (rng.below(600) as f64 - 300.0) * 1e-6;
+                g.vlon.push(((lon0 + x as f64 * 0.0016 + jx) * 1e7) as i32);
+                g.vlat.push(((lat0 + y as f64 * 0.0014 + jy) * 1e7) as i32);
+            }
+        }
+        g.bbox = [lon0 - 0.01, lat0 - 0.01, lon0 + side as f64 * 0.0016 + 0.01, lat0 + side as f64 * 0.0014 + 0.01];
+        g.e_geom_off.push(0);
+        g.name_off.push(0);
+        let classes = [Class::Primary, Class::Secondary, Class::Tertiary, Class::Residential, Class::Residential];
+        fn bearing(g: &Graph, a: u32, b: u32) -> u16 {
+            let (pa, pb) = (g.vertex(a), g.vertex(b));
+            let dx = (pb[0] - pa[0]) * pa[1].to_radians().cos();
+            let dy = pb[1] - pa[1];
+            (((dx.atan2(dy).to_degrees() + 360.0) % 360.0).round() as u16) % 360
+        }
+        let add = |g: &mut Graph, rng: &mut Rng, a: u32, b: u32| {
+            let class = classes[rng.below(classes.len() as u64) as usize];
+            let mut f = flags::FOOT | flags::CAR_FWD | flags::BIKE_FWD;
+            if !rng.chance(25) {
+                f |= flags::CAR_BWD | flags::BIKE_BWD;
+            }
+            if rng.chance(10) {
+                f |= flags::ROUNDABOUT;
+            }
+            g.e_from.push(a);
+            g.e_to.push(b);
+            g.e_len.push(crate::geo::haversine_m(g.vertex(a), g.vertex(b)) as f32);
+            g.e_speed.push([30u8, 50, 70, 90][rng.below(4) as usize]);
+            g.e_flags.push(f);
+            g.e_class.push(class as u8);
+            g.e_name.push(NO_NAME);
+            let bs = bearing(g, a, b);
+            g.e_bear_start.push(bs);
+            g.e_bear_end.push(bs);
+            g.e_geom_off.push((g.geom.len() / 2) as u32);
+        };
+        for y in 0..side {
+            for x in 0..side {
+                let v = (y * side + x) as u32;
+                if x + 1 < side && !rng.chance(8) {
+                    add(&mut g, rng, v, v + 1);
+                }
+                if y + 1 < side && !rng.chance(8) {
+                    add(&mut g, rng, v, v + side as u32);
+                }
+                if x + 1 < side && y + 1 < side && rng.chance(12) {
+                    add(&mut g, rng, v, v + side as u32 + 1);
+                }
+            }
+        }
+        g.build_adjacency();
+        // turn restrictions between edges meeting at a vertex
+        let ne = g.e_from.len() as u32;
+        for _ in 0..(ne / 6) {
+            let e1 = rng.below(ne as u64) as u32;
+            let via = if rng.chance(50) { g.e_from[e1 as usize] } else { g.e_to[e1 as usize] };
+            let others: Vec<u32> = g.incident(via).iter().copied().filter(|&e| e != e1).collect();
+            if others.is_empty() {
+                continue;
+            }
+            let e2 = others[rng.below(others.len() as u64) as usize];
+            let only = rng.chance(20);
+            g.restrictions.push(Restriction { via, from_edge: e1, to_edge: e2, only, bike: true });
+        }
+        g.finish_build();
+        g
+    }
+
+    /// Plain forward Dijkstra over directed states with the same costs (turns, restrictions,
+    /// partial first / last edges) as the bidirectional A*: the reference answer.
+    fn dijkstra(g: &Graph, prof: &crate::routing::profile::Profile, from: &Snap, to: &Snap) -> Option<f32> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let fd = |snap: &Snap, dir: u32| if dir == 0 { snap.frac } else { 1.0 - snap.frac };
+        let n = g.num_states();
+        let mut dist = vec![f32::INFINITY; n];
+        let mut heap = BinaryHeap::new();
+        for d in 0..2u32 {
+            let s = from.edge * 2 + d;
+            if prof.allowed(g, s) {
+                let c = prof.cost(g, from.edge) * (1.0 - fd(from, d));
+                dist[s as usize] = c;
+                heap.push(Reverse(((c * 1000.0) as u64, s)));
+            }
+        }
+        while let Some(Reverse((k, s))) = heap.pop() {
+            let base = dist[s as usize];
+            if k > (base * 1000.0) as u64 {
+                continue;
+            }
+            let v = g.head(s);
+            for &e2 in g.incident(v) {
+                let s2 = g.state_from(v, e2);
+                if !prof.allowed(g, s2) {
+                    continue;
+                }
+                let Some(t) = prof.turn_cost(g, s, s2) else { continue };
+                let nd = base + t + prof.cost(g, e2);
+                if nd < dist[s2 as usize] {
+                    dist[s2 as usize] = nd;
+                    heap.push(Reverse(((nd * 1000.0) as u64, s2)));
+                }
+            }
+        }
+        (0..2u32)
+            .map(|d| to.edge * 2 + d)
+            .filter(|&s| dist[s as usize].is_finite())
+            .map(|s| {
+                let w = prof.cost(g, to.edge);
+                dist[s as usize] - w + w * fd(to, s & 1)
+            })
+            .min_by(|a, b| a.total_cmp(b))
+    }
+
+    #[test]
+    fn astar_matches_dijkstra_on_random_graphs() {
+        use crate::routing::astar::{search, SearchParams};
+        use crate::routing::profile::Profile;
+        use crate::types::{Avoid, Mode};
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let mut checked = 0;
+        for round in 0..30 {
+            let g = random_graph(&mut rng, 8 + (round % 5));
+            let ne = g.num_edges() as u64;
+            for (mode, hard) in [(Mode::Car, false), (Mode::Car, true), (Mode::Bike, false), (Mode::Foot, false)] {
+                let prof = Profile::new(mode, Avoid { hard_turns: hard, ..Default::default() });
+                for _ in 0..12 {
+                    let (ea, eb) = (rng.below(ne) as u32, rng.below(ne) as u32);
+                    if ea == eb {
+                        continue;
+                    }
+                    let fa = rng.below(1000) as f32 / 1000.0;
+                    let fb = rng.below(1000) as f32 / 1000.0;
+                    let from = Snap { edge: ea, frac: fa, point: g.vertex(g.e_from[ea as usize]), dist_m: 0.0 };
+                    let to = Snap { edge: eb, frac: fb, point: g.vertex(g.e_to[eb as usize]), dist_m: 0.0 };
+                    let want = dijkstra(&g, &prof, &from, &to);
+                    let params = SearchParams { profile: &prof, penalty: None, max_cost: f32::INFINITY };
+                    let got = search(&g, &params, &from, &to).map(|p| p.cost);
+                    match (want, got) {
+                        (None, None) => {}
+                        (Some(w), Some(c)) => {
+                            assert!((w - c).abs() <= 0.05 + w * 1e-4, "round {round} {mode:?} hard={hard} {ea}->{eb}: dijkstra {w} a* {c}");
+                            checked += 1;
+                        }
+                        (w, c) => panic!("round {round} {mode:?} {ea}->{eb}: dijkstra {w:?} a* {c:?}"),
+                    }
+                }
+            }
+        }
+        assert!(checked > 300, "only {checked} reachable pairs");
     }
 
     /// Tiny square network a-b-c-d (+ diagonal with a bend) for format / index tests.

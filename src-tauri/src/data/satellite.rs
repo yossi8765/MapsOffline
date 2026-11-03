@@ -350,7 +350,7 @@ impl Writer {
         let mut entries = Vec::new();
         let mut done = HashMap::new();
         let mut data_len = 0u64;
-        for rec in idx.chunks_exact(INDEX_REC) {
+        for rec in idx.as_chunks::<INDEX_REC>().0 {
             let z = rec[0];
             let x = u32::from_le_bytes(rec[1..5].try_into().unwrap());
             let y = u32::from_le_bytes(rec[5..9].try_into().unwrap());
@@ -368,6 +368,7 @@ impl Writer {
         if done.is_empty() {
             return Self::create(data_tmp);
         }
+        let dedup = rebuild_dedup(data_tmp, &entries)?;
         let data_file = std::fs::OpenOptions::new().write(true).open(data_tmp)?;
         data_file.set_len(data_len)?;
         let mut data = BufWriter::with_capacity(1 << 20, data_file);
@@ -375,8 +376,16 @@ impl Writer {
         // rewrite the index with only the records we accepted
         let mut index = BufWriter::new(File::create(&index_tmp)?);
         index.write_all(&idx[..done.len() * INDEX_REC])?;
-        log::info!("resuming satellite download: {} tiles already stored", done.len());
-        Ok(Self { data_tmp: data_tmp.to_path_buf(), index_tmp, data, index, data_len, addressed: entries.len() as u64, entries, done, dedup: HashMap::new(), placeholder: None, root_max: ROOT_MAX })
+        log::info!("resuming satellite download: {} tiles already stored, {} shared contents known", done.len(), dedup.len());
+        Ok(Self { data_tmp: data_tmp.to_path_buf(), index_tmp, data, index, data_len, addressed: entries.len() as u64, entries, done, dedup, placeholder: None, root_max: ROOT_MAX })
+    }
+
+    /// Same key as `add` uses for identical tile contents.
+    fn content_key(bytes: &[u8]) -> u64 {
+        let mut h = rustc_hash::FxHasher::default();
+        bytes.hash(&mut h);
+        bytes.len().hash(&mut h);
+        h.finish()
     }
 
     pub fn is_done(&self, z: u8, x: u32, y: u32) -> bool {
@@ -445,10 +454,7 @@ impl Writer {
             self.record(z, x, y, self.data_len, 0)?;
             return Ok(true);
         }
-        let mut h = rustc_hash::FxHasher::default();
-        bytes.hash(&mut h);
-        bytes.len().hash(&mut h);
-        let key = h.finish();
+        let key = Self::content_key(bytes);
         if self.placeholder == Some(key) {
             return Ok(false);
         }
@@ -626,6 +632,30 @@ pub fn read_tile(path: &Path, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Ve
     Ok(Some(read_at(&mut f, h.data_off + e.offset, u64::from(e.length))?))
 }
 
+/// Dedup table of a resumed archive. Without it every sea / blank tile fetched after the resume
+/// was stored again, and a content-filter placeholder could not be told apart (`drop_placeholders`
+/// finds its key in this table). Contents that repeat are the ones worth knowing: those already
+/// shared by several tiles and small ones (uniform tiles compress to a few KB); hashing every
+/// stored tile would read gigabytes on each resume.
+const DEDUP_SMALL: u32 = 8 * 1024;
+
+fn rebuild_dedup(data_tmp: &Path, entries: &[Entry]) -> anyhow::Result<HashMap<u64, (u64, u32)>> {
+    let mut refs: HashMap<(u64, u32), usize> = HashMap::new();
+    for e in entries {
+        *refs.entry((e.offset, e.length)).or_insert(0) += 1;
+    }
+    let mut f = File::open(data_tmp)?;
+    let mut dedup = HashMap::new();
+    for (&(offset, len), &n) in &refs {
+        if n < 2 && len > DEDUP_SMALL {
+            continue;
+        }
+        let bytes = read_at(&mut f, offset, u64::from(len))?;
+        dedup.entry(Writer::content_key(&bytes)).or_insert((offset, len));
+    }
+    Ok(dedup)
+}
+
 /// Content filters (NetFree) answer image requests they have not inspected yet with one fixed
 /// "sent for checking" picture. Real tiles at zoom <= 11 are never byte-identical, so any
 /// content shared by several of them is such a placeholder.
@@ -706,8 +736,13 @@ pub(crate) fn verify(path: &Path, placeholders: bool) -> anyhow::Result<()> {
 // ---------------------------------------------------------------- download
 
 pub(crate) fn fetch_tile(client: &Client, url: &str, jpeg: bool, cancel: &Cancel) -> anyhow::Result<Option<Vec<u8>>> {
+    fetch_tile_attempts(client, url, jpeg, cancel, 4)
+}
+
+/// [`fetch_tile`] with a chosen number of attempts (the live map makes one).
+pub(crate) fn fetch_tile_attempts(client: &Client, url: &str, jpeg: bool, cancel: &Cancel, attempts: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let mut last: Option<anyhow::Error> = None;
-    for attempt in 0..4u32 {
+    for attempt in 0..attempts.max(1) {
         if cancel.is_cancelled() {
             bail!("cancelled");
         }
@@ -1108,6 +1143,30 @@ mod tests {
     }
 
     #[test]
+    fn resume_rebuilds_dedup() {
+        let dir = std::env::temp_dir().join(format!("mo-sat-dedup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data_tmp = dir.join("d.data.tmp");
+        let sea = [0xFF, 0xD8, 7, 7, 7];
+        let mut w = Writer::create(&data_tmp).unwrap();
+        w.add(6, 1, 1, &sea).unwrap();
+        w.add(6, 1, 2, &[0xFF, 0xD8, 1]).unwrap();
+        w.checkpoint().unwrap();
+        drop(w);
+        let len_before = std::fs::metadata(&data_tmp).unwrap().len();
+        let mut w = Writer::open(&data_tmp).unwrap();
+        // the same sea picture after the resume points at the stored copy instead of a new one
+        w.add(6, 2, 2, &sea).unwrap();
+        w.checkpoint().unwrap();
+        assert_eq!(std::fs::metadata(&data_tmp).unwrap().len(), len_before);
+        let out = dir.join("d.pmtiles");
+        let meta = ArchiveMeta { name: "d".into(), attribution: "a".into(), bbox: [0.0, 0.0, 1.0, 1.0], min_zoom: 6, max_zoom: 6, tile_type: 3 };
+        w.finish(&out, &meta, false).unwrap();
+        assert_eq!(read_tile(&out, 6, 2, 2).unwrap(), Some(sea.to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn varint_roundtrip() {
         for v in [0u64, 1, 127, 128, 300, 1 << 40, u64::MAX] {
             let mut b = Vec::new();
@@ -1130,7 +1189,7 @@ mod tests {
         let tiles: Vec<(u8, u32, u32)> = tiles_for_bbox([34.5, 31.0, 35.5, 32.5], 13, true).into_iter().take(5000).collect();
         assert!(tiles.len() > 1000);
         let bytes_of = |i: usize, z: u8, x: u32, y: u32| -> Vec<u8> {
-            if i % 7 == 0 {
+            if i.is_multiple_of(7) {
                 vec![0xFF, 0xD8, 7, 7, 7]
             } else {
                 let mut b = vec![0xFF, 0xD8, z];

@@ -50,8 +50,13 @@ $setup = Join-Path $root "src-tauri\target\release\bundle\nsis\MapsOffline_${ver
 $exe = Join-Path $root "src-tauri\target\release\mapsoffline.exe"
 $dist = Join-Path $root "dist"
 if (-not $NoBuild -and -not $SignOnly) {
+    & (Join-Path $PSScriptRoot "check.ps1")
+    if ($LASTEXITCODE -ne 0) { Fail "checks failed (tools\check.ps1)" }
     Write-Host "building..." -ForegroundColor Cyan
     if (Test-Path $exe) { Move-Item $exe "$exe.old" -Force -ErrorAction SilentlyContinue }
+    # Panic messages carry source paths: map the user profile (registry sources) and the
+    # repository to neutral prefixes so the shipped exe holds no Windows user name.
+    $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=."
     cmd /c "pnpm tauri build 2>&1" | Select-String -Pattern "error|Finished" | ForEach-Object { $_.Line }
     Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
 }

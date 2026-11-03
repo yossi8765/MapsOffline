@@ -8,15 +8,15 @@
 //! * `stops`          – name / code / city (interned strings) + coordinates.
 //! * `routes`         – GTFS route info (agency, names, type, colour).
 //! * `patterns`       – unique stop sequences of a route ("route patterns"), split further so
-//!                      that the trips of one pattern never overtake each other (FIFO), which
-//!                      RAPTOR's binary search relies on.
+//!   that the trips of one pattern never overtake each other (FIFO), which
+//!   RAPTOR's binary search relies on.
 //! * per pattern, trips are sorted by departure; times are stored trip-major in `arr`/`dep`
 //!   (`times_start + trip * n + pos`) as seconds since service-day midnight (may exceed 24h).
 //! * `service_bits`   – one bitmap per service_id over the feed's date range.
 //! * foot transfers   – CSR, stops within 400 m straight-line, ≤ 30 per stop,
-//!                      duration = dist / 1.2 m/s + 60 s.
+//!   duration = dist / 1.2 m/s + 60 s.
 //! * shapes           – Douglas-Peucker simplified (≈4 m), 1e-6° fixed point; every pattern
-//!                      position is mapped to a shape segment for leg geometry.
+//!   position is mapped to a shape segment for leg geometry.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -33,7 +33,9 @@ use crate::geo::haversine_m;
 use crate::types::{GeoKind, GeoPrecision, GeoResult, LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOTR";
-pub const VERSION: u32 = 1;
+/// 2: `dep` is empty when every departure equals the arrival (the MoT feed has no dwell times;
+/// that was 47 MB of duplicates).
+pub const VERSION: u32 = 2;
 pub const NONE: u32 = u32::MAX;
 /// pattern_flags bits
 pub const NO_PICKUP: u8 = 1;
@@ -101,6 +103,7 @@ pub struct Transit {
     pub trip_service: Vec<u32>,
     pub trip_headsign: Vec<u32>,
     pub arr: Vec<u32>,
+    /// Departure times, parallel to `arr`; empty when they all equal the arrivals.
     pub dep: Vec<u32>,
     pub num_services: u32,
     pub service_words: u32,
@@ -162,7 +165,8 @@ impl Transit {
     }
     #[inline]
     pub fn dep_at(&self, p: u32, trip: u32, pos: u32) -> i32 {
-        self.dep[self.tidx(p, trip, pos)] as i32
+        let i = self.tidx(p, trip, pos);
+        if self.dep.is_empty() { self.arr[i] as i32 } else { self.dep[i] as i32 }
     }
     #[inline]
     pub fn arr_at(&self, p: u32, trip: u32, pos: u32) -> i32 {
@@ -223,18 +227,29 @@ impl Transit {
     /// Longest pattern of the line `short_name` run by `agency`; a pattern whose trips carry
     /// `headsign` wins over a longer one in the other direction.
     pub fn line_shape(&self, short_name: &str, agency: &str, headsign: Option<&str>) -> Option<crate::types::LineShape> {
+        self.line_shape_of(short_name, agency, headsign, None)
+    }
+
+    /// [`line_shape`](Self::line_shape) restricted to one line among the same-numbered lines of
+    /// the agency ("Egged 1" runs in Gedera, Eilat, Jerusalem, Karmiel...): `long_name` is any
+    /// route_long_name of that line, see [`line_group`].
+    pub fn line_shape_of(&self, short_name: &str, agency: &str, headsign: Option<&str>, long_name: Option<&str>) -> Option<crate::types::LineShape> {
+        let group = long_name.filter(|l| !l.is_empty()).map(line_group);
         let mut best: Option<(u32, bool, u32)> = None; // (pattern, headsign match, stops)
         for (pi, pt) in self.patterns.iter().enumerate() {
             let r = &self.routes[pt.route as usize];
             if self.s(r.short_name) != short_name {
                 continue;
             }
+            if group.as_ref().is_some_and(|g| line_group(self.s(r.long_name)) != *g) {
+                continue;
+            }
             let ag = if r.agency == NONE { "" } else { self.s(self.agencies[r.agency as usize]) };
             if ag != agency {
                 continue;
             }
-            let hs = headsign.map_or(true, |h| (0..pt.ntrips.min(8)).any(|i| self.s(self.trip_headsign[(pt.trips_start + i) as usize]) == h));
-            if best.map_or(true, |(_, m, n)| (hs, pt.n) > (m, n)) {
+            let hs = headsign.is_none_or(|h| (0..pt.ntrips.min(8)).any(|i| self.s(self.trip_headsign[(pt.trips_start + i) as usize]) == h));
+            if best.is_none_or(|(_, m, n)| (hs, pt.n) > (m, n)) {
                 best = Some((pi as u32, hs, pt.n));
             }
         }
@@ -518,17 +533,20 @@ pub fn search_stops(t: &Transit, query: &str, near: Option<LonLat>, limit: usize
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.total_cmp(&b.1)));
     // The feed lists some stops several times (one record per platform / per operator feed)
     // with the same code and name: show each stop once, keeping its best-scored record.
-    let mut seen: Vec<(String, String)> = Vec::new();
-    hits.retain(|&(_, _, i)| {
-        let st = &t.stops[i as usize];
-        let key = (t.s(st.code).to_string(), if t.s(st.code).is_empty() { t.s(st.name).to_string() } else { String::new() });
-        if seen.contains(&key) {
-            return false;
+    // (A Vec + contains() here was quadratic: "א" matches ~30k stops, 129 ms per keystroke.)
+    let mut seen: rustc_hash::FxHashSet<(&str, &str)> = rustc_hash::FxHashSet::default();
+    let mut unique = Vec::with_capacity(limit);
+    for h in hits {
+        let st = &t.stops[h.2 as usize];
+        let code = t.s(st.code);
+        if seen.insert((code, if code.is_empty() { t.s(st.name) } else { "" })) {
+            unique.push(h);
+            if unique.len() == limit {
+                break;
+            }
         }
-        seen.push(key);
-        true
-    });
-    hits.truncate(limit);
+    }
+    let hits = unique;
     hits.into_iter()
         .map(|(score, d, i)| {
             let st = &t.stops[i as usize];
@@ -1078,11 +1096,10 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                 }
             };
             rows += 1;
-            if rows % 1_000_000 == 0 {
-                if !p(pos, total, &format!("GTFS: זמני עצירה – {} מיליון שורות", rows / 1_000_000)) {
+            if rows.is_multiple_of(1_000_000)
+                && !p(pos, total, &format!("GTFS: זמני עצירה – {} מיליון שורות", rows / 1_000_000)) {
                     bail!("cancelled");
                 }
-            }
             let tid = field(r, i[0]);
             if tid != last_tid.as_slice() {
                 let n = st_stop.len() as u32;
@@ -1265,11 +1282,10 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
             });
             pattern_rep_shape.push(shape);
         }
-        if pid % 2000 == 0 {
-            if !p(done_trips, ntrips as u64, &format!("GTFS: {} תבניות, {} נסיעות", patterns.len(), done_trips)) {
+        if pid % 2000 == 0
+            && !p(done_trips, ntrips as u64, &format!("GTFS: {} תבניות, {} נסיעות", patterns.len(), done_trips)) {
                 bail!("cancelled");
             }
-        }
     }
     drop(st_arr);
     drop(st_dep);
@@ -1300,11 +1316,10 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                 [c.idx("shape_id"), c.idx("shape_pt_lat"), c.idx("shape_pt_lon"), c.idx("shape_pt_sequence")]
             });
             rows += 1;
-            if rows % 1_000_000 == 0 {
-                if !p(pos, total, &format!("GTFS: תוואי קווים – {} מיליון נקודות", rows / 1_000_000)) {
+            if rows.is_multiple_of(1_000_000)
+                && !p(pos, total, &format!("GTFS: תוואי קווים – {} מיליון נקודות", rows / 1_000_000)) {
                     bail!("cancelled");
                 }
-            }
             let sid = field(r, i[0]);
             if sid != last.as_slice() {
                 last.clear();
@@ -1473,8 +1488,8 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         pattern_shape_idx,
         trip_service,
         trip_headsign,
+        dep: if dep_out == arr_out { Vec::new() } else { dep_out },
         arr: arr_out,
-        dep: dep_out,
         num_services,
         service_words,
         service_bits,
@@ -1577,5 +1592,45 @@ mod tests {
         let mut d = vec![100, NONE, NONE, 400];
         assert!(interpolate(&mut a, &mut d));
         assert_eq!(a, vec![100, 200, 300, 400]);
+    }
+}
+
+/// The identity of a numbered line among same-numbered lines of one agency, from its GTFS
+/// route_long_name. Israeli long names read "<origin stop>-<origin town><-><dest stop>-<dest
+/// town>-<direction>#" ("ת. מרכזית/רציפים-אילת<->...-אילת-1#"); both directions and every variant
+/// of a line share the pair of towns. Other formats: the whole name.
+pub fn line_group(long_name: &str) -> String {
+    let Some((a, b)) = long_name.split_once("<->") else { return long_name.trim().to_string() };
+    let town = |side: &str| -> String {
+        let side = side.trim().trim_end_matches('#');
+        // drop the trailing direction / variant number ("-1", "-2א")
+        let side = match side.rsplit_once('-') {
+            Some((head, tail)) if tail.chars().next().is_some_and(|c| c.is_ascii_digit()) => head,
+            _ => side,
+        };
+        side.rsplit_once('-').map_or(side, |(_, t)| t).trim().to_string()
+    };
+    let (mut x, mut y) = (town(a), town(b));
+    if x > y {
+        std::mem::swap(&mut x, &mut y);
+    }
+    format!("{x}|{y}")
+}
+
+#[cfg(test)]
+mod line_group_tests {
+    use super::line_group;
+
+    #[test]
+    fn same_line_both_directions() {
+        let a = line_group("האירוסים/פרג-רכסים<->בית ספר בית יעקב/הרב משקובסקי-רכסים-1#");
+        let b = line_group("בית ספר בית יעקב/הרב משקובסקי-רכסים<->האירוסים/פרג-רכסים-2#");
+        assert_eq!(a, "רכסים|רכסים");
+        assert_eq!(a, b);
+        let x = line_group("ת. מרכזית חוף הכרמל/רציפים-חיפה<->מסוף אלנבי-תל אביב יפו-1#");
+        let y = line_group("מסוף אלנבי-תל אביב יפו<->ת. מרכזית חוף הכרמל/הורדה-חיפה-2#");
+        assert_eq!(x, y);
+        assert_ne!(x, a);
+        assert_eq!(line_group("Line 5"), "Line 5");
     }
 }

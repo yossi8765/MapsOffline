@@ -170,11 +170,11 @@ export function FavoritesPanel() {
       clearLine();
       return;
     }
-    const d = (f.data ?? {}) as { routeShortName?: string; agency?: string; headsign?: string };
+    const d = (f.data ?? {}) as { routeShortName?: string; routeLongName?: string; agency?: string; headsign?: string };
     if (!d.routeShortName) return;
     setBusy(f.id);
     try {
-      const [times] = await Promise.all([api.transitLineTimes(d.routeShortName, d.agency ?? "", d.headsign), showLine(f)]);
+      const [times] = await Promise.all([api.transitLineTimes(d.routeShortName, d.agency ?? "", d.headsign, d.routeLongName), showLine(f)]);
       setLineTimes({ favId: f.id, times, at: Date.now() });
       setOpenStop(null);
     } catch (e) {
@@ -219,11 +219,24 @@ export function FavoritesPanel() {
             <>
               <input className="input h-9" placeholder={t("pickLine")} value={lineFilter} onChange={(e) => setLineFilter(e.target.value)} />
               <div className="flex flex-wrap gap-1.5 max-h-40 scroll-y">
-                {filteredLines.slice(0, 120).map((l) => (
-                  <button key={l.shortName} type="button" className="choice" aria-pressed={line?.shortName === l.shortName} onClick={() => setLine(l)} title={l.longName}>
-                    {l.shortName}
-                  </button>
-                ))}
+                {filteredLines.slice(0, 120).map((l) => {
+                  // one agency can run several lines with the same number in different towns:
+                  // those get their route name next to the number
+                  const shared = filteredLines.some((o) => o !== l && o.shortName === l.shortName);
+                  return (
+                    <button
+                      key={`${l.shortName}|${l.longName}`}
+                      type="button"
+                      className="choice max-w-full"
+                      aria-pressed={line?.shortName === l.shortName && line?.longName === l.longName}
+                      onClick={() => setLine(l)}
+                      title={l.longName}
+                    >
+                      <span className="num">{l.shortName}</span>
+                      {shared && <span className="truncate max-w-[220px] font-normal">{l.longName}</span>}
+                    </button>
+                  );
+                })}
                 {filteredLines.length === 0 && <span className="text-xs text-muted">{t("noLines")}</span>}
               </div>
               {line && <div className="text-xs text-muted truncate">{line.longName}</div>}

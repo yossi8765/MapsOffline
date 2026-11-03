@@ -1,0 +1,7 @@
+# Build-time switches that shrink the binary without changing behaviour (docs/SIZE.md).
+[env]
+# chrono-tz compiles in only these zones (the code uses Asia/Jerusalem; UTC for safety).
+# Saves ~0.9 MB of zone tables. Needs chrono-tz's "filter-by-regex" feature.
+CHRONO_TZ_TIMEZONE_FILTER = "(Asia/Jerusalem|UTC)"
+# The bundled SQLite keeps FTS5 and R*Tree (geocoder) and drops what nothing uses.
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_JSON1 -USQLITE_ENABLE_STAT4 -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_ENABLE_COLUMN_METADATA -USQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_JSON"
