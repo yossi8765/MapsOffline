@@ -25,6 +25,15 @@ pub fn run() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
     let state = Arc::new(AppState::new());
     state.refresh_map_files();
+    {
+        // the data update closes the pooled index connections before swapping the file
+        let weak = Arc::downgrade(&state);
+        geocode::set_release_hook(move || {
+            if let Some(st) = weak.upgrade() {
+                st.release_geocoder();
+            }
+        });
+    }
     tauri::Builder::default()
         // Online map without local data: the webview reads the Protomaps world build with HTTP
         // range requests through this proxy (the build host sends no CORS headers).

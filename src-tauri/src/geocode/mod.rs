@@ -32,6 +32,15 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
 pub static REPLACING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Closes the app's pooled connections to the Israel index right away (set by the app; the
+/// data CLI has none). Pooled connections keep the file open, and Windows refuses to replace
+/// an open file.
+static RELEASE_HOOK: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+pub fn set_release_hook(f: impl Fn() + Send + Sync + 'static) {
+    let _ = RELEASE_HOOK.set(Box::new(f));
+}
+
 /// Replace the installed index with a freshly built one while the app may be searching it:
 /// stop new connections, let running searches finish, drop pooled ones, then swap the file.
 pub fn replace_index(dest: &Path, tmp: &Path) -> std::io::Result<()> {
@@ -45,6 +54,10 @@ pub fn replace_index(dest: &Path, tmp: &Path) -> std::io::Result<()> {
     REPLACING.store(true, Ordering::SeqCst);
     let _unblock = Unblock;
     EPOCH.fetch_add(1, Ordering::SeqCst);
+    if let Some(release) = RELEASE_HOOK.get() {
+        release();
+    }
+    // searches already running finish within milliseconds and drop their connection
     std::thread::sleep(std::time::Duration::from_millis(600));
     crate::paths::atomic_replace(dest, tmp)
 }
@@ -1244,5 +1257,35 @@ mod tests {
         let d = builder::decode_geom(&b);
         assert_eq!(d.len(), 2);
         assert!((d[0][1][0] - 34.79).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use std::sync::Mutex;
+
+    static HELD: Mutex<Option<rusqlite::Connection>> = Mutex::new(None);
+
+    /// An idle pooled connection keeps the file open: replacing must close it first (Windows).
+    #[test]
+    fn replace_closes_pooled_connections() {
+        let dir = std::env::temp_dir().join(format!("mo-geo-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dest, tmp) = (dir.join("geocode.sqlite"), dir.join("geocode.sqlite.tmp"));
+        rusqlite::Connection::open(&dest).unwrap().execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);").unwrap();
+        rusqlite::Connection::open(&tmp).unwrap().execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (2);").unwrap();
+        let c = rusqlite::Connection::open_with_flags(&dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let _: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        *HELD.lock().unwrap() = Some(c);
+        #[cfg(windows)]
+        assert!(std::fs::remove_file(&dest).is_err(), "Windows refuses to delete an open file");
+        super::set_release_hook(|| {
+            HELD.lock().unwrap().take();
+        });
+        super::replace_index(&dest, &tmp).expect("replaced");
+        let x: i64 = rusqlite::Connection::open(&dest).unwrap().query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

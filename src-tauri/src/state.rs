@@ -97,6 +97,14 @@ impl AppState {
         self.refresh_map_files();
     }
 
+    /// Close every pooled connection to the Israel index now (before its file is replaced).
+    pub fn release_geocoder(&self) {
+        let mut pool = self.geocoder.lock();
+        pool.gen += 1;
+        pool.idle.clear();
+        pool.cache = None;
+    }
+
     /// Drop the pooled connections of every country index (before files are replaced / removed).
     pub fn unload_regions(&self) {
         self.region_geo.lock().clear();
