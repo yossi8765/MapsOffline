@@ -443,6 +443,15 @@ export interface RegionProgress {
   message: string;
 }
 
+/** A place found by name and the regions that contain it (smallest first). */
+export interface RegionLocate {
+  name: string;
+  detail: string;
+  lon: number;
+  lat: number;
+  regions: string[];
+}
+
 /** Download size of the region's OSM extract (search source); the map is roughly 1.5× this. */
 export interface RegionSize {
   pbfBytes: number | null;
@@ -485,6 +494,8 @@ export const api = {
   mapTilesAvailable: () => invoke<boolean>("map_tiles_available"),
   /** Write a text file chosen in the save dialog. */
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
+  /** City / country by name (any language) → the downloadable regions around it. Needs internet. */
+  regionsLocate: (query: string) => invoke<RegionLocate[]>("regions_locate", { query }),
   regionsInstalled: () => invoke<InstalledRegion[]>("regions_installed"),
   regionSize: (id: string) => invoke<RegionSize>("region_size", { id }),
   /** Install or update a region (long running; progress on `region-progress`). Resolves when done. */

@@ -201,6 +201,14 @@ fn main() -> anyhow::Result<()> {
                     }
                     println!("({:?})", t0.elapsed());
                 }
+                "locate" => {
+                    let q = args.join(" ");
+                    let cat = regions::catalog(&paths, false)?;
+                    let name = |id: &str| cat.iter().find(|f| f.entry.id == id).map(|f| f.entry.name.clone()).unwrap_or_else(|| id.to_string());
+                    for r in regions::locate(&paths, &q, "he")? {
+                        println!("{} | {} ({:.3},{:.3}) -> {}", r.name, r.detail, r.lon, r.lat, r.regions.iter().map(|i| name(i)).collect::<Vec<_>>().join(" < "));
+                    }
+                }
                 "route" => {
                     // region route <id> lon,lat lon,lat [car|foot|bike]
                     let id = args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?;

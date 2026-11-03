@@ -775,3 +775,17 @@ pub struct RegionProgress {
 pub struct RegionSize {
     pub pbf_bytes: Option<u64>,
 }
+
+/// A place found by name (any language) and the downloadable regions around it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionLocate {
+    /// the place's name as the search service gives it ("ניו יורק")
+    pub name: String,
+    /// the rest of its address ("ארצות הברית")
+    pub detail: String,
+    pub lon: f64,
+    pub lat: f64,
+    /// region ids that contain the place, smallest first (state → country → continent)
+    pub regions: Vec<String>,
+}

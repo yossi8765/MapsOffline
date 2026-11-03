@@ -127,11 +127,23 @@ pub(crate) fn parse_catalog(bytes: &[u8]) -> anyhow::Result<Vec<Feature>> {
             Some(a) if a.len() == 1 => a[0].as_str().map(str::to_string),
             _ => None,
         };
+        // US states come as "us/new-york" with the continent as parent: give them a readable
+        // name and put them under the United States
+        let (name, parent) = match id.split_once('/') {
+            Some((country, rest)) if name == id => (
+                rest.split('-').map(|w| {
+                    let mut c = w.chars();
+                    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+                }).collect::<Vec<_>>().join(" "),
+                Some(country.to_string()),
+            ),
+            _ => (name.to_string(), p["parent"].as_str().map(str::to_string)),
+        };
         out.push(Feature {
             entry: RegionEntry {
                 id: id.to_string(),
-                parent: p["parent"].as_str().map(str::to_string),
-                name: name.to_string(),
+                parent,
+                name,
                 iso,
                 bbox,
                 builtin: BUILTIN.contains(&id),
@@ -152,6 +164,100 @@ pub fn find(paths: &DataPaths, id: &str) -> anyhow::Result<Feature> {
         .find(|f| f.entry.id == id)
         .cloned()
         .ok_or_else(|| anyhow!("UNKNOWN_REGION: {id}"))
+}
+
+/// Is (lon, lat) inside a GeoJSON Polygon / MultiPolygon (even-odd over all rings, so holes work)?
+fn geom_contains(geom: &serde_json::Value, lon: f64, lat: f64) -> bool {
+    fn ring_hits(ring: &[serde_json::Value], lon: f64, lat: f64) -> bool {
+        let pts: Vec<(f64, f64)> = ring
+            .iter()
+            .filter_map(|p| Some((p.get(0)?.as_f64()?, p.get(1)?.as_f64()?)))
+            .collect();
+        let mut inside = false;
+        let n = pts.len();
+        if n < 3 {
+            return false;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let ((xi, yi), (xj, yj)) = (pts[i], pts[j]);
+            if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+    let polys: Vec<&serde_json::Value> = match geom["type"].as_str() {
+        Some("Polygon") => vec![&geom["coordinates"]],
+        Some("MultiPolygon") => geom["coordinates"].as_array().map(|a| a.iter().collect()).unwrap_or_default(),
+        _ => return false,
+    };
+    let mut inside = false;
+    for poly in polys {
+        for ring in poly.as_array().into_iter().flatten() {
+            if ring.as_array().is_some_and(|r| ring_hits(r, lon, lat)) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Regions whose outline holds the point, smallest (by bbox area) first.
+pub fn containing(cat: &[Feature], lon: f64, lat: f64) -> Vec<String> {
+    let mut v: Vec<&Feature> = cat
+        .iter()
+        .filter(|f| {
+            let b = f.entry.bbox;
+            lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3] && geom_contains(&f.geometry, lon, lat)
+        })
+        .collect();
+    let area = |f: &Feature| (f.entry.bbox[2] - f.entry.bbox[0]) * (f.entry.bbox[3] - f.entry.bbox[1]);
+    v.sort_by(|a, b| area(a).total_cmp(&area(b)));
+    v.into_iter().map(|f| f.entry.id.clone()).collect()
+}
+
+/// Find a city / country / place by name (Hebrew, English, any language) with OpenStreetMap's
+/// Nominatim and tell which downloadable regions contain each hit.
+pub fn locate(paths: &DataPaths, query: &str, lang: &str) -> anyhow::Result<Vec<crate::types::RegionLocate>> {
+    let q = query.trim();
+    if q.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    let cat = catalog(paths, false)?;
+    let url = reqwest::Url::parse_with_params(
+        "https://nominatim.openstreetmap.org/search",
+        &[("q", q), ("format", "jsonv2"), ("limit", "6"), ("addressdetails", "1"), ("accept-language", if lang == "en" { "en" } else { "he,en" })],
+    )?;
+    let r = http_client()?.get(url.clone()).timeout(Duration::from_secs(12)).send().context("search service unreachable")?;
+    if r.status().as_u16() == 418 {
+        bail!("{}", download::blocked_message(url.as_str()));
+    }
+    let hits: Vec<serde_json::Value> = r.error_for_status()?.json()?;
+    let mut out: Vec<crate::types::RegionLocate> = Vec::new();
+    for h in hits {
+        let (Some(lat), Some(lon)) = (h["lat"].as_str().and_then(|v| v.parse().ok()), h["lon"].as_str().and_then(|v| v.parse::<f64>().ok())) else { continue };
+        let mut regions = containing(&cat, lon, lat);
+        // a whole country: start the chain at the country itself, not at the sub-region that
+        // happens to hold its centre point ("צרפת" → France, not Centre)
+        if h["addresstype"].as_str() == Some("country") {
+            if let Some(cc) = h["address"]["country_code"].as_str().map(str::to_uppercase) {
+                if let Some(i) = regions.iter().position(|id| cat.iter().any(|f| f.entry.id == *id && f.entry.iso.as_deref() == Some(cc.as_str()))) {
+                    regions.drain(..i);
+                }
+            }
+        }
+        if regions.is_empty() || out.iter().any(|o| o.regions == regions) {
+            continue;
+        }
+        let display = h["display_name"].as_str().unwrap_or("");
+        let name = h["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| display.split(',').next().unwrap_or("").trim().to_string());
+        let rest: Vec<&str> = display.split(',').map(str::trim).filter(|p| *p != name && !p.chars().all(|c| c.is_ascii_digit() || c == ' ' || c == '-')).collect();
+        let detail = rest.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(", ");
+        out.push(crate::types::RegionLocate { name, detail, lon, lat, regions });
+    }
+    Ok(out)
 }
 
 /// Download size of the region's OSM extract (HEAD).
@@ -417,6 +523,18 @@ pub fn delete(paths: &DataPaths, id: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn point_in_multipolygon_with_hole() {
+        let g: serde_json::Value = serde_json::json!({"type": "MultiPolygon", "coordinates": [
+            [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]]],
+            [[[20, 20], [22, 20], [22, 22], [20, 22], [20, 20]]]
+        ]});
+        assert!(geom_contains(&g, 1.0, 1.0));
+        assert!(!geom_contains(&g, 5.0, 5.0), "inside the hole");
+        assert!(geom_contains(&g, 21.0, 21.0));
+        assert!(!geom_contains(&g, 15.0, 15.0));
+    }
 
     #[test]
     fn parses_catalogue_shape() {

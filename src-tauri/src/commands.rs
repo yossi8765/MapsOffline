@@ -861,3 +861,11 @@ pub fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
 pub fn save_text_file(path: String, contents: String) -> R<()> {
     std::fs::write(&path, contents).map_err(|e| format!("SAVE_FAILED: {e}"))
 }
+
+/// Find a city or country by name and the downloadable regions that contain it.
+#[tauri::command]
+pub async fn regions_locate(state: State<'_, Arc<AppState>>, query: String) -> R<Vec<crate::types::RegionLocate>> {
+    let paths = state.paths();
+    let lang = state.settings.read().language.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::data::regions::locate(&paths, &query, &lang).map_err(err)).await.map_err(err)?
+}

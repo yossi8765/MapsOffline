@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import clsx from "clsx";
-import { api, type InstalledRegion, type RegionEntry, type RegionPart, type RegionProgress } from "../lib/api";
+import { api, type InstalledRegion, type RegionEntry, type RegionLocate, type RegionPart, type RegionProgress } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
@@ -203,6 +203,30 @@ export function RegionsSection() {
       .slice(0, 80);
   }, [q, catalog, nameOf, cmp]);
 
+  // places by name (a city, a country, in any language) → the regions that hold them
+  const [places, setPlaces] = useState<RegionLocate[] | null>(null);
+  const [locating, setLocating] = useState(false);
+  useEffect(() => {
+    const text = query.trim();
+    if (text.length < 2 || !pickerOpen) {
+      setPlaces(null);
+      return;
+    }
+    let dead = false;
+    const timer = window.setTimeout(() => {
+      setLocating(true);
+      api
+        .regionsLocate(text)
+        .then((r) => !dead && setPlaces(r))
+        .catch(() => !dead && setPlaces([]))
+        .finally(() => !dead && setLocating(false));
+    }, 700);
+    return () => {
+      dead = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, pickerOpen]);
+
   const selectedEntry = selected ? byId.get(selected) : undefined;
 
   const pick = (e: RegionEntry) => {
@@ -386,7 +410,41 @@ export function RegionsSection() {
                 </button>
               </div>
             )}
-            {catalog && q && (matches.length ? matches.map((e) => renderEntry(e, 0, true)) : <p className="m-0 px-2 py-3 text-xs text-muted">{t("regNoResults")}</p>)}
+            {catalog && q && (locating || (places && places.length > 0)) && (
+              <div className="flex flex-col gap-1 pb-2 mb-1 border-b border-line">
+                <div className="px-2 pt-1 text-xs text-muted">{locating && !places ? t("regLocating") : t("regPlaces")}</div>
+                {(places ?? []).map((pl, i) => (
+                  <div key={i} className="px-2 py-1.5 flex flex-col gap-1.5">
+                    <div className="text-sm">
+                      <span className="font-medium">{pl.name}</span>
+                      {pl.detail && <span className="text-xs text-muted"> · {pl.detail}</span>}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-xs text-muted">{t("regDownloadOne")}</span>
+                      {pl.regions.map((id) => {
+                        const e = byId.get(id);
+                        if (!e) return null;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            className="choice"
+                            aria-pressed={selected === id}
+                            disabled={e.builtin}
+                            title={e.builtin ? t("regBuiltin") : undefined}
+                            onClick={() => pick(e)}
+                          >
+                            {nameOf(e)}
+                            {installedIds.has(id) && " ✓"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {catalog && q && (matches.length ? matches.map((e) => renderEntry(e, 0, true)) : !places?.length && !locating && <p className="m-0 px-2 py-3 text-xs text-muted">{t("regNoResults")}</p>)}
             {catalog && !q && rootEntries.map((e) => renderEntry(e, 0, false))}
           </div>
         </div>

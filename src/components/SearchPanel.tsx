@@ -21,7 +21,8 @@ export function SearchPanel() {
   };
 
   return (
-    <div className="px-4 pb-5 flex flex-col gap-4">
+    // pt-1: room for the input's 3 px focus ring at the top of the scroll area (it was clipped)
+    <div className="px-4 pt-1 pb-5 flex flex-col gap-4">
       <SearchBox value={picked?.label ?? ""} onPick={onPick} focusTick={focusTick} autoFocus onClear={() => { setPicked(null); useStore.getState().setMarker(null); }} />
       {picked ? (
         <div className="card p-4 fade-in">
