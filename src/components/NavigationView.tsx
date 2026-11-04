@@ -1,7 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   Camera,
+  Car,
+  Minus,
+  Plus,
   ChevronLeft,
   ChevronRight,
   LocateFixed,
@@ -26,7 +29,8 @@ import type { Lane, Maneuver } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDistance, fmtDuration, fmtTime } from "../lib/format";
-import { flatSteps, previewStep, resumeGps, setNavVoice, startNavigation, stopNavigation } from "../lib/nav";
+import { flatSteps, previewStep, resumeGps, setNavVoice, setSimSpeed, startNavigation, stopNavigation } from "../lib/nav";
+import { VehiclePicker } from "./VehiclePicker";
 
 function maneuverGlyph(m: Maneuver | null | undefined, size: number) {
   switch (m) {
@@ -127,6 +131,7 @@ export function NavigationView() {
   // The whole map is the navigation screen: the side panel folds away while navigating and
   // comes back (as it was) when navigation ends.
   const active = !!nav;
+  const [vehicleOpen, setVehicleOpen] = useState(false);
   const wasCollapsed = useRef<boolean | null>(null);
   useEffect(() => {
     const st = useStore.getState();
@@ -254,6 +259,33 @@ export function NavigationView() {
             )}
           </div>
         )}
+        {vehicleOpen && (nav.route.mode === "car" || nav.route.mode === "truck") && (
+          <div className="popover rounded-[var(--radius)] p-3 flex flex-col gap-2 fade-in" role="dialog" aria-label={t("navVehicle")}>
+            <span className="font-medium">{t("navVehicle")}</span>
+            <VehiclePicker onPicked={() => setVehicleOpen(false)} />
+          </div>
+        )}
+        {nav.simulate && !nav.arrived && (
+          <div className="flex items-center gap-1 self-start popover rounded-[var(--radius)] ps-3 pe-1 py-1" role="group" aria-label={t("simSpeedTitle")}>
+            <span className="text-sm text-muted me-1">{t("simSpeedTitle")}</span>
+            <Tip text={t("simSlower")}>
+              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simSlower")} disabled={nav.simSpeedKmh !== 0 && nav.simSpeedKmh <= 10} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 50 : nav.simSpeedKmh - 10)}>
+                <Icon as={Minus} size={16} />
+              </button>
+            </Tip>
+            <span className="min-w-20 text-center font-semibold num">
+              {nav.simSpeedKmh === 0 ? t("simSpeedRoad") : <bdi>{`${nav.simSpeedKmh} ${t("kmh")}`}</bdi>}
+            </span>
+            <Tip text={t("simFaster")}>
+              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simFaster")} disabled={nav.simSpeedKmh >= 300} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 60 : nav.simSpeedKmh + 10)}>
+                <Icon as={Plus} size={16} />
+              </button>
+            </Tip>
+            <button className={clsx("btn btn-sm", nav.simSpeedKmh === 0 ? "btn-primary" : "btn-ghost")} aria-pressed={nav.simSpeedKmh === 0} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 50 : 0)}>
+              {t("simSpeedRoad")}
+            </button>
+          </div>
+        )}
         <div className="popover rounded-[var(--radius)] flex items-center gap-3 ps-4 pe-2 py-2">
           <div className="flex-1 min-w-0 flex items-baseline gap-3 flex-wrap num">
             {u && !nav.arrived ? (
@@ -289,6 +321,13 @@ export function NavigationView() {
                 </button>
               </Tip>
             </div>
+          )}
+          {(nav.route.mode === "car" || nav.route.mode === "truck") && (
+            <Tip text={t("navVehicle")}>
+              <button className="btn btn-ghost btn-icon shrink-0" aria-label={t("navVehicle")} aria-expanded={vehicleOpen} onClick={() => setVehicleOpen((v) => !v)}>
+                <Icon as={Car} size={18} />
+              </button>
+            </Tip>
           )}
           <Tip text={nav.voice ? t("navMute") : t("navUnmute")}>
             <button className="btn btn-ghost btn-icon shrink-0" aria-pressed={!nav.voice} aria-label={nav.voice ? t("navMute") : t("navUnmute")} onClick={() => void setNavVoice(!nav.voice)}>

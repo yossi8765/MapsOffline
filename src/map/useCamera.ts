@@ -96,7 +96,11 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
     // browsing steps by hand: the GPS marker still moves, the camera stays on the shown step
     const browsing = useStore.getState().navigation?.manualStep != null;
     const at: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
-    meOverlay.showSnapped(map, at);
+    // car / truck navigation draws the chosen vehicle (Settings); walking and cycling keep the dot
+    const st = useStore.getState();
+    const mode = st.navigation?.route.mode;
+    const vehicle = mode === "car" || mode === "truck" ? (st.settings.navVehicle ?? "arrow") : null;
+    meOverlay.showSnapped(map, at, vehicle, navUpdate.bearing);
     if (browsing) return;
     // keep the vehicle in the lower third of the view, as navigation apps do
     map.easeTo({

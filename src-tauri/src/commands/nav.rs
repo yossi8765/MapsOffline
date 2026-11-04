@@ -35,23 +35,33 @@ fn cameras_near(st: &AppState, route: &Route) -> Vec<LonLat> {
 pub async fn nav_start(app: AppHandle, state: State<'_, Arc<AppState>>, route: Route) -> R<()> {
     let st = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let voice = st.settings.read().nav_voice;
+        let (voice, niqqud) = {
+            let s = st.settings.read();
+            (s.nav_voice, s.nav_voice_niqqud)
+        };
         let cams = cameras_near(&st, &route);
-        crate::nav::start(app, &route, crate::nav::Source::Gps, voice, &cams).map_err(err)
+        crate::nav::start(app, &route, crate::nav::Source::Gps, voice, niqqud, &cams).map_err(err)
     })
     .await
     .map_err(err)?
 }
 
-/// Like nav_start, but drives along the route at `speed_kmh` (no GPS needed).
+/// Like nav_start, but drives along the route at `speed_kmh` (no GPS needed); 0 = at the posted
+/// speed limit of each stretch.
 #[tauri::command]
 pub async fn nav_simulate(app: AppHandle, state: State<'_, Arc<AppState>>, route: Route, speed_kmh: Option<f64>) -> R<()> {
     let st = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let voice = st.settings.read().nav_voice;
-        let speed_kmh = speed_kmh.unwrap_or(50.0).clamp(5.0, 300.0);
+        let (voice, niqqud) = {
+            let s = st.settings.read();
+            (s.nav_voice, s.nav_voice_niqqud)
+        };
+        let speed_kmh = match speed_kmh.unwrap_or(50.0) {
+            v if v <= 0.0 || !v.is_finite() => 0.0,
+            v => v.clamp(5.0, 300.0),
+        };
         let cams = cameras_near(&st, &route);
-        crate::nav::start(app, &route, crate::nav::Source::Simulate { speed_kmh }, voice, &cams).map_err(err)
+        crate::nav::start(app, &route, crate::nav::Source::Simulate { speed_kmh }, voice, niqqud, &cams).map_err(err)
     })
     .await
     .map_err(err)?
@@ -74,6 +84,13 @@ pub fn nav_set_voice(on: bool) {
     crate::nav::set_voice(on);
 }
 
+/// Change the speed of a running simulated drive (km/h; 0 = as the road allows).
+#[tauri::command]
+pub fn nav_set_sim_speed(speed_kmh: f64) {
+    let v = if speed_kmh <= 0.0 || !speed_kmh.is_finite() { 0.0 } else { speed_kmh.clamp(5.0, 300.0) };
+    crate::nav::set_sim_speed(v);
+}
+
 #[tauri::command]
 pub fn nav_stop() {
     crate::nav::stop();
@@ -94,10 +111,19 @@ pub async fn track_stop(state: State<'_, Arc<AppState>>, save: bool, name: Optio
     tauri::async_runtime::spawn_blocking(move || crate::nav::track::stop(&paths, save, name).map_err(err)).await.map_err(err)?
 }
 
-/// Say `text` with the Hebrew system voice (when installed).
+/// Say `text` with the Hebrew system voice (when installed). `vocalize`: a navigation
+/// instruction – add the hidden niqqud when the setting is on.
 #[tauri::command]
-pub fn speak(text: String) {
-    crate::voice::say(&text);
+pub fn speak(state: State<'_, Arc<AppState>>, text: String, vocalize: Option<bool>) {
+    let niqqud = vocalize.unwrap_or(false) && state.settings.read().nav_voice_niqqud;
+    crate::voice::say(&crate::nav::spoken(&text, niqqud));
+}
+
+/// Settings → "test the voice": the same sample instructions without / with the hidden niqqud.
+#[tauri::command]
+pub fn voice_test(vocalized: bool) {
+    let text = crate::nav::speech::SAMPLES.join(". ");
+    crate::voice::say(&crate::nav::spoken(&text, vocalized));
 }
 
 /// Installed text-to-speech voices: [displayName, language], the one used first.

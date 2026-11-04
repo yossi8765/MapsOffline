@@ -174,6 +174,8 @@ pub fn run() {
             commands::nav::nav_set_route,
             commands::nav::nav_set_voice,
             commands::nav::nav_stop,
+            commands::nav::nav_set_sim_speed,
+            commands::nav::voice_test,
             commands::nav::speak,
             commands::nav::voices_list,
             commands::route::optimize_trip,

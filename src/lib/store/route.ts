@@ -52,7 +52,7 @@ export interface RouteSlice {
   setAlternativesCount: (n: number) => void;
   computeRoute: () => Promise<void>;
   /** start live navigation along one of the current routes (simulate: drive it without GPS) */
-  startNavigation: (routeId: string, simulate?: boolean) => Promise<void>;
+  startNavigation: (routeId: string, simulate?: boolean, speedKmh?: number) => Promise<void>;
   stopNavigation: () => Promise<void>;
   selectRoute: (id: string | null) => void;
   /** Click on a route card: select it (opening its steps), or toggle the steps when already selected. */
@@ -115,9 +115,9 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
   tripStops: [],
   tripArrivals: null,
 
-  startNavigation: async (routeId, simulate) => {
+  startNavigation: async (routeId, simulate, speedKmh) => {
     const m = await import("../nav");
-    await m.startNavigation(routeId, simulate);
+    await m.startNavigation(routeId, simulate, speedKmh);
   },
   stopNavigation: async () => {
     const m = await import("../nav");

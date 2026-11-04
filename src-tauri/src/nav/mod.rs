@@ -3,9 +3,10 @@
 //! spoken instructions go to `crate::voice`.
 
 pub mod machine;
+pub mod speech;
 pub mod track;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +21,8 @@ use machine::{Fix, NavRoute, Navigator};
 pub enum Source {
     /// Windows location service, one fix per second.
     Gps,
-    /// Drive along the route at this speed (km/h): testing without a GPS.
+    /// Drive along the route at this speed (km/h): testing without a GPS. 0 = at the posted
+    /// speed limit of each stretch ("as the road allows"; 50 km/h where none is known).
     Simulate { speed_kmh: f64 },
 }
 
@@ -30,6 +32,10 @@ struct Session {
     /// Bumped when the route is replaced, so the simulator restarts from the new route's start.
     route_gen: Arc<std::sync::atomic::AtomicU64>,
     voice: Arc<AtomicBool>,
+    /// Simulator speed in km/h (f64 bits); 0 = follow the posted limits. Changed live.
+    sim_speed: Arc<AtomicU64>,
+    /// Hidden niqqud on what the voice says (`speech::voice_text`).
+    niqqud: Arc<AtomicBool>,
 }
 
 fn nav_route(route: &Route, cameras: &[LonLat]) -> NavRoute {
@@ -44,15 +50,29 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
 /// Start navigating `route` (replaces a running session). `cameras`: speed cameras near the
 /// route (those on it are announced).
-pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, cameras: &[LonLat]) -> anyhow::Result<()> {
+pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, niqqud: bool, cameras: &[LonLat]) -> anyhow::Result<()> {
     anyhow::ensure!(route.geometry.len() >= 2 || route.legs.iter().any(|l| l.geometry.len() >= 2), "ROUTE_EMPTY");
     stop();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let nav = Arc::new(Mutex::new(Navigator::new(nav_route(route, cameras))));
     let route_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let voice_flag = Arc::new(AtomicBool::new(voice));
-    *SESSION.lock() = Some(Session { stop: stop_flag.clone(), nav: nav.clone(), route_gen: route_gen.clone(), voice: voice_flag.clone() });
-    std::thread::Builder::new().name("nav".into()).spawn(move || run(app, source, stop_flag, nav, route_gen, voice_flag))?;
+    let start_speed = match source {
+        Source::Simulate { speed_kmh } => speed_kmh,
+        Source::Gps => 0.0,
+    };
+    let sim_speed = Arc::new(AtomicU64::new(start_speed.to_bits()));
+    let niqqud_flag = Arc::new(AtomicBool::new(niqqud));
+    *SESSION.lock() = Some(Session {
+        stop: stop_flag.clone(),
+        nav: nav.clone(),
+        route_gen: route_gen.clone(),
+        voice: voice_flag.clone(),
+        sim_speed: sim_speed.clone(),
+        niqqud: niqqud_flag.clone(),
+    });
+    let flags = Flags { voice: voice_flag, sim_speed, niqqud: niqqud_flag };
+    std::thread::Builder::new().name("nav".into()).spawn(move || run(app, source, stop_flag, nav, route_gen, flags))?;
     Ok(())
 }
 
@@ -74,6 +94,35 @@ pub fn set_voice(on: bool) {
     }
 }
 
+/// Change the simulator speed of the running session (km/h; 0 = follow the posted limits).
+pub fn set_sim_speed(speed_kmh: f64) {
+    if let Some(s) = SESSION.lock().as_ref() {
+        s.sim_speed.store(speed_kmh.clamp(0.0, 300.0).to_bits(), Ordering::SeqCst);
+    }
+}
+
+/// Hidden niqqud on the spoken instructions of the running session.
+pub fn set_niqqud(on: bool) {
+    if let Some(s) = SESSION.lock().as_ref() {
+        s.niqqud.store(on, Ordering::SeqCst);
+    }
+}
+
+/// What the voice should say for `text`: with hidden niqqud when asked.
+pub fn spoken(text: &str, niqqud: bool) -> String {
+    if niqqud {
+        speech::voice_text(text)
+    } else {
+        text.to_string()
+    }
+}
+
+struct Flags {
+    voice: Arc<AtomicBool>,
+    sim_speed: Arc<AtomicU64>,
+    niqqud: Arc<AtomicBool>,
+}
+
 pub fn stop() {
     if let Some(s) = SESSION.lock().take() {
         s.stop.store(true, Ordering::SeqCst);
@@ -89,7 +138,7 @@ fn now() -> chrono::DateTime<chrono::FixedOffset> {
     chrono::Utc::now().with_timezone(&chrono_tz::Asia::Jerusalem).fixed_offset()
 }
 
-fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Navigator>>, route_gen: Arc<std::sync::atomic::AtomicU64>, voice: Arc<AtomicBool>) {
+fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Navigator>>, route_gen: Arc<std::sync::atomic::AtomicU64>, flags: Flags) {
     let mut gps = match source {
         Source::Gps => match gps::Gps::open() {
             Ok(g) => Some(g),
@@ -105,10 +154,14 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
     let mut sim_d = 0.0_f64;
     let mut sim_gen = route_gen.load(Ordering::SeqCst);
     let mut last_gps_err = 0u32;
+    // posted limit of the stretch being driven (simulator "as the road allows")
+    let mut road_kmh = 50.0_f64;
     while !stop.load(Ordering::SeqCst) {
         let t0 = std::time::Instant::now();
         let fix = match source {
-            Source::Simulate { speed_kmh } => {
+            Source::Simulate { .. } => {
+                let set = f64::from_bits(flags.sim_speed.load(Ordering::SeqCst));
+                let speed_kmh = if set > 0.0 { set } else { road_kmh };
                 let gen = route_gen.load(Ordering::SeqCst);
                 if gen != sim_gen {
                     sim_gen = gen;
@@ -137,9 +190,12 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
         };
         if let Some(fix) = fix {
             let u = nav.lock().update(fix, now());
+            if let Some(limit) = u.speed_limit_kmh {
+                road_kmh = f64::from(limit);
+            }
             if let Some(text) = &u.speech {
-                if voice.load(Ordering::SeqCst) {
-                    crate::voice::say(text);
+                if flags.voice.load(Ordering::SeqCst) {
+                    crate::voice::say(&spoken(text, flags.niqqud.load(Ordering::SeqCst)));
                 }
             }
             let arrived = u.arrived;

@@ -854,6 +854,16 @@ pub struct Settings {
     /// Live navigation speaks the instructions (Windows Hebrew voice when installed).
     #[serde(default = "default_true")]
     pub nav_voice: bool,
+    /// The voice gets hidden niqqud on the fixed instruction words (`nav::speech`).
+    #[serde(default = "default_true")]
+    pub nav_voice_niqqud: bool,
+    /// Simulated drive speed in km/h; 0 = as the road allows (posted limits); None = by mode.
+    #[serde(default)]
+    pub nav_sim_speed_kmh: Option<f64>,
+    /// How the vehicle is drawn while navigating by car: "arrow" | "car" | "suv" | "van" |
+    /// "truck" | "motorbike" | "bus".
+    #[serde(default = "default_nav_vehicle")]
+    pub nav_vehicle: String,
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
@@ -876,6 +886,10 @@ pub struct Settings {
     /// Teaching tips already shown (ids).
     #[serde(default)]
     pub teaching_tips_seen: Vec<String>,
+}
+
+pub fn default_nav_vehicle() -> String {
+    "arrow".into()
 }
 
 pub fn default_color_scheme() -> String {
@@ -961,6 +975,9 @@ impl Default for Settings {
             transit_preference: default_transit_pref(),
             use_prebuilt_data: true,
             nav_voice: true,
+            nav_voice_niqqud: true,
+            nav_sim_speed_kmh: None,
+            nav_vehicle: default_nav_vehicle(),
             transit_reliability: true,
             coord_format: default_coord_format(),
             color_scheme: default_color_scheme(),

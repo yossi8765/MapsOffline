@@ -171,6 +171,7 @@ pub fn settings_set(app: AppHandle, state: State<'_, Arc<AppState>>, settings: S
     }
     *state.settings.write() = settings.clone();
     state.save_settings().map_err(err)?;
+    crate::nav::set_niqqud(settings.nav_voice_niqqud);
     if let Some(new_root) = new_root {
         let p = crate::paths::DataPaths::new(new_root);
         p.ensure_dirs().map_err(|e| err(anyhow::Error::new(e).context("INVALID_DATA_DIR")))?;
@@ -187,6 +188,10 @@ fn sanitize_settings(mut s: Settings) -> Settings {
     if !matches!(s.color_scheme.as_str(), "white" | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua") {
         s.color_scheme = crate::types::default_color_scheme();
     }
+    if !matches!(s.nav_vehicle.as_str(), "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus") {
+        s.nav_vehicle = crate::types::default_nav_vehicle();
+    }
+    s.nav_sim_speed_kmh = s.nav_sim_speed_kmh.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 300.0));
     if !matches!(s.coord_format.as_str(), "dd" | "dms" | "itm" | "utm") {
         s.coord_format = crate::types::default_coord_format();
     }

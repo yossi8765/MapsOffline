@@ -25,6 +25,8 @@ export interface NavState {
   /** Manual step browsing (the GPS is stuck or the driver looks ahead): index into
    *  `flatSteps(route)`; null = follow the GPS. */
   manualStep: number | null;
+  /** simulated drive: its speed in km/h (0 = as the road allows) */
+  simSpeedKmh: number;
 }
 
 /** One maneuver of the route in driving order (all legs), with where it happens on the map. */
@@ -68,7 +70,7 @@ export function previewStep(delta: number): void {
   const from = n.manualStep ?? Math.min(n.update?.stepIndex ?? 0, steps.length - 1);
   const to = Math.max(0, Math.min(steps.length - 1, from + delta));
   patch({ manualStep: to });
-  if (n.voice) void api.speak(steps[to].step.instruction).catch(() => undefined);
+  if (n.voice) void api.speak(steps[to].step.instruction, true).catch(() => undefined);
 }
 
 /** Back to following the GPS position. */
@@ -87,11 +89,24 @@ const patch = (p: Partial<NavState>) => {
 };
 
 /** Default simulator speed for the mode (km/h). */
-function simSpeed(mode: Route["mode"]): number {
-  return mode === "car" ? 60 : mode === "bike" ? 18 : 5;
+export function simSpeed(mode: Route["mode"]): number {
+  return mode === "car" || mode === "truck" ? 60 : mode === "bike" ? 18 : 5;
 }
 
-export async function startNavigation(routeId: string, simulate = false): Promise<void> {
+/** Speeds offered for a simulated drive (km/h; 0 = as the road allows). */
+export const SIM_SPEEDS = [0, 30, 50, 80, 110];
+
+/** Change the speed of the running simulated drive (and remember it for the next one). */
+export function setSimSpeed(kmh: number): void {
+  const v = kmh <= 0 ? 0 : Math.max(5, Math.min(300, Math.round(kmh)));
+  patch({ simSpeedKmh: v });
+  void api.navSetSimSpeed(v).catch(() => undefined);
+  void useStore.getState().updateSettings({ navSimSpeedKmh: v });
+}
+
+/** `speedKmh` (simulation only): km/h, 0 = as the road allows; default: the remembered speed,
+ *  else the mode's usual one. */
+export async function startNavigation(routeId: string, simulate = false, speedKmh?: number): Promise<void> {
   const s = useStore.getState();
   const route = s.routes.find((r) => r.id === routeId) ?? (s.navigation?.routeId === routeId ? s.navigation.route : undefined);
   if (!route) return;
@@ -102,8 +117,9 @@ export async function startNavigation(routeId: string, simulate = false): Promis
   await stopNavigation();
   const mine = ++session;
   const voice = s.settings.navVoice ?? true;
+  const simSpeedKmh = speedKmh ?? s.settings.navSimSpeedKmh ?? simSpeed(route.mode);
   useStore.setState({
-    navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false, manualStep: null },
+    navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false, manualStep: null, simSpeedKmh },
   });
   const subs = await Promise.all([
     api.onNavUpdate(onUpdate),
@@ -120,7 +136,7 @@ export async function startNavigation(routeId: string, simulate = false): Promis
   }
   unlisten = subs;
   try {
-    if (simulate) await api.navSimulate(route, simSpeed(route.mode));
+    if (simulate) await api.navSimulate(route, simSpeedKmh);
     else await api.navStart(route);
   } catch (e) {
     patch({ error: errorText(e) });

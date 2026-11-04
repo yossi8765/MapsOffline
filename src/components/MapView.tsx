@@ -193,6 +193,8 @@ export function MapView() {
       paint("my-location-accuracy", "circle-color", mc.me);
       paint("my-location-accuracy", "circle-stroke-color", mc.me);
       paint("my-location-dot", "circle-color", mc.me);
+      // the vehicle markers are drawn in the accent colour: redraw them
+      meOverlay.addVehicleImages(map);
       paint("route-alts", "line-color", mc.alt);
       paint("route-hl", "line-color", mc.highlight);
       paint("route-alts-casing", "line-color", mc.casing);

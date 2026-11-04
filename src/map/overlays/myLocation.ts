@@ -2,6 +2,7 @@ import type * as maplibregl from "maplibre-gl";
 import type { LonLat, MyLocation } from "../../lib/api";
 import { mapColors } from "../colors";
 import { ensureSource, setFeatures } from "../geojson";
+import { VEHICLE_KINDS, vehicleImage, type VehicleKind } from "../vehicles";
 
 export const SRC_ME = "my-location";
 
@@ -10,14 +11,28 @@ function mpp0(lat: number): number {
   return 156543.03392 * Math.cos((lat * Math.PI) / 180);
 }
 
-/** "My location": accuracy disc (metres, scaled with zoom) + blue dot. */
+/** (Re)draw the vehicle markers in the current accent colour. */
+export function addVehicleImages(map: maplibregl.Map): void {
+  const color = mapColors(false).me;
+  for (const k of VEHICLE_KINDS) {
+    const name = `vehicle-${k}`;
+    const img = vehicleImage(k, color);
+    if (map.hasImage(name)) map.updateImage(name, img.data);
+    else map.addImage(name, img.data, { pixelRatio: img.pixelRatio });
+  }
+}
+
+/** "My location": accuracy disc (metres, scaled with zoom) + blue dot; while navigating by car,
+ *  the chosen vehicle marker (rotated with the route) instead of the dot. */
 export function add(map: maplibregl.Map): void {
   ensureSource(map, SRC_ME);
+  addVehicleImages(map);
   if (!map.getLayer("my-location-accuracy")) {
     map.addLayer({
       id: "my-location-accuracy",
       type: "circle",
       source: SRC_ME,
+      filter: ["!", ["has", "vehicle"]],
       paint: {
         // radius in px = accuracy_m / metres-per-pixel(zoom); r0 is the value at zoom 0
         "circle-radius": ["interpolate", ["exponential", 2], ["zoom"], 0, ["get", "r0"], 22, ["*", ["get", "r0"], 4194304]],
@@ -34,7 +49,25 @@ export function add(map: maplibregl.Map): void {
       id: "my-location-dot",
       type: "circle",
       source: SRC_ME,
+      filter: ["!", ["has", "vehicle"]],
       paint: { "circle-radius": 7, "circle-color": mapColors(false).me, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
+    });
+  }
+  if (!map.getLayer("my-location-vehicle")) {
+    map.addLayer({
+      id: "my-location-vehicle",
+      type: "symbol",
+      source: SRC_ME,
+      filter: ["has", "vehicle"],
+      layout: {
+        "icon-image": ["concat", "vehicle-", ["get", "vehicle"]],
+        "icon-rotate": ["get", "bearing"],
+        "icon-rotation-alignment": "map",
+        "icon-pitch-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+        "icon-size": 0.9,
+      },
     });
   }
 }
@@ -49,7 +82,13 @@ export function sync(map: maplibregl.Map, loc: MyLocation | null): void {
   setFeatures(map, SRC_ME, [{ type: "Feature", properties: { r0: Math.max(loc.accuracyM, 5) / mpp0(loc.lat) }, geometry: { type: "Point", coordinates: [loc.lon, loc.lat] } }]);
 }
 
-/** Live navigation: the position snapped to the route, with a small fixed disc. */
-export function showSnapped(map: maplibregl.Map, at: LonLat): void {
-  setFeatures(map, SRC_ME, [{ type: "Feature", properties: { r0: 5 / mpp0(at[1]) }, geometry: { type: "Point", coordinates: at } }]);
+/** Live navigation: the position snapped to the route – a small fixed disc, or the vehicle
+ *  marker heading along `bearing` when one is given (car navigation). */
+export function showSnapped(map: maplibregl.Map, at: LonLat, vehicle?: VehicleKind | null, bearing = 0): void {
+  const props: Record<string, unknown> = { r0: 5 / mpp0(at[1]) };
+  if (vehicle) {
+    props.vehicle = vehicle;
+    props.bearing = bearing;
+  }
+  setFeatures(map, SRC_ME, [{ type: "Feature", properties: props, geometry: { type: "Point", coordinates: at } }]);
 }

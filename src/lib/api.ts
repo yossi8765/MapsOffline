@@ -492,6 +492,12 @@ export interface Settings {
   transitReliability: boolean;
   /** live navigation speaks the instructions */
   navVoice: boolean;
+  /** the voice gets hidden niqqud on the fixed instruction words (the screen stays plain) */
+  navVoiceNiqqud: boolean;
+  /** simulated drive speed, km/h; 0 = as the road allows (posted limits); null = by mode */
+  navSimSpeedKmh: number | null;
+  /** how the vehicle is drawn while navigating by car */
+  navVehicle: "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus";
   // ---- IMPROVEMENTS contract (R1); Rust fills defaults
   coordFormat: CoordFormat;
   /** Colour scheme of the whole interface; "white" = plain surfaces with the accent colour. */
@@ -895,7 +901,12 @@ export const api = {
   navSetRoute: (route: Route) => invoke<void>("nav_set_route", { route }),
   navSetVoice: (on: boolean) => invoke<void>("nav_set_voice", { on }),
   navStop: () => invoke<void>("nav_stop"),
-  speak: (text: string) => invoke<void>("speak", { text }),
+  /** `vocalize`: a navigation instruction – the hidden niqqud applies when the setting is on */
+  speak: (text: string, vocalize = false) => invoke<void>("speak", { text, vocalize }),
+  /** Settings → test the voice: the sample instructions without / with the hidden niqqud */
+  voiceTest: (vocalized: boolean) => invoke<void>("voice_test", { vocalized }),
+  /** speed of a running simulated drive (km/h; 0 = as the road allows) */
+  navSetSimSpeed: (speedKmh: number) => invoke<void>("nav_set_sim_speed", { speedKmh }),
   /** [displayName, language][], the voice used first */
   voicesList: () => invoke<[string, string][]>("voices_list"),
   onNavUpdate: (cb: (u: NavUpdate) => void): Promise<UnlistenFn> => listen<NavUpdate>("nav-update", (e) => cb(e.payload)),

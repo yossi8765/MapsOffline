@@ -1,3 +1,4 @@
+import { SIM_SPEEDS } from "../lib/nav";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
@@ -551,6 +552,8 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
   const lang = useStore((s) => s.settings.language);
   const waypoints = useStore((s) => s.waypoints);
   const [more, setMore] = useState(false);
+  const [simPick, setSimPick] = useState(false);
+  const simSaved = useStore((s) => s.settings.navSimSpeedKmh);
   const name = `${waypoints[0]?.label ?? t("from")} ${routeArrow(lang)} ${waypoints[waypoints.length - 1]?.label ?? t("to")}`;
   const safe = name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
   const st = useStore.getState;
@@ -565,7 +568,7 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
       },
     },
     { label: t("saveRoute"), icon: Star, run: () => void st().saveRouteFavorite() },
-    ...(route.mode !== "transit" ? [{ label: t("navSimulate"), icon: Car, run: () => void st().startNavigation(route.id, true) }] : []),
+    ...(route.mode !== "transit" ? [{ label: t("navSimulate"), icon: Car, run: () => setSimPick(true) }] : []),
   ];
 
   return (
@@ -593,6 +596,32 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
         </Tip>
         {more && <MoreMenu items={moreItems} onClose={() => setMore(false)} />}
       </div>
+      {simPick && route.mode !== "transit" && (
+        <div className="card p-3 flex flex-col gap-2 no-print fade-in" role="group" aria-label={t("simSpeedTitle")}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">{t("simSpeedTitle")}</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSimPick(false)}>
+              {t("cancel")}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {SIM_SPEEDS.map((v) => (
+              <button
+                key={v}
+                className={clsx("btn btn-sm", (simSaved ?? -1) === v && "btn-primary")}
+                onClick={() => {
+                  setSimPick(false);
+                  void st().updateSettings({ navSimSpeedKmh: v });
+                  void st().startNavigation(route.id, true, v);
+                }}
+              >
+                {v === 0 ? t("simSpeedRoad") : <bdi className="num">{`${v} ${t("kmh")}`}</bdi>}
+              </button>
+            ))}
+          </div>
+          <p className="m-0 text-xs text-muted">{t("simSpeedHint")}</p>
+        </div>
+      )}
       {!embedded && <h2 className="section-label m-0">{t("steps")}</h2>}
       <div className={clsx(embedded ? "-mx-3" : "card overflow-hidden", route.mode !== "transit" && "[&_li+li]:border-t [&_li+li]:border-line")}>
         {route.mode === "transit" ? (
