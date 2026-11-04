@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from "react";
 import type * as maplibregl from "maplibre-gl";
 import type { LonLat } from "../lib/api";
 import { useStore } from "../lib/store";
+import { flatSteps } from "../lib/nav";
 import { myLocation as meOverlay, routes as routeOverlay } from "./overlays";
 
 /** Width the side panel takes from the map (route fit padding): measured, 480 as a fallback. */
@@ -68,6 +69,17 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
   // ---- live navigation
   const navUpdate = useStore((s) => s.navigation?.update ?? null);
   const navigating = useStore((s) => !!s.navigation);
+  const manualStep = useStore((s) => s.navigation?.manualStep ?? null);
+  // manual step browsing: show that maneuver, heading-up, instead of following the GPS
+  useEffect(() => {
+    const map = mapRef.current;
+    const n = useStore.getState().navigation;
+    if (!map || !mapReady || !n || manualStep === null) return;
+    const st = flatSteps(n.route)[manualStep];
+    if (!st) return;
+    map.easeTo({ center: st.at, bearing: st.bearing, pitch: 50, zoom: 17, offset: [0, Math.round(map.getContainer().clientHeight * 0.15)], duration: 700 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualStep, mapReady]);
   const wasNavigating = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
@@ -81,8 +93,11 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
     }
     wasNavigating.current = true;
     if (!navUpdate) return;
+    // browsing steps by hand: the GPS marker still moves, the camera stays on the shown step
+    const browsing = useStore.getState().navigation?.manualStep != null;
     const at: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
     meOverlay.showSnapped(map, at);
+    if (browsing) return;
     // keep the vehicle in the lower third of the view, as navigation apps do
     map.easeTo({
       center: at,
@@ -94,5 +109,5 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
       easing: (x) => x,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navUpdate, navigating, mapReady]);
+  }, [navUpdate, navigating, mapReady, manualStep]);
 }

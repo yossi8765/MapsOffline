@@ -606,6 +606,13 @@ const he = {
   err_CHECKSUM_MISMATCH: "הקובץ שהורד פגום (טביעת האצבע אינה תואמת). יש לנסות שוב.",
 
   // ===== [F1] =====
+  navPrevStep: "הפקודה הקודמת",
+  navNextStep: "הפקודה הבאה",
+  navStepsGroup: "מעבר בין פקודות הניווט",
+  navBackToGps: "חזרה ל-GPS",
+  navStepOf: "פקודה {n} מתוך {m}",
+  navThenFor: "ואז להמשיך",
+  navManualHint: "מוצגת פקודה שנבחרה ידנית. המפה לא עוקבת אחרי ה-GPS.",
   searchNoIndex: "אינדקס הכתובות לא מותקן",
   worksOnline: "פועל ברשת",
   worksOnlineHint: "בחיבור לאינטרנט הרכיב פועל גם בלי הורדה. ההורדה נדרשת רק לשימוש בלי אינטרנט.",
@@ -1568,6 +1575,13 @@ const en: Record<I18nKey, string> = {
   err_CHECKSUM_MISMATCH: "The downloaded file is damaged (checksum mismatch). Try again.",
 
   // ===== [F1] =====
+  navPrevStep: "Previous instruction",
+  navNextStep: "Next instruction",
+  navStepsGroup: "Browse the instructions",
+  navBackToGps: "Back to GPS",
+  navStepOf: "Instruction {n} of {m}",
+  navThenFor: "then continue for",
+  navManualHint: "Showing an instruction picked by hand. The map is not following the GPS.",
   searchNoIndex: "The address index is not installed",
   worksOnline: "Works online",
   worksOnlineHint: "With an internet connection this works without a download. Download it only for use without internet.",

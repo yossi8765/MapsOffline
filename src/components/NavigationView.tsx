@@ -2,6 +2,9 @@ import { useEffect, useRef } from "react";
 import {
   ArrowUp,
   Camera,
+  ChevronLeft,
+  ChevronRight,
+  LocateFixed,
   CornerLeftDown,
   CornerRightDown,
   CornerUpLeft,
@@ -23,7 +26,7 @@ import type { Lane, Maneuver } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDistance, fmtDuration, fmtTime } from "../lib/format";
-import { setNavVoice, startNavigation, stopNavigation } from "../lib/nav";
+import { flatSteps, previewStep, resumeGps, setNavVoice, startNavigation, stopNavigation } from "../lib/nav";
 
 function maneuverGlyph(m: Maneuver | null | undefined, size: number) {
   switch (m) {
@@ -139,6 +142,11 @@ export function NavigationView() {
   const u = nav.update;
   const noGps = !!nav.error && !nav.simulate && /LOCATION_(DENIED|UNAVAILABLE)/.test(nav.error);
   const over = u?.speedKmh != null && u.speedLimitKmh != null && u.speedKmh > u.speedLimitKmh + 3;
+  const steps = flatSteps(nav.route);
+  const manual = nav.manualStep != null ? steps[nav.manualStep] : null;
+  const shownIndex = nav.manualStep ?? Math.min(u?.stepIndex ?? 0, Math.max(steps.length - 1, 0));
+  // RTL: "next" points to the reading direction's end (left in Hebrew)
+  const rtl = typeof document !== "undefined" && document.documentElement.dir === "rtl";
 
   return (
     // pb-10: the bottom bar sits above the map's attribution line
@@ -157,6 +165,27 @@ export function NavigationView() {
               </button>
             </div>
           </div>
+        ) : manual ? (
+          <>
+            <div className="flex items-center gap-4 p-4 bg-accent-soft">
+              <span className="w-14 h-14 shrink-0 rounded-[var(--radius)] bg-[var(--accent-solid)] text-[var(--accent-fg)] flex items-center justify-center">{maneuverGlyph(manual.step.maneuver, 32)}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-muted num">{t("navStepOf").replace("{n}", String((nav.manualStep ?? 0) + 1)).replace("{m}", String(steps.length))}</div>
+                <div className="text-lg leading-snug truncate-dir">{manual.step.instruction}</div>
+                {manual.step.distanceM > 0 && manual.step.maneuver !== "arrive" && (
+                  <div className="text-sm text-muted num">
+                    {t("navThenFor")} <bdi>{fmtDistance(manual.step.distanceM, t, units)}</bdi>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 px-4 py-2 bg-warning-soft text-warning border-t border-line" role="status">
+              <span className="flex-1">{t("navManualHint")}</span>
+              <button className="btn btn-sm btn-primary shrink-0" onClick={resumeGps}>
+                <Icon as={LocateFixed} size={14} /> {t("navBackToGps")}
+              </button>
+            </div>
+          </>
         ) : nav.arrived ? (
           <div className="flex items-center gap-4 p-4">
             <span className="w-14 h-14 shrink-0 rounded-[var(--radius)] bg-success-soft text-success flex items-center justify-center">
@@ -240,6 +269,27 @@ export function NavigationView() {
             )}
             {nav.simulate && u && !nav.arrived && <span className="chip chip-muted">{t("navSimulated")}</span>}
           </div>
+          {steps.length > 1 && !nav.arrived && (
+            <div className="flex items-center shrink-0" role="group" aria-label={t("navStepsGroup")}>
+              <Tip text={t("navPrevStep")}>
+                <button className="btn btn-ghost btn-icon" aria-label={t("navPrevStep")} disabled={shownIndex <= 0} onClick={() => previewStep(-1)}>
+                  <Icon as={rtl ? ChevronRight : ChevronLeft} size={20} />
+                </button>
+              </Tip>
+              <Tip text={t("navNextStep")}>
+                <button className="btn btn-ghost btn-icon" aria-label={t("navNextStep")} disabled={shownIndex >= steps.length - 1} onClick={() => previewStep(1)}>
+                  <Icon as={rtl ? ChevronLeft : ChevronRight} size={20} />
+                </button>
+              </Tip>
+              {nav.manualStep != null && (
+                <Tip text={t("navBackToGps")}>
+                  <button className="btn btn-ghost btn-icon text-accent" aria-label={t("navBackToGps")} onClick={resumeGps}>
+                    <Icon as={LocateFixed} size={18} />
+                  </button>
+                </Tip>
+              )}
+            </div>
+          )}
           <Tip text={nav.voice ? t("navMute") : t("navUnmute")}>
             <button className="btn btn-ghost btn-icon shrink-0" aria-pressed={!nav.voice} aria-label={nav.voice ? t("navMute") : t("navUnmute")} onClick={() => void setNavVoice(!nav.voice)}>
               <Icon as={nav.voice ? Volume2 : VolumeX} size={18} />

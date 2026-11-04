@@ -7,7 +7,7 @@
  * it is non-null, easeTo({ center: [snappedLon, snappedLat], bearing, pitch: 50, zoom: 17 }).
  */
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, errorText, type NavUpdate, type Route, type RouteRequest } from "./api";
+import { api, errorText, type LonLat, type NavUpdate, type Route, type RouteRequest, type Step } from "./api";
 import { useStore } from "./store";
 
 export interface NavState {
@@ -22,6 +22,58 @@ export interface NavState {
   /** "LOCATION_DENIED" / "LOCATION_UNAVAILABLE" / other error text */
   error: string | null;
   arrived: boolean;
+  /** Manual step browsing (the GPS is stuck or the driver looks ahead): index into
+   *  `flatSteps(route)`; null = follow the GPS. */
+  manualStep: number | null;
+}
+
+/** One maneuver of the route in driving order (all legs), with where it happens on the map. */
+export interface FlatStep {
+  step: Step;
+  legIndex: number;
+  at: LonLat;
+  /** direction of travel just after the maneuver, degrees from north */
+  bearing: number;
+}
+
+function bearingDeg(a: LonLat, b: LonLat): number {
+  const r = Math.PI / 180;
+  const y = Math.sin((b[0] - a[0]) * r) * Math.cos(b[1] * r);
+  const x = Math.cos(a[1] * r) * Math.sin(b[1] * r) - Math.sin(a[1] * r) * Math.cos(b[1] * r) * Math.cos((b[0] - a[0]) * r);
+  return ((Math.atan2(y, x) / r) + 360) % 360;
+}
+
+/** Every step of every leg, in order: the same order (and index) as the backend's `stepIndex`. */
+export function flatSteps(route: Route): FlatStep[] {
+  const out: FlatStep[] = [];
+  route.legs.forEach((leg, legIndex) => {
+    for (const step of leg.steps ?? []) {
+      const i = Math.min(Math.max(step.geometryStart, 0), Math.max(leg.geometry.length - 1, 0));
+      const at = leg.geometry[i] ?? route.geometry[0];
+      if (!at) continue;
+      const next = leg.geometry[Math.min(i + 1, leg.geometry.length - 1)] ?? at;
+      out.push({ step, legIndex, at, bearing: next === at ? 0 : bearingDeg(at, next) });
+    }
+  });
+  return out;
+}
+
+/** Browse the maneuvers by hand: one step forward (+1) or back (-1) from the shown one (the
+ *  GPS one when following); shows it on the map and says it when the voice is on. */
+export function previewStep(delta: number): void {
+  const n = useStore.getState().navigation;
+  if (!n) return;
+  const steps = flatSteps(n.route);
+  if (!steps.length) return;
+  const from = n.manualStep ?? Math.min(n.update?.stepIndex ?? 0, steps.length - 1);
+  const to = Math.max(0, Math.min(steps.length - 1, from + delta));
+  patch({ manualStep: to });
+  if (n.voice) void api.speak(steps[to].step.instruction).catch(() => undefined);
+}
+
+/** Back to following the GPS position. */
+export function resumeGps(): void {
+  patch({ manualStep: null });
 }
 
 let unlisten: UnlistenFn[] = [];
@@ -51,7 +103,7 @@ export async function startNavigation(routeId: string, simulate = false): Promis
   const mine = ++session;
   const voice = s.settings.navVoice ?? true;
   useStore.setState({
-    navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false },
+    navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false, manualStep: null },
   });
   const subs = await Promise.all([
     api.onNavUpdate(onUpdate),
@@ -123,7 +175,7 @@ async function reroute(u: NavUpdate) {
     if (!r || !cur) return;
     await api.navSetRoute(r);
     useStore.setState({ routes: [r], selectedRouteId: r.id, routeTick: useStore.getState().routeTick + 1 });
-    patch({ route: r, routeId: r.id, request: req, rerouting: false });
+    patch({ route: r, routeId: r.id, request: req, rerouting: false, manualStep: null });
   } catch (e) {
     console.warn("reroute failed", e);
     patch({ rerouting: false });
