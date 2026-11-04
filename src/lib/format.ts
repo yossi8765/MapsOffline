@@ -38,10 +38,31 @@ export function fmtTime(iso?: string): string {
   return d.isValid() ? d.format("HH:mm") : "";
 }
 
+/** Date and time: "03/11/2026 08:12" in Hebrew (the Israeli convention), the locale's own
+ *  format through Intl otherwise ("Nov 3, 2026, 08:12"). */
 export function fmtDateTime(iso?: string, lang = "he"): string {
   if (!iso) return "";
-  const d = dayjs(iso).locale(lang === "he" ? "he" : "en");
-  return d.isValid() ? d.format("DD/MM/YYYY HH:mm") : "";
+  const d = dayjs(iso);
+  if (!d.isValid()) return "";
+  if (lang === "he") return d.format("DD/MM/YYYY HH:mm");
+  try {
+    return new Intl.DateTimeFormat("en-IL", { dateStyle: "medium", timeStyle: "short", hour12: false }).format(d.toDate());
+  } catch {
+    return d.format("YYYY-MM-DD HH:mm");
+  }
+}
+
+/** Date only: "03/11/2026" in Hebrew, "Nov 3, 2026" otherwise. */
+export function fmtDate(iso?: string, lang = "he"): string {
+  if (!iso) return "";
+  const d = dayjs(iso);
+  if (!d.isValid()) return "";
+  if (lang === "he") return d.format("DD/MM/YYYY");
+  try {
+    return new Intl.DateTimeFormat("en-IL", { dateStyle: "medium" }).format(d.toDate());
+  } catch {
+    return d.format("YYYY-MM-DD");
+  }
 }
 
 export function fmtAgo(iso: string, lang = "he"): string {

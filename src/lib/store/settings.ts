@@ -87,8 +87,9 @@ export const createSettingsSlice: SliceCreator<SettingsSlice> = (set, get) => ({
         },
       });
     } catch (e) {
-      console.warn("settings_get failed", e);
+      // the window still opens with the defaults; say why the user's choices are missing
       set({ settingsLoaded: true });
+      get().toastError(e);
     }
     try {
       const info = await api.appInfo();

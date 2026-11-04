@@ -97,9 +97,13 @@ export default function App() {
       document.documentElement.setAttribute("data-theme", resolved);
       // "auto" leaves the frame to Windows; a forced theme paints it to match (needs the
       // core:window:allow-set-theme permission; an older build just keeps the system frame)
-      getCurrentWindow()
-        .setTheme(theme === "auto" ? null : resolved)
-        .catch(() => {});
+      try {
+        getCurrentWindow()
+          .setTheme(theme === "auto" ? null : resolved)
+          .catch(() => {});
+      } catch {
+        /* not inside Tauri (browser preview, tests): there is no native frame */
+      }
     };
     apply();
     const mq = window.matchMedia("(prefers-color-scheme: dark)");

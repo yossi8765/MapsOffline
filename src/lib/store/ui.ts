@@ -18,6 +18,8 @@ export interface UiSlice {
   share: ShareTarget | null;
   /** CSV address-list dialog. */
   batchOpen: boolean;
+  /** Bumped by "route here / from here": the route panel focuses its first empty field. */
+  routeFocusTick: number;
   /** A place to show in the search panel's card, set from outside the panel (links, nearby list). */
   searchPick: { lon: number; lat: number; label: string; result?: GeoResult; tick: number } | null;
   /** Internet is reachable: navigator.onLine as a quick hint, confirmed by the backend's
@@ -43,6 +45,8 @@ export interface UiSlice {
   setPaletteOpen: (open: boolean) => void;
   setShare: (s: ShareTarget | null) => void;
   setBatchOpen: (open: boolean) => void;
+  /** Open the route panel with the keyboard focus in the first empty origin / destination field. */
+  focusRouteField: () => void;
   /** Ctrl+P / print buttons: prints the selected route (nothing to print without one). */
   requestPrint: () => void;
   /** "N": north up, flat. */
@@ -79,6 +83,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => {
     paletteOpen: false,
     share: null,
     batchOpen: false,
+    routeFocusTick: 0,
     searchPick: null,
     online: typeof navigator !== "undefined" ? navigator.onLine : false,
 
@@ -155,6 +160,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => {
     setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
     setShare: (share) => set({ share }),
     setBatchOpen: (batchOpen) => set({ batchOpen }),
+    focusRouteField: () => set((s) => ({ panel: "route", sidebarCollapsed: false, routeFocusTick: s.routeFocusTick + 1 })),
     requestPrint: () => {
       // print through printPage (light theme, map overview); without a route there is nothing to
       // print, and the browser would print an empty page

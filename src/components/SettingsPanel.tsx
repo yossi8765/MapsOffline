@@ -10,7 +10,7 @@ import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
 import { ShortcutList } from "./ShortcutsDialog";
 import { apiX, DATA_COMPONENTS, type CoordFormat, type Settings } from "../lib/api";
-import { askConfirm, fmtDateTime } from "../lib/format";
+import { askConfirm, fmtDate } from "../lib/format";
 import { CREDITS } from "../lib/credits";
 import { formatCoord } from "../lib/coords";
 
@@ -53,7 +53,7 @@ export function SettingsPanel() {
   const dataStamp = (() => {
     const osm = [dataStatus?.routing?.version, dataStatus?.geocode?.version].map((v) => /OSM (\d{4}-\d{2}-\d{2})/.exec(v ?? "")?.[1]).find(Boolean);
     const times = DATA_COMPONENTS.map((c) => dataStatus?.[c]?.updatedIso).filter((x): x is string => !!x).sort();
-    const built = times.length ? fmtDateTime(times[times.length - 1], lang).split(" ")[0] : "";
+    const built = times.length ? fmtDate(times[times.length - 1], lang) : "";
     if (!osm && !built) return "";
     const parts = [osm ? t("dataStampOsm").replace("{d}", osm) : "", built ? t("dataStampBuilt").replace("{d}", built) : ""].filter(Boolean);
     return `${t("dataStamp")}: ${parts.join(" · ")}`;

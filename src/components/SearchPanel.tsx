@@ -100,7 +100,8 @@ function PlaceCard({ picked }: { picked: Pick }) {
     const p = { lon: picked.lon, lat: picked.lat, label: picked.label, result: picked.result };
     if (end === "to") s.setTo(p);
     else s.setFrom(p);
-    s.setPanel("route");
+    // the other end is usually empty: put the cursor there (it offers "my location" first)
+    s.focusRouteField();
   };
 
   return (

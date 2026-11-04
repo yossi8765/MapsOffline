@@ -53,6 +53,8 @@ export function RoutePanel() {
   const error = useStore((s) => s.routeError);
   const notice = useStore((s) => s.routeNotice);
   const maxWaypoints = useStore((s) => (s.alternativesCount === 1 ? 25 : 7));
+  const routeFocusTick = useStore((s) => s.routeFocusTick);
+  const firstEmpty = waypoints.findIndex((w) => !w);
   const { setWaypoint, addVia, removeWaypoint, moveWaypoint, swapEnds, setMode, setTime, setAvoid, setAlternativesCount, computeRoute, clearRoute, optimizeOrder, setVehicle, setAccessible } =
     useStore.getState();
   const [showOptions, setShowOptions] = useState(false);
@@ -190,6 +192,7 @@ export function RoutePanel() {
                     compact
                     leading={icon}
                     label={label}
+                    focusTick={i === firstEmpty ? routeFocusTick : undefined}
                     value={wp?.label ?? ""}
                     placeholder={label}
                     onPick={(p) => setWaypoint(i, { lon: p.lon, lat: p.lat, label: p.label, result: p.result })}
