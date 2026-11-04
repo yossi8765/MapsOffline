@@ -15,7 +15,7 @@
 use chrono::DateTime;
 
 use crate::geo::haversine_m;
-use crate::types::{LegKind, Route, TransitVehicle};
+use crate::types::{FareTicket, LegKind, Route, TransitVehicle};
 
 pub const UPDATED: &str = "2026-11";
 /// (max km, bus / light rail ₪, train ₪ or None)
@@ -53,6 +53,11 @@ fn km(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// (total ₪, note) for a transit route; None for a walk-only route or an unpriced ride.
 pub fn estimate(r: &Route) -> Option<(f64, String)> {
+    estimate_tickets(r).map(|(total, note, _)| (total, note))
+}
+
+/// [`estimate`] plus the tickets it is made of.
+pub fn estimate_tickets(r: &Route) -> Option<(f64, String, Vec<FareTicket>)> {
     let rides: Vec<Ride> = r
         .legs
         .iter()
@@ -95,6 +100,7 @@ pub fn estimate(r: &Route) -> Option<(f64, String)> {
     }
     let mut total = 0.0;
     let mut parts = Vec::new();
+    let mut tickets = Vec::new();
     for g in &groups {
         let train = g[0].train;
         let price = band(km(g[0].from, g[g.len() - 1].to), train)?;
@@ -107,8 +113,9 @@ pub fn estimate(r: &Route) -> Option<(f64, String)> {
         }
         let free = if g.len() > 1 && !train { " (כולל מעבר)" } else { "" };
         parts.push(format!("{} · {} ₪{free}", lines.join(" + "), fmt(price)));
+        tickets.push(FareTicket { label: lines.join(" + "), ils: price, train });
     }
-    Some(((total * 100.0).round() / 100.0, parts.join("; ")))
+    Some(((total * 100.0).round() / 100.0, parts.join("; "), tickets))
 }
 
 fn fmt(v: f64) -> String {
@@ -119,9 +126,10 @@ fn fmt(v: f64) -> String {
 /// Fill `fare_estimate_ils` / `fare_note` on every transit route.
 pub fn annotate(routes: &mut [Route]) {
     for r in routes {
-        if let Some((total, note)) = estimate(r) {
+        if let Some((total, note, tickets)) = estimate_tickets(r) {
             r.fare_estimate_ils = Some(total);
             r.fare_note = Some(note);
+            r.fare_breakdown = tickets;
         }
     }
 }
@@ -186,6 +194,7 @@ mod tests {
             fare_estimate_ils: None,
             fare_note: None,
             avoid_violations: vec![],
+            fare_breakdown: vec![],
         }
     }
 
@@ -224,6 +233,15 @@ mod tests {
         let mid = [34.95, 31.95];
         let r = route(vec![ride(TransitVehicle::Rail, TLV, mid, "08:00", ""), ride(TransitVehicle::Rail, mid, JLM, "08:30", "")]);
         assert_eq!(estimate(&r).unwrap().0, 27.0);
+    }
+
+    #[test]
+    fn breakdown_per_ticket() {
+        let r = route(vec![ride(TransitVehicle::Rail, TLV, JLM, "08:00", ""), ride(TransitVehicle::Bus, JLM, [35.22, 31.77], "08:50", "19")]);
+        let (_, _, t) = estimate_tickets(&r).unwrap();
+        assert_eq!(t.len(), 2);
+        assert!(t[0].train && t[0].ils == 27.0);
+        assert!(!t[1].train && t[1].ils == 8.0 && t[1].label == "19");
     }
 
     #[test]

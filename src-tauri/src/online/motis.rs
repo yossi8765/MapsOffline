@@ -213,6 +213,7 @@ fn convert_itinerary(idx: usize, it: &Itinerary) -> Route {
         fare_estimate_ils: None,
         fare_note: None,
         avoid_violations: vec![],
+        fare_breakdown: vec![],
         legs,
         tags: vec![],
         depart_iso: to_local_iso(&it.start_time),
@@ -228,13 +229,15 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
     let n = req.alternatives.clamp(1, 6);
     let base = base_url.trim_end_matches('/');
     let url = format!(
-        "{base}/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&time={}&arriveBy={}&numItineraries={n}&detailedTransfers=false",
+        "{base}/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&time={}&arriveBy={}&numItineraries={n}&detailedTransfers=false{}",
         from.lat,
         from.lon,
         to.lat,
         to.lon,
         urlencode(&time),
-        arrive_by
+        arrive_by,
+        // MOTIS 2: step-free walking and wheelchair-accessible trips
+        if req.accessible { "&pedestrianProfile=WHEELCHAIR" } else { "" }
     );
     let client = super::client()?;
     let resp = client.get(&url).send().context("transit API request failed")?;
@@ -256,7 +259,7 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
     routes.truncate(n as usize);
     tag(&mut routes);
     crate::transit::fares::annotate(&mut routes);
-    Ok(RouteResponse { routes, compute_ms: t0.elapsed().as_millis() as u64, source: RouteSource::Online, provider: Some("transitous".into()) })
+    Ok(RouteResponse { routes, compute_ms: t0.elapsed().as_millis() as u64, source: RouteSource::Online, provider: Some("transitous".into()), notice: None })
 }
 
 fn tag(routes: &mut [Route]) {
@@ -300,6 +303,7 @@ mod tests {
             waypoints: vec![Waypoint { lon: 34.7794, lat: 32.0557, name: None }, Waypoint { lon: 35.2033, lat: 31.7890, name: None }],
             mode: Mode::Transit,
             time: TimeSpec::default(),
+            accessible: false,
             avoid: Avoid::default(),
             alternatives: 4,
         };

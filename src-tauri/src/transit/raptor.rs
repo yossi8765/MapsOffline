@@ -61,6 +61,8 @@ pub struct Query<'a> {
     pub targets: &'a [(u32, i32)],
     pub max_trips: usize,
     pub banned_routes: &'a FxHashSet<u32>,
+    /// Wheelchair: only accessible trips, boarding / alighting only at accessible stops.
+    pub accessible: bool,
 }
 
 /// Journey leg in chronological order.
@@ -113,14 +115,39 @@ struct Ctx<'a> {
     dest_bound: i32,
     marked: Vec<u32>,
     is_marked: Vec<bool>,
+    accessible: bool,
 }
 
 impl<'a> Ctx<'a> {
+    fn new(t: &'a Transit, fwd: bool, day: u32, max_trips: usize, accessible: bool) -> Self {
+        let nstops = t.stops.len();
+        let mut days = Vec::new();
+        for d in [-1i32, 0, 1] {
+            let dd = day as i32 + d;
+            if dd >= 0 && (dd as u32) < t.num_days {
+                days.push(DaySvc { day_off: d as i8, active: t.active_services(dd as u32) });
+            }
+        }
+        Ctx {
+            t,
+            fwd,
+            days,
+            prim: vec![vec![NOLAB; nstops]; max_trips + 1],
+            best: vec![vec![NOLAB; nstops]; max_trips + 1],
+            cum: vec![vec![INF; nstops]; max_trips + 1],
+            max_trips,
+            dest_bound: INF,
+            marked: Vec::new(),
+            is_marked: vec![false; nstops],
+            accessible,
+        }
+    }
+
     #[inline]
     fn active(&self, ds: &DaySvc, p: u32, trip: u32) -> bool {
         let g = self.t.patterns[p as usize].trips_start + trip;
         let s = self.t.trip_service[g as usize];
-        (ds.active[(s / 64) as usize] >> (s % 64)) & 1 == 1
+        (ds.active[(s / 64) as usize] >> (s % 64)) & 1 == 1 && (!self.accessible || self.t.trip_accessible(g))
     }
 
     /// Key of boarding `trip` (with day offset) at `pos`.
@@ -234,8 +261,9 @@ impl<'a> Ctx<'a> {
             let pos = if self.fwd { start + i } else { start - i };
             let s = stops[pos as usize] as usize;
             let fl = flags[pos as usize];
+            let stop_ok = !self.accessible || t.stop_accessible(s as u32);
             if let Some((tr, d, bp)) = cur {
-                let alight_ok = if self.fwd { fl & NO_DROPOFF == 0 } else { fl & NO_PICKUP == 0 };
+                let alight_ok = stop_ok && if self.fwd { fl & NO_DROPOFF == 0 } else { fl & NO_PICKUP == 0 };
                 if alight_ok {
                     let key = self.alight_key(p, tr, d, pos);
                     if key < self.cum[k][s].min(self.dest_bound) {
@@ -252,9 +280,9 @@ impl<'a> Ctx<'a> {
             }
             let prev = self.best[k - 1][s];
             if prev.key < INF {
-                let board_ok = if self.fwd { fl & NO_PICKUP == 0 } else { fl & NO_DROPOFF == 0 };
+                let board_ok = stop_ok && if self.fwd { fl & NO_PICKUP == 0 } else { fl & NO_DROPOFF == 0 };
                 if board_ok {
-                    let ready = prev.key + if matches!(prev.kind, Kind::Transit { .. }) { TRANSFER_SLACK } else { 0 };
+                    let ready = prev.key + if matches!(prev.kind, Kind::Transit { .. }) { t.min_change(s as u32) } else { 0 };
                     let cur_key = cur.map(|(tr, d, _)| self.board_key(p, tr, d, pos));
                     if cur_key.is_none_or(|ck| ready <= ck) {
                         if let Some((tr, d, bk)) = self.earliest_trip(p, pos, ready) {
@@ -364,25 +392,7 @@ pub fn run_range(t: &Transit, q: &Query, window: i32) -> Vec<Journey> {
     }
     let fwd = !q.reverse;
     let max_trips = q.max_trips.clamp(1, MAX_TRIPS);
-    let mut days = Vec::new();
-    for d in [-1i32, 0, 1] {
-        let day = q.day as i32 + d;
-        if day >= 0 && (day as u32) < t.num_days {
-            days.push(DaySvc { day_off: d as i8, active: t.active_services(day as u32) });
-        }
-    }
-    let mut c = Ctx {
-        t,
-        fwd,
-        days,
-        prim: vec![vec![NOLAB; nstops]; max_trips + 1],
-        best: vec![vec![NOLAB; nstops]; max_trips + 1],
-        cum: vec![vec![INF; nstops]; max_trips + 1],
-        max_trips,
-        dest_bound: INF,
-        marked: Vec::new(),
-        is_marked: vec![false; nstops],
-    };
+    let mut c = Ctx::new(t, fwd, q.day, max_trips, q.accessible);
     let key_of = |time: i32| if fwd { time } else { -time };
 
     // Iterations: shifts of the source keys, largest first (latest departure / earliest deadline).
@@ -499,6 +509,64 @@ pub fn run_range(t: &Transit, q: &Query, window: i32) -> Vec<Journey> {
     pareto(out, fwd)
 }
 
+/// One-to-all earliest arrival (forward only): the best arrival time at every stop (seconds since
+/// `day` midnight, `i32::MAX` = unreached) within `horizon` seconds of the earliest source, by
+/// transit and the foot transfers after each ride. Used for transit isochrones.
+pub fn one_to_all(t: &Transit, day: u32, sources: &[(u32, i32)], max_trips: usize, accessible: bool, horizon: i32) -> Vec<i32> {
+    let nstops = t.stops.len();
+    if nstops == 0 || sources.is_empty() {
+        return vec![i32::MAX; nstops];
+    }
+    let max_trips = max_trips.clamp(1, MAX_TRIPS);
+    let mut c = Ctx::new(t, true, day, max_trips, accessible);
+    let mut min_key = INF;
+    for &(s, time) in sources {
+        min_key = min_key.min(time);
+        if time < c.cum[0][s as usize] {
+            let lab = Lab { key: time, kind: Kind::Access { walk: 0 } };
+            c.prim[0][s as usize] = lab;
+            c.best[0][s as usize] = lab;
+            c.improve(0, s as usize, time);
+            c.mark(s);
+        }
+    }
+    c.dest_bound = min_key.saturating_add(horizon);
+    let src: Vec<u32> = c.marked.clone();
+    c.relax_foot(0, &src);
+    let mut qpos = vec![NONE; t.patterns.len()];
+    let mut queue: Vec<u32> = Vec::new();
+    for k in 1..=max_trips {
+        let marked = std::mem::take(&mut c.marked);
+        for &s in &marked {
+            c.is_marked[s as usize] = false;
+            for (p, pos) in t.stop_patterns(s) {
+                let e = &mut qpos[p as usize];
+                if *e == NONE {
+                    queue.push(p);
+                    *e = pos;
+                } else if pos < *e {
+                    *e = pos;
+                }
+            }
+        }
+        if queue.is_empty() {
+            break;
+        }
+        for &p in &queue {
+            let start = qpos[p as usize];
+            qpos[p as usize] = NONE;
+            c.scan(p, start, k);
+        }
+        queue.clear();
+        let by_transit: Vec<u32> = c.marked.clone();
+        c.relax_foot(k, &by_transit);
+        if c.marked.is_empty() {
+            break;
+        }
+    }
+    (0..nstops).map(|s| if c.cum[max_trips][s] >= INF { i32::MAX } else { c.cum[max_trips][s] }).collect()
+}
+
 /// Drop duplicates and journeys dominated over (departure, arrival, trips); for arrive-by the
 /// same order applies (later departure and earlier arrival are both better).
 fn pareto(mut v: Vec<Journey>, fwd: bool) -> Vec<Journey> {
@@ -550,14 +618,14 @@ mod range_tests {
                     }
                 };
                 let (src, tgt) = mk(base);
-                let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none, accessible: false };
                 let t0 = std::time::Instant::now();
                 let range = run_range(&t, &q, window);
                 let t_range = t0.elapsed();
                 let t0 = std::time::Instant::now();
                 for step in 0..4 {
                     let (src, tgt) = mk(if reverse { base - step * 900 } else { base + step * 900 });
-                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none, accessible: false };
                     let _ = run(&t, &q);
                 }
                 eprintln!("  range {:?} vs 4 plain runs {:?}", t_range, t0.elapsed());
@@ -565,7 +633,7 @@ mod range_tests {
                 for step in (0..=window).step_by(120) {
                     let tq = if reverse { base - step } else { base + step };
                     let (src, tgt) = mk(tq);
-                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none, accessible: false };
                     for j in run(&t, &q) {
                         // only journeys that start inside the window are covered by the profile
                         let inside = if reverse { j.arrive >= base - window } else { j.depart <= base + window };

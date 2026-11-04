@@ -190,6 +190,9 @@ pub struct RouteRequest {
     pub mode: Mode,
     #[serde(default)]
     pub time: TimeSpec,
+    /// Transit: wheelchair-accessible trips and stops only (when the feed says so).
+    #[serde(default)]
+    pub accessible: bool,
     #[serde(default)]
     pub avoid: Avoid,
     /// Max number of routes to return (>=1).
@@ -349,6 +352,9 @@ pub struct Route {
     /// "areaA", "areaB"); local engine only, empty for online routes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub avoid_violations: Vec<String>,
+    /// Fare per ticket (transit only; `transit::fares`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fare_breakdown: Vec<FareTicket>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -371,11 +377,14 @@ pub struct RouteResponse {
     /// Provider name for online results, e.g. "osrm" / "transitous".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Transit: why there is no (or little) service at the requested time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<ServiceNotice>,
 }
 
 impl RouteResponse {
     pub fn offline(routes: Vec<Route>, compute_ms: u64) -> Self {
-        Self { routes, compute_ms, source: RouteSource::Offline, provider: None }
+        Self { routes, compute_ms, source: RouteSource::Offline, provider: None, notice: None }
     }
 }
 
@@ -504,6 +513,9 @@ pub struct LineTimes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     pub directions: Vec<LineDirection>,
+    /// No departures left today: the first one after the break (Shabbat, night).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_service_iso: Option<String>,
 }
 
 /// One line on a stop's departure board; `next` = `(seconds from now, ISO time)` of the next
@@ -530,6 +542,9 @@ pub struct StopBoard {
     pub generated_iso: String,
     /// 0 = Sunday
     pub weekday: u32,
+    /// No departures left today: the first one after the break (Shabbat, night).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_service_iso: Option<String>,
 }
 
 /// One direction of a transit line: its longest stop pattern and shape.
@@ -1029,6 +1044,58 @@ pub struct PackageInfo {
 // ===== [R2] routing + navigation =====
 
 // ===== [R3] transit =====
+
+/// One ticket of a transit fare estimate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FareTicket {
+    /// Lines covered by the ticket ("1 + 18", the agency for unnamed trains).
+    pub label: String,
+    pub ils: f64,
+    pub train: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    Shabbat,
+    Holiday,
+    NoService,
+    LateNight,
+}
+
+/// Why transit service is missing (or starts much later) at the requested time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceNotice {
+    pub kind: NoticeKind,
+    /// First departure from the origin's stops after the break.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_service_iso: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_name: Option<String>,
+}
+
+/// A transit vehicle position (online, Open Bus Stride SIRI archive).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitVehiclePos {
+    pub lon: f64,
+    pub lat: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearing: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headsign: Option<String>,
+    pub updated_iso: String,
+}
+
+/// One band of an isochrone: everything reachable within `minutes`, as closed lon/lat rings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IsochroneBand {
+    pub minutes: u32,
+    pub rings: Vec<Vec<LonLat>>,
+}
 
 // ===== [R4] geocode =====
 

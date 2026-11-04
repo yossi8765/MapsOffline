@@ -1,8 +1,11 @@
 //! Compact GTFS model used by RAPTOR.
 //!
 //! Built once from the Ministry of Transport GTFS zip (streamed – `stop_times.txt` is ~1.5 GB of
-//! text and is never held in memory as a string) and serialized with bincode behind a
-//! `b"MOTR" + u32 VERSION` header.
+//! text and is never held in memory as a string) and written as raw little-endian arrays behind a
+//! `b"MOTR" + u32 VERSION` header and an `END!` trailer (`binfmt`); the indexes the planner needs
+//! (stop modes, the stop grid, search keys) are computed at build time and stored too, so loading
+//! is a handful of bulk reads. [`Transit::validate`] checks every index before the model is used:
+//! a damaged file is an error (`TRANSIT_DATA_CORRUPT`), never a panic.
 //!
 //! Layout (all indices are dense `u32`):
 //! * `stops`          – name / code / city (interned strings) + coordinates.
@@ -13,8 +16,11 @@
 //! * per pattern, trips are sorted by departure; times are stored trip-major in `arr`/`dep`
 //!   (`times_start + trip * n + pos`) as seconds since service-day midnight (may exceed 24h).
 //! * `service_bits`   – one bitmap per service_id over the feed's date range.
-//! * foot transfers   – CSR, stops within 400 m straight-line, ≤ 30 per stop,
-//!   duration = dist / 1.2 m/s + 60 s.
+//! * foot transfers   – CSR, stops within 400 m straight-line (and siblings of one parent
+//!   station), ≤ 30 per stop; duration = the walk on the road network when routing data is
+//!   present at build time, else dist / 1.2 m/s + 60 s; `transfers.txt` overrides.
+//! * optional per-stop / per-trip data (empty when the feed has none): wheelchair flags,
+//!   minimum change time at a stop (`transfers.txt` from = to), parent station.
 //! * shapes           – Douglas-Peucker simplified (≈4 m), 1e-6° fixed point; every pattern
 //!   position is mapped to a shape segment for leg geometry.
 
@@ -29,13 +35,17 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+use super::binfmt::{put, put_strings, Reader};
 use crate::geo::haversine_m;
 use crate::types::{GeoKind, GeoPrecision, GeoResult, LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOTR";
 /// 2: `dep` is empty when every departure equals the arrival (the MoT feed has no dwell times;
 /// that was 47 MB of duplicates).
-pub const VERSION: u32 = 2;
+/// 3: raw arrays instead of bincode, stored indexes, END trailer, wheelchair / transfers.txt /
+/// frequencies.txt / parent stations, agency time zones.
+pub const VERSION: u32 = 3;
+const END_MAGIC: &[u8; 4] = b"END!";
 pub const NONE: u32 = u32::MAX;
 /// pattern_flags bits
 pub const NO_PICKUP: u8 = 1;
@@ -52,6 +62,8 @@ pub const TRANSFER_RADIUS_M: f64 = 400.0;
 pub const TRANSFER_MAX_PER_STOP: usize = 30;
 pub const TRANSFER_SPEED_MPS: f64 = 1.2;
 pub const TRANSFER_PENALTY_S: f64 = 60.0;
+/// Stops of one parent station are transfer candidates up to this far apart.
+pub const SIBLING_RADIUS_M: f64 = 1000.0;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Stop {
@@ -86,7 +98,7 @@ pub struct Pattern {
     pub shape: u32,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Default)]
 pub struct Transit {
     /// `NaiveDate::num_days_from_ce()` of day 0 of the service bitmaps.
     pub feed_start: i32,
@@ -116,16 +128,32 @@ pub struct Transit {
     pub tr_dur: Vec<u32>,
     pub shape_start: Vec<u32>,
     pub shape_pts: Vec<[i32; 2]>,
-    // ----- derived at load time
-    #[serde(skip)]
+    // ----- optional GTFS data (empty vectors when the feed has none)
+    /// Interned parent_station id per stop, NONE without one.
+    pub stop_parent: Vec<u32>,
+    /// GTFS wheelchair_boarding per stop: 0 unknown, 1 accessible, 2 not accessible.
+    pub stop_wheelchair: Vec<u8>,
+    /// GTFS wheelchair_accessible per (global) trip: 0 unknown, 1 yes, 2 no.
+    pub trip_wheelchair: Vec<u8>,
+    /// Minimum change time at a stop in seconds (transfers.txt with from = to); 0 = default.
+    pub stop_min_change: Vec<u16>,
+    /// Interned agency_timezone per agency.
+    pub agency_tz: Vec<u32>,
+    // ----- indexes computed at build time (`finalize`), stored in the file
     pub stop_modes: Vec<u8>,
-    #[serde(skip)]
-    grid: FxHashMap<(i32, i32), Vec<u32>>,
-    #[serde(skip)]
-    search_keys: Vec<String>,
+    /// Stop grid (GRID_DEG cells) as CSR over sorted cell keys.
+    pub(crate) grid_keys: Vec<u64>,
+    pub(crate) grid_start: Vec<u32>,
+    pub(crate) grid_stops: Vec<u32>,
+    pub(crate) search_keys: Vec<String>,
 }
 
 const GRID_DEG: f64 = 0.01;
+
+#[inline]
+fn grid_code(x: i32, y: i32) -> u64 {
+    ((x as u32 as u64) << 32) | y as u32 as u64
+}
 
 impl Transit {
     #[inline]
@@ -306,18 +334,88 @@ impl Transit {
         let (x1, y1) = grid_key([p[0] + dlon, p[1] + dlat]);
         for x in x0..=x1 {
             for y in y0..=y1 {
-                if let Some(v) = self.grid.get(&(x, y)) {
-                    for &s in v {
-                        let d = haversine_m(p, self.lonlat(s));
-                        if d <= radius_m {
-                            out.push((s, d));
-                        }
+                for &s in self.grid_cell(x, y) {
+                    let d = haversine_m(p, self.lonlat(s));
+                    if d <= radius_m {
+                        out.push((s, d));
                     }
                 }
             }
         }
         out.sort_by(|a, b| a.1.total_cmp(&b.1));
         out
+    }
+
+    /// Served stops of one grid cell.
+    fn grid_cell(&self, x: i32, y: i32) -> &[u32] {
+        match self.grid_keys.binary_search(&grid_code(x, y)) {
+            Ok(i) => &self.grid_stops[self.grid_start[i] as usize..self.grid_start[i + 1] as usize],
+            Err(_) => &[],
+        }
+    }
+
+    /// Served stops inside `bbox` = [min_lon, min_lat, max_lon, max_lat], up to `limit`.
+    /// Walks the grid when the box covers fewer cells than the grid has, else scans every stop.
+    pub fn stops_in_bbox(&self, bbox: [f64; 4], limit: usize) -> Vec<u32> {
+        let inside = |s: u32| {
+            let st = &self.stops[s as usize];
+            st.lon >= bbox[0] && st.lon <= bbox[2] && st.lat >= bbox[1] && st.lat <= bbox[3]
+        };
+        let (x0, y0) = grid_key([bbox[0], bbox[1]]);
+        let (x1, y1) = grid_key([bbox[2], bbox[3]]);
+        let cells = (x1 as i64 - x0 as i64 + 1).max(0) * (y1 as i64 - y0 as i64 + 1).max(0);
+        let mut out = Vec::new();
+        if cells <= self.grid_keys.len() as i64 {
+            'outer: for x in x0..=x1 {
+                for y in y0..=y1 {
+                    for &s in self.grid_cell(x, y) {
+                        if inside(s) {
+                            out.push(s);
+                            if out.len() >= limit {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for s in 0..self.stops.len() as u32 {
+                if self.stop_is_served(s) && inside(s) {
+                    out.push(s);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Minimum change time (seconds) when changing vehicles at stop `s`.
+    #[inline]
+    pub fn min_change(&self, s: u32) -> i32 {
+        match self.stop_min_change.get(s as usize) {
+            Some(&v) if v > 0 => v as i32,
+            _ => super::raptor::TRANSFER_SLACK,
+        }
+    }
+
+    /// A wheelchair user can board / alight at `s` (unknown counts as yes).
+    #[inline]
+    pub fn stop_accessible(&self, s: u32) -> bool {
+        self.stop_wheelchair.get(s as usize).is_none_or(|&w| w != 2)
+    }
+
+    /// Global trip `g` is wheelchair accessible. When the feed has trip data only trips marked 1
+    /// count; a feed without it imposes no restriction.
+    #[inline]
+    pub fn trip_accessible(&self, g: u32) -> bool {
+        self.trip_wheelchair.is_empty() || self.trip_wheelchair.get(g as usize) == Some(&1)
+    }
+
+    /// Time zone of the feed (first agency's agency_timezone), "" when not given.
+    pub fn timezone(&self) -> &str {
+        self.agency_tz.first().map(|&z| self.s(z)).unwrap_or("")
     }
 
     /// Geometry of riding pattern `p` from `from` to `to` (positions), along the shape if any.
@@ -373,8 +471,14 @@ impl Transit {
             + v(&self.shape_start)
             + v(&self.shape_pts)
             + v(&self.stop_modes)
+            + v(&self.stop_parent)
+            + v(&self.stop_wheelchair)
+            + v(&self.trip_wheelchair)
+            + v(&self.stop_min_change)
+            + v(&self.grid_keys)
+            + v(&self.grid_start)
+            + v(&self.grid_stops)
             + self.search_keys.iter().map(|s| s.capacity() + size_of::<String>()).sum::<usize>()
-            + self.grid.values().map(|g| g.capacity() * 4 + 48).sum::<usize>()
     }
 
     /// Build derived (non-serialized) indexes.
@@ -393,13 +497,26 @@ impl Transit {
             }
         }
         self.stop_modes = modes;
-        let mut grid: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
-        for (i, s) in self.stops.iter().enumerate() {
-            if self.stop_is_served(i as u32) {
-                grid.entry(grid_key([s.lon, s.lat])).or_default().push(i as u32);
+        let mut cells: Vec<(u64, u32)> = (0..self.stops.len() as u32)
+            .filter(|&i| self.stop_is_served(i))
+            .map(|i| {
+                let s = &self.stops[i as usize];
+                let (x, y) = grid_key([s.lon, s.lat]);
+                (grid_code(x, y), i)
+            })
+            .collect();
+        cells.sort_unstable();
+        self.grid_keys.clear();
+        self.grid_start.clear();
+        self.grid_stops.clear();
+        for (k, s) in cells {
+            if self.grid_keys.last() != Some(&k) {
+                self.grid_keys.push(k);
+                self.grid_start.push(self.grid_stops.len() as u32);
             }
+            self.grid_stops.push(s);
         }
-        self.grid = grid;
+        self.grid_start.push(self.grid_stops.len() as u32);
         self.search_keys = self.stops.iter().map(|s| search_key(self.s(s.name))).collect();
     }
 }
@@ -410,24 +527,110 @@ fn grid_key(p: LonLat) -> (i32, i32) {
 
 // ====================================================================== load / save
 
+/// Load and validate `transit.bin`. An older format is `NO_TRANSIT_DATA` (the data panel
+/// offers the update); any damage is `TRANSIT_DATA_CORRUPT` – never a panic.
 pub fn load(path: &Path) -> Result<Transit> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut r = BufReader::with_capacity(1 << 20, f);
-    let mut hdr = [0u8; 8];
-    r.read_exact(&mut hdr)?;
-    if &hdr[..4] != MAGIC {
-        bail!("transit.bin: bad magic");
+    let len = f.metadata()?.len();
+    let mut r = Reader::new(BufReader::with_capacity(1 << 20, f), len);
+    let magic = r.magic().map_err(|_| anyhow!("TRANSIT_DATA_CORRUPT: transit.bin is too short"))?;
+    if &magic != MAGIC {
+        bail!("TRANSIT_DATA_CORRUPT: transit.bin has a bad header");
     }
-    let ver = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
+    let ver = u32::from_le_bytes(r.magic().map_err(|_| anyhow!("TRANSIT_DATA_CORRUPT: transit.bin is too short"))?);
     if ver != VERSION {
-        bail!("transit.bin: version {ver} != {VERSION}, rebuild transit data");
+        bail!("NO_TRANSIT_DATA: transit version {ver} is not supported by this program version (expected {VERSION}); update the public transport data");
     }
-    let mut t: Transit = bincode::deserialize_from(r).context("transit.bin: decode")?;
-    t.finalize();
+    let t = read_body(&mut r).map_err(|e| anyhow!("TRANSIT_DATA_CORRUPT: {e:#}"))?;
+    if &r.magic().map_err(|_| anyhow!("TRANSIT_DATA_CORRUPT: transit.bin is truncated"))? != END_MAGIC || r.left() != 0 {
+        bail!("TRANSIT_DATA_CORRUPT: transit.bin is truncated or has trailing data");
+    }
+    t.validate().map_err(|e| anyhow!("TRANSIT_DATA_CORRUPT: {e}"))?;
     Ok(t)
 }
 
-fn save(t: &Transit, out: &Path) -> Result<()> {
+fn read_body<R: Read>(r: &mut Reader<R>) -> Result<Transit> {
+    let mut t = Transit::default();
+    let head: Vec<i64> = r.get::<u64>()?.into_iter().map(|x| x as i64).collect();
+    if head.len() != 4 {
+        bail!("bad header block");
+    }
+    t.feed_start = head[0] as i32;
+    t.num_days = head[1] as u32;
+    t.num_services = head[2] as u32;
+    t.service_words = head[3] as u32;
+    t.strings = r.strings()?;
+    // stops (structure of arrays)
+    let names: Vec<u32> = r.get()?;
+    let codes: Vec<u32> = r.get()?;
+    let cities: Vec<u32> = r.get()?;
+    let lons: Vec<f64> = r.get()?;
+    let lats: Vec<f64> = r.get()?;
+    let n = names.len();
+    if codes.len() != n || cities.len() != n || lons.len() != n || lats.len() != n {
+        bail!("stop arrays differ in length");
+    }
+    t.stops = (0..n).map(|i| Stop { name: names[i], code: codes[i], city: cities[i], lon: lons[i], lat: lats[i] }).collect();
+    t.agencies = r.get()?;
+    t.agency_tz = r.get()?;
+    // routes
+    let ra: Vec<u32> = r.get()?;
+    let rs: Vec<u32> = r.get()?;
+    let rl: Vec<u32> = r.get()?;
+    let rt: Vec<u16> = r.get()?;
+    let rc: Vec<u32> = r.get()?;
+    let n = ra.len();
+    if rs.len() != n || rl.len() != n || rt.len() != n || rc.len() != n {
+        bail!("route arrays differ in length");
+    }
+    t.routes = (0..n)
+        .map(|i| RouteInfo { agency: ra[i], short_name: rs[i], long_name: rl[i], route_type: rt[i], color: (rc[i] != NONE).then_some(rc[i]) })
+        .collect();
+    // patterns: 7 u32 per pattern
+    let pf: Vec<u32> = r.get()?;
+    if !pf.len().is_multiple_of(7) {
+        bail!("pattern array length");
+    }
+    t.patterns = pf
+        .as_chunks::<7>()
+        .0
+        .iter()
+        .map(|c| Pattern { route: c[0], stops_start: c[1], n: c[2], trips_start: c[3], ntrips: c[4], times_start: c[5], shape: c[6] })
+        .collect();
+    t.pattern_stops = r.get()?;
+    t.pattern_flags = r.get()?;
+    t.pattern_shape_idx = r.get()?;
+    t.trip_service = r.get()?;
+    t.trip_headsign = r.get()?;
+    t.arr = r.get()?;
+    t.dep = r.get()?;
+    t.service_bits = r.get()?;
+    t.stop_pat_start = r.get()?;
+    t.stop_pat_pattern = r.get()?;
+    t.stop_pat_pos = r.get()?;
+    t.tr_start = r.get()?;
+    t.tr_to = r.get()?;
+    t.tr_dur = r.get()?;
+    t.shape_start = r.get()?;
+    let sp: Vec<i32> = r.get()?;
+    if !sp.len().is_multiple_of(2) {
+        bail!("shape point array length");
+    }
+    t.shape_pts = sp.as_chunks::<2>().0.iter().map(|c| [c[0], c[1]]).collect();
+    t.stop_parent = r.get()?;
+    t.stop_wheelchair = r.get()?;
+    t.trip_wheelchair = r.get()?;
+    t.stop_min_change = r.get()?;
+    t.stop_modes = r.get()?;
+    t.grid_keys = r.get()?;
+    t.grid_start = r.get()?;
+    t.grid_stops = r.get()?;
+    t.search_keys = r.strings()?;
+    Ok(t)
+}
+
+/// Write `transit.bin` v3 (`finalize` must have run).
+pub fn save(t: &Transit, out: &Path) -> Result<()> {
     if let Some(p) = out.parent() {
         std::fs::create_dir_all(p)?;
     }
@@ -435,62 +638,170 @@ fn save(t: &Transit, out: &Path) -> Result<()> {
     let mut w = BufWriter::with_capacity(1 << 20, f);
     w.write_all(MAGIC)?;
     w.write_all(&VERSION.to_le_bytes())?;
-    bincode::serialize_into(&mut w, t)?;
+    put(&mut w, &[t.feed_start as i64 as u64, t.num_days as u64, t.num_services as u64, t.service_words as u64])?;
+    put_strings(&mut w, &t.strings)?;
+    put(&mut w, &t.stops.iter().map(|s| s.name).collect::<Vec<_>>())?;
+    put(&mut w, &t.stops.iter().map(|s| s.code).collect::<Vec<_>>())?;
+    put(&mut w, &t.stops.iter().map(|s| s.city).collect::<Vec<_>>())?;
+    put(&mut w, &t.stops.iter().map(|s| s.lon).collect::<Vec<_>>())?;
+    put(&mut w, &t.stops.iter().map(|s| s.lat).collect::<Vec<_>>())?;
+    put(&mut w, &t.agencies)?;
+    put(&mut w, &t.agency_tz)?;
+    put(&mut w, &t.routes.iter().map(|r| r.agency).collect::<Vec<_>>())?;
+    put(&mut w, &t.routes.iter().map(|r| r.short_name).collect::<Vec<_>>())?;
+    put(&mut w, &t.routes.iter().map(|r| r.long_name).collect::<Vec<_>>())?;
+    put(&mut w, &t.routes.iter().map(|r| r.route_type).collect::<Vec<_>>())?;
+    put(&mut w, &t.routes.iter().map(|r| r.color.unwrap_or(NONE)).collect::<Vec<_>>())?;
+    let pf: Vec<u32> = t.patterns.iter().flat_map(|p| [p.route, p.stops_start, p.n, p.trips_start, p.ntrips, p.times_start, p.shape]).collect();
+    put(&mut w, &pf)?;
+    put(&mut w, &t.pattern_stops)?;
+    put(&mut w, &t.pattern_flags)?;
+    put(&mut w, &t.pattern_shape_idx)?;
+    put(&mut w, &t.trip_service)?;
+    put(&mut w, &t.trip_headsign)?;
+    put(&mut w, &t.arr)?;
+    put(&mut w, &t.dep)?;
+    put(&mut w, &t.service_bits)?;
+    put(&mut w, &t.stop_pat_start)?;
+    put(&mut w, &t.stop_pat_pattern)?;
+    put(&mut w, &t.stop_pat_pos)?;
+    put(&mut w, &t.tr_start)?;
+    put(&mut w, &t.tr_to)?;
+    put(&mut w, &t.tr_dur)?;
+    put(&mut w, &t.shape_start)?;
+    put(&mut w, &t.shape_pts.iter().flat_map(|p| [p[0], p[1]]).collect::<Vec<i32>>())?;
+    put(&mut w, &t.stop_parent)?;
+    put(&mut w, &t.stop_wheelchair)?;
+    put(&mut w, &t.trip_wheelchair)?;
+    put(&mut w, &t.stop_min_change)?;
+    put(&mut w, &t.stop_modes)?;
+    put(&mut w, &t.grid_keys)?;
+    put(&mut w, &t.grid_start)?;
+    put(&mut w, &t.grid_stops)?;
+    put_strings(&mut w, &t.search_keys)?;
+    w.write_all(END_MAGIC)?;
     w.flush()?;
     Ok(())
 }
 
+impl Transit {
+    /// Check every index the planner dereferences (CSR bounds, ranges, time table extents), so
+    /// that a damaged or hand-made model is an error at load time instead of a panic later.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        macro_rules! ensure {
+            ($c:expr, $($m:tt)*) => {
+                if !$c {
+                    return Err(format!($($m)*));
+                }
+            };
+        }
+        let ns = self.strings.len() as u64;
+        let str_ok = |i: u32| i == NONE || (i as u64) < ns;
+        let nstops = self.stops.len();
+        ensure!(self.num_days >= 1 && self.num_days <= 4000, "num_days {}", self.num_days);
+        ensure!(
+            NaiveDate::from_num_days_from_ce_opt(self.feed_start).is_some()
+                && NaiveDate::from_num_days_from_ce_opt(self.feed_start + self.num_days as i32).is_some(),
+            "feed start"
+        );
+        ensure!(self.service_words == self.num_days.div_ceil(64), "service words");
+        ensure!(self.service_bits.len() as u64 == self.num_services as u64 * self.service_words as u64, "service bitmap size");
+        for (i, s) in self.stops.iter().enumerate() {
+            ensure!(str_ok(s.name) && str_ok(s.code) && str_ok(s.city), "stop {i} strings");
+            ensure!(s.lon.is_finite() && s.lat.is_finite(), "stop {i} position");
+        }
+        ensure!(self.agencies.iter().all(|&a| str_ok(a)), "agency names");
+        ensure!(self.agency_tz.is_empty() || self.agency_tz.len() == self.agencies.len(), "agency time zones");
+        ensure!(self.agency_tz.iter().all(|&a| str_ok(a)), "agency time zones");
+        for (i, r) in self.routes.iter().enumerate() {
+            ensure!(r.agency == NONE || (r.agency as usize) < self.agencies.len(), "route {i} agency");
+            ensure!(str_ok(r.short_name) && str_ok(r.long_name), "route {i} names");
+        }
+        let nshapes = self.shape_start.len().saturating_sub(1);
+        ensure!(self.shape_start.first().is_none_or(|&x| x == 0), "shape start");
+        ensure!(self.shape_start.windows(2).all(|w| w[0] <= w[1]), "shape start order");
+        ensure!(self.shape_start.last().is_none_or(|&x| x as usize == self.shape_pts.len()), "shape points");
+        let np = self.pattern_stops.len();
+        ensure!(self.pattern_flags.len() == np && self.pattern_shape_idx.len() == np, "pattern arrays");
+        ensure!(self.pattern_stops.iter().all(|&s| (s as usize) < nstops), "pattern stop index");
+        let ntrips = self.trip_service.len();
+        ensure!(self.trip_headsign.len() == ntrips, "trip arrays");
+        ensure!(self.trip_service.iter().all(|&s| s < self.num_services), "trip service index");
+        ensure!(self.trip_headsign.iter().all(|&h| str_ok(h)), "trip headsign index");
+        ensure!(self.trip_wheelchair.is_empty() || self.trip_wheelchair.len() == ntrips, "trip wheelchair");
+        ensure!(self.dep.is_empty() || self.dep.len() == self.arr.len(), "departure times");
+        for (i, p) in self.patterns.iter().enumerate() {
+            ensure!((p.route as usize) < self.routes.len(), "pattern {i} route");
+            ensure!(p.n >= 1 && p.stops_start as u64 + p.n as u64 <= np as u64, "pattern {i} stops");
+            ensure!(p.trips_start as u64 + p.ntrips as u64 <= ntrips as u64, "pattern {i} trips");
+            ensure!(p.times_start as u64 + p.ntrips as u64 * p.n as u64 <= self.arr.len() as u64, "pattern {i} times");
+            ensure!(p.shape == NONE || (p.shape as usize) < nshapes, "pattern {i} shape");
+            if p.shape != NONE {
+                let seg = (self.shape_start[p.shape as usize + 1] - self.shape_start[p.shape as usize]) as u64;
+                let a = p.stops_start as usize;
+                ensure!(
+                    self.pattern_shape_idx[a..a + p.n as usize].iter().all(|&x| x == NONE || (x as u64) < seg),
+                    "pattern {i} shape index"
+                );
+            }
+        }
+        ensure!(self.stop_pat_start.len() == nstops + 1, "stop→pattern index size");
+        ensure!(self.stop_pat_start.first() == Some(&0), "stop→pattern start");
+        ensure!(self.stop_pat_start.windows(2).all(|w| w[0] <= w[1]), "stop→pattern order");
+        ensure!(
+            *self.stop_pat_start.last().unwrap() as usize == self.stop_pat_pattern.len() && self.stop_pat_pos.len() == self.stop_pat_pattern.len(),
+            "stop→pattern arrays"
+        );
+        for (k, &p) in self.stop_pat_pattern.iter().enumerate() {
+            ensure!((p as usize) < self.patterns.len() && self.stop_pat_pos[k] < self.patterns[p as usize].n, "stop→pattern entry {k}");
+        }
+        ensure!(self.tr_start.len() == nstops + 1, "transfer index size");
+        ensure!(self.tr_start.first() == Some(&0), "transfer start");
+        ensure!(self.tr_start.windows(2).all(|w| w[0] <= w[1]), "transfer order");
+        ensure!(*self.tr_start.last().unwrap() as usize == self.tr_to.len() && self.tr_dur.len() == self.tr_to.len(), "transfer arrays");
+        ensure!(self.tr_to.iter().all(|&s| (s as usize) < nstops), "transfer target");
+        for (name, len) in [
+            ("stop parent", self.stop_parent.len()),
+            ("stop wheelchair", self.stop_wheelchair.len()),
+            ("stop change time", self.stop_min_change.len()),
+        ] {
+            ensure!(len == 0 || len == nstops, "{name} size");
+        }
+        ensure!(self.stop_parent.iter().all(|&p| str_ok(p)), "stop parent");
+        ensure!(self.stop_modes.len() == nstops && self.search_keys.len() == nstops, "stop indexes");
+        ensure!(self.grid_start.len() == self.grid_keys.len() + 1, "grid size");
+        ensure!(self.grid_start.first() == Some(&0) && self.grid_start.windows(2).all(|w| w[0] <= w[1]), "grid order");
+        ensure!(*self.grid_start.last().unwrap() as usize == self.grid_stops.len(), "grid stops");
+        ensure!(self.grid_keys.windows(2).all(|w| w[0] < w[1]), "grid keys");
+        ensure!(self.grid_stops.iter().all(|&s| (s as usize) < nstops), "grid stop index");
+        Ok(())
+    }
+}
+
 // ====================================================================== search
 
-/// Lower-case, strip quotes/geresh/punctuation, collapse whitespace.
-/// Normalized text with the abbreviations the MOT feed uses in stop names spelled out, so that
-/// "תחנה מרכזית ירושלים" matches "ת. מרכזית ירושלים/יפו" (applied to stop names and queries alike).
+/// Search key of a stop name or a query: the geocoder's normalization (`geocode::norm::norm`:
+/// lower case, no niqqud / geresh / punctuation, final letters folded – one normalizer for
+/// stops and places, so their scores mean the same) with the abbreviations the MOT feed uses in
+/// stop names spelled out, so that "תחנה מרכזית ירושלים" matches "ת. מרכזית ירושלים/יפו".
 pub fn search_key(s: &str) -> String {
-    let n = normalize(s);
+    let n = crate::geocode::norm::norm(s);
     let mut out = String::with_capacity(n.len() + 8);
     for (i, tok) in n.split(' ').enumerate() {
         if i > 0 {
             out.push(' ');
         }
+        // (final letters are folded by norm: "קופת חולימ")
         out.push_str(match tok {
             "ת" => "תחנה",
             "רח" => "רחוב",
             "שד" => "שדרות",
             "ביס" => "בית ספר",
-            "ביח" => "בית חולים",
-            "קופח" => "קופת חולים",
+            "ביח" => "בית חולימ",
+            "קופח" => "קופת חולימ",
             "ביהכנ" | "ביהכנס" => "בית כנסת",
             _ => tok,
         });
-    }
-    out
-}
-
-pub fn normalize(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut space = true;
-    for c in s.chars() {
-        let c = match c {
-            '"' | '\'' | '\u{05F3}' | '\u{05F4}' | '`' | '\u{2019}' | '\u{201D}' => continue,
-            '-' | ',' | '.' | '/' | '(' | ')' | '_' => ' ',
-            // strip Hebrew points (niqqud / cantillation)
-            '\u{0591}'..='\u{05C7}' => continue,
-            c => c,
-        };
-        if c.is_whitespace() {
-            if !space {
-                out.push(' ');
-                space = true;
-            }
-        } else {
-            for l in c.to_lowercase() {
-                out.push(l);
-            }
-            space = false;
-        }
-    }
-    while out.ends_with(' ') {
-        out.pop();
     }
     out
 }
@@ -820,7 +1131,16 @@ struct CalRow {
     end: NaiveDate,
 }
 
+/// Walking seconds from one point to each target (None = no way found); used for the stop-to-stop
+/// transfers at build time. See `transit::walk_times_from`.
+pub type TransferWalk<'a> = &'a (dyn Fn(LonLat, &[LonLat]) -> Vec<Option<f32>> + Sync);
+
+/// Build without a road network (straight-line transfers).
 pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
+    build_with(gtfs_zip, out, progress, None)
+}
+
+pub fn build_with(gtfs_zip: &Path, out: &Path, progress: ProgressFn, walk: Option<TransferWalk>) -> Result<()> {
     let t0 = std::time::Instant::now();
     let p = |done: u64, total: u64, msg: &str| progress(ProgressPhase::Processing, done, total, msg);
     let f = File::open(gtfs_zip).with_context(|| format!("open {}", gtfs_zip.display()))?;
@@ -833,15 +1153,23 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     }
     let mut agency_map: FxHashMap<String, u32> = FxHashMap::default();
     let mut agencies: Vec<u32> = Vec::new();
-    let mut ix: Option<(Option<usize>, Option<usize>)> = None;
+    let mut agency_tz: Vec<u32> = Vec::new();
+    let mut ix: Option<(Option<usize>, Option<usize>, Option<usize>)> = None;
     read_table(&mut zip, "agency.txt", false, |c, r, _, _| {
-        let (i_id, i_name) = *ix.get_or_insert_with(|| (c.idx("agency_id"), c.idx("agency_name")));
+        let (i_id, i_name, i_tz) = *ix.get_or_insert_with(|| (c.idx("agency_id"), c.idx("agency_name"), c.idx("agency_timezone")));
         let id = fstr(r, i_id);
         let name = strings.get(&fstr(r, i_name));
         agency_map.insert(id, agencies.len() as u32);
         agencies.push(name);
+        agency_tz.push(strings.get(&fstr(r, i_tz)));
         Ok(())
     })?;
+    for &z in &agency_tz {
+        let tz = if z == NONE { "" } else { strings.strings[z as usize].as_str() };
+        if !tz.is_empty() && tz != "Asia/Jerusalem" {
+            log::warn!("GTFS: agency_timezone {tz}: times are interpreted as Asia/Jerusalem");
+        }
+    }
 
     // ------------------------------------------------ routes
     if !p(0, 0, "GTFS: קווים") {
@@ -980,7 +1308,11 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     }
     let mut stop_map: FxHashMap<String, u32> = FxHashMap::default();
     let mut stops: Vec<Stop> = Vec::new();
-    let mut ix: Option<[Option<usize>; 7]> = None;
+    let mut stop_parent: Vec<u32> = Vec::new();
+    let mut stop_wheelchair: Vec<u8> = Vec::new();
+    // wheelchair_boarding of stations, inherited by their stops that say 0
+    let mut station_wb: FxHashMap<u32, u8> = FxHashMap::default();
+    let mut ix: Option<[Option<usize>; 9]> = None;
     read_table(&mut zip, "stops.txt", true, |c, r, _, _| {
         let i = *ix.get_or_insert_with(|| {
             [
@@ -991,9 +1323,19 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                 c.idx("stop_lat"),
                 c.idx("stop_lon"),
                 c.idx("location_type"),
+                c.idx("parent_station"),
+                c.idx("wheelchair_boarding"),
             ]
         });
         let lt = field(r, i[6]);
+        let wb = parse_u32(field(r, i[8])).unwrap_or(0).min(2) as u8;
+        if lt == b"1" {
+            let id = strings.get(&fstr(r, i[0]));
+            if wb != 0 && id != NONE {
+                station_wb.insert(id, wb);
+            }
+            return Ok(());
+        }
         if !(lt.is_empty() || lt == b"0") {
             return Ok(());
         }
@@ -1012,8 +1354,23 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         };
         stop_map.insert(fstr(r, i[0]), stops.len() as u32);
         stops.push(st);
+        stop_parent.push(strings.get(&fstr(r, i[7])));
+        stop_wheelchair.push(wb);
         Ok(())
     })?;
+    for (k, w) in stop_wheelchair.iter_mut().enumerate() {
+        if *w == 0 {
+            if let Some(&pw) = station_wb.get(&stop_parent[k]) {
+                *w = pw;
+            }
+        }
+    }
+    if stop_wheelchair.iter().all(|&w| w == 0) {
+        stop_wheelchair = Vec::new();
+    }
+    if stop_parent.iter().all(|&p| p == NONE) {
+        stop_parent = Vec::new();
+    }
 
     // ------------------------------------------------ trips
     if !p(0, 0, "GTFS: נסיעות") {
@@ -1024,11 +1381,12 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     let mut trip_svc: Vec<u32> = Vec::new();
     let mut trip_head: Vec<u32> = Vec::new();
     let mut trip_shape: Vec<u32> = Vec::new();
+    let mut trip_wb: Vec<u8> = Vec::new();
     let mut shape_map: FxHashMap<Box<str>, u32> = FxHashMap::default();
-    let mut ix: Option<[Option<usize>; 5]> = None;
+    let mut ix: Option<[Option<usize>; 6]> = None;
     read_table(&mut zip, "trips.txt", true, |c, r, _, _| {
         let i = *ix.get_or_insert_with(|| {
-            [c.idx("route_id"), c.idx("service_id"), c.idx("trip_id"), c.idx("trip_headsign"), c.idx("shape_id")]
+            [c.idx("route_id"), c.idx("service_id"), c.idx("trip_id"), c.idx("trip_headsign"), c.idx("shape_id"), c.idx("wheelchair_accessible")]
         });
         let Some(&route) = route_map.get(&fstr(r, i[0])) else { return Ok(()) };
         let Some(&svc) = svc_map.get(&fstr(r, i[1])) else { return Ok(()) };
@@ -1044,9 +1402,30 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         trip_svc.push(svc);
         trip_head.push(strings.get(&fstr(r, i[3])));
         trip_shape.push(shape);
+        trip_wb.push(parse_u32(field(r, i[5])).unwrap_or(0).min(2) as u8);
         Ok(())
     })?;
     let ntrips = trip_route.len();
+    let has_trip_wb = trip_wb.iter().any(|&w| w != 0);
+
+    // ------------------------------------------------ frequencies (trips repeated every headway)
+    let mut freq: FxHashMap<u32, Vec<(u32, u32, u32)>> = FxHashMap::default();
+    {
+        let mut ix: Option<[Option<usize>; 4]> = None;
+        read_table(&mut zip, "frequencies.txt", false, |c, r, _, _| {
+            let i = *ix.get_or_insert_with(|| [c.idx("trip_id"), c.idx("start_time"), c.idx("end_time"), c.idx("headway_secs")]);
+            let Some(&trip) = std::str::from_utf8(field(r, i[0])).ok().and_then(|s| trip_map.get(s)) else { return Ok(()) };
+            if let (Some(a), Some(b), Some(h)) = (parse_time(field(r, i[1])), parse_time(field(r, i[2])), parse_u32(field(r, i[3]))) {
+                if h > 0 && b > a {
+                    freq.entry(trip).or_default().push((a, b, h));
+                }
+            }
+            Ok(())
+        })?;
+        if !freq.is_empty() {
+            log::info!("GTFS: frequencies.txt: {} trips repeated by headway", freq.len());
+        }
+    }
     log::info!("GTFS: {} stops, {} routes, {} trips, {} services, {} days", stops.len(), routes.len(), ntrips, num_services, num_days);
 
     // ------------------------------------------------ stop_times (streamed)
@@ -1217,6 +1596,7 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     let mut pattern_flags: Vec<u8> = Vec::new();
     let mut trip_service: Vec<u32> = Vec::new();
     let mut trip_headsign: Vec<u32> = Vec::new();
+    let mut trip_wheelchair: Vec<u8> = Vec::new();
     let mut pattern_rep_shape: Vec<u32> = Vec::new();
     let mut done_trips = 0u64;
     for (pid, trips) in raw_trips.iter().enumerate() {
@@ -1231,7 +1611,19 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
             if !interpolate(&mut a, &mut d) {
                 continue;
             }
-            tt.push((trip, a, d));
+            match freq.get(&trip) {
+                // a frequency-based trip: its stop_times are a template, shifted to every start
+                Some(windows) => {
+                    for &(start, end, headway) in windows {
+                        for t in expand_headway(start, end, headway) {
+                            let off = t as i64 - d[0] as i64;
+                            let sh = |v: &Vec<u32>| v.iter().map(|&x| (x as i64 + off).max(0) as u32).collect::<Vec<u32>>();
+                            tt.push((trip, sh(&a), sh(&d)));
+                        }
+                    }
+                }
+                None => tt.push((trip, a, d)),
+            }
         }
         done_trips += trips.len() as u64;
         if tt.is_empty() {
@@ -1268,6 +1660,9 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                 dep_out.extend_from_slice(d);
                 trip_service.push(trip_svc[*trip as usize]);
                 trip_headsign.push(trip_head[*trip as usize]);
+                if has_trip_wb {
+                    trip_wheelchair.push(trip_wb[*trip as usize]);
+                }
                 if shape == NONE {
                     shape = trip_shape[*trip as usize];
                 }
@@ -1425,7 +1820,17 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     }
 
     // ------------------------------------------------ foot transfers
+    if !p(0, 0, if walk.is_some() { "GTFS: מעברים בין תחנות ברשת הדרכים" } else { "GTFS: מעברים בין תחנות" }) {
+        bail!("cancelled");
+    }
     let served: Vec<bool> = (0..nstops).map(|s| stop_pat_start[s + 1] > stop_pat_start[s]).collect();
+    // stops of one parent station are always transfer candidates (up to SIBLING_RADIUS_M)
+    let mut siblings: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+    for (i, &par) in stop_parent.iter().enumerate() {
+        if par != NONE && served[i] {
+            siblings.entry(par).or_default().push(i as u32);
+        }
+    }
     let cell = 0.005f64;
     let mut grid: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
     for (i, s) in stops.iter().enumerate() {
@@ -1457,13 +1862,74 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
                     }
                 }
             }
+            if let Some(sib) = stop_parent.get(i).filter(|&&p| p != NONE).and_then(|p| siblings.get(p)) {
+                for &j in sib {
+                    if j as usize != i && !c.iter().any(|x| x.1 == j) {
+                        let d = haversine_m([s.lon, s.lat], [stops[j as usize].lon, stops[j as usize].lat]);
+                        if d <= SIBLING_RADIUS_M {
+                            c.push((d, j));
+                        }
+                    }
+                }
+            }
             c.sort_by(|a, b| a.0.total_cmp(&b.0));
             c.truncate(TRANSFER_MAX_PER_STOP);
+            // walking time on the road network when it is available (None = no path found:
+            // keep the straight-line estimate), else straight line at 1.2 m/s
+            let road: Vec<Option<f32>> = match walk {
+                Some(w) if !c.is_empty() => {
+                    let targets: Vec<LonLat> = c.iter().map(|&(_, j)| [stops[j as usize].lon, stops[j as usize].lat]).collect();
+                    w([s.lon, s.lat], &targets)
+                }
+                _ => Vec::new(),
+            };
             c.into_iter()
-                .map(|(d, j)| (j, (d / TRANSFER_SPEED_MPS + TRANSFER_PENALTY_S).round() as u32))
+                .enumerate()
+                .map(|(k, (d, j))| {
+                    let walk_s = road.get(k).copied().flatten().map(|x| x as f64).unwrap_or(d / TRANSFER_SPEED_MPS);
+                    (j, (walk_s + TRANSFER_PENALTY_S).round() as u32)
+                })
                 .collect()
         })
         .collect();
+    let mut lists = lists;
+    // transfers.txt: type 2 sets the time (from = to: minimum change time at the stop), type 3
+    // forbids the transfer; types 0/1 keep the computed walk.
+    let mut stop_min_change: Vec<u16> = Vec::new();
+    {
+        let mut ix: Option<[Option<usize>; 4]> = None;
+        let mut rows = 0usize;
+        read_table(&mut zip, "transfers.txt", false, |c, r, _, _| {
+            let i = *ix.get_or_insert_with(|| [c.idx("from_stop_id"), c.idx("to_stop_id"), c.idx("transfer_type"), c.idx("min_transfer_time")]);
+            let get = |k: usize| std::str::from_utf8(field(r, i[k])).ok().and_then(|s| stop_map.get(s).copied());
+            let (Some(a), Some(b)) = (get(0), get(1)) else { return Ok(()) };
+            let kind = parse_u32(field(r, i[2])).unwrap_or(0);
+            let min = parse_u32(field(r, i[3]));
+            rows += 1;
+            if a == b {
+                if let (2, Some(m)) = (kind, min) {
+                    if stop_min_change.is_empty() {
+                        stop_min_change = vec![0; nstops];
+                    }
+                    stop_min_change[a as usize] = m.min(u16::MAX as u32) as u16;
+                }
+                return Ok(());
+            }
+            let l = &mut lists[a as usize];
+            match (kind, min) {
+                (3, _) => l.retain(|x| x.0 != b),
+                (2, Some(m)) if served[a as usize] && served[b as usize] => match l.iter_mut().find(|x| x.0 == b) {
+                    Some(x) => x.1 = m,
+                    None => l.push((b, m)),
+                },
+                _ => {}
+            }
+            Ok(())
+        })?;
+        if rows > 0 {
+            log::info!("GTFS: transfers.txt: {rows} rules applied");
+        }
+    }
     let mut tr_start = Vec::with_capacity(nstops + 1);
     let mut tr_to = Vec::new();
     let mut tr_dur = Vec::new();
@@ -1476,12 +1942,17 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         tr_start.push(tr_to.len() as u32);
     }
 
-    let t = Transit {
+    let mut t = Transit {
         feed_start,
         num_days,
         strings: strings.strings,
         stops,
         agencies,
+        agency_tz,
+        stop_parent,
+        stop_wheelchair,
+        trip_wheelchair,
+        stop_min_change,
         routes,
         patterns,
         pattern_stops,
@@ -1504,6 +1975,8 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
         shape_pts,
         ..Default::default()
     };
+    t.finalize();
+    t.validate().map_err(|e| anyhow!("GTFS: the built model is inconsistent: {e}"))?;
     progress(ProgressPhase::Finalizing, 0, 0, "GTFS: שמירת קובץ הנתונים");
     save(&t, out)?;
     log::info!(
@@ -1519,6 +1992,11 @@ pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
 
 fn total_or(x: u64) -> u64 {
     x.max(1)
+}
+
+/// Start times of a frequencies.txt window: `start`, `start + headway`, … before `end`.
+fn expand_headway(start: u32, end: u32, headway: u32) -> impl Iterator<Item = u32> {
+    (0..).map(move |k: u32| start + k * headway).take_while(move |&t| t < end).take(2000)
 }
 
 /// Fill missing (NONE) times by linear interpolation by position. Ensures monotonicity.
@@ -1581,10 +2059,12 @@ mod tests {
 
     #[test]
     fn stop_search_keys() {
-        assert_eq!(search_key("ת. מרכזית ירושלים/יפו"), "תחנה מרכזית ירושלים יפו");
-        assert_eq!(search_key("תחנה מרכזית ירושלים"), "תחנה מרכזית ירושלים");
+        // the geocoder's normalizer folds final letters (ם → מ): stops and queries alike
+        assert_eq!(search_key("ת. מרכזית ירושלים/יפו"), "תחנה מרכזית ירושלימ יפו");
+        assert_eq!(search_key("תחנה מרכזית ירושלים"), search_key("ת. מרכזית ירושלים"));
         assert_eq!(search_key("ביה\"ס אורט"), "ביהס אורט");
-        assert_eq!(search_key("בי\"ס רמב\"ם"), "בית ספר רמבם");
+        assert_eq!(search_key("בי\"ס רמב\"ם"), "בית ספר רמבמ");
+        assert_eq!(search_key("ביח מאיר"), search_key("בית חולים מאיר"));
     }
 
     #[test]

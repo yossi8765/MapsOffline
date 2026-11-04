@@ -412,7 +412,7 @@ mod tests {
             step("הגעת ליעד", Maneuver::Arrive, 16, 0.0, 0.0),
         ];
         let leg = Leg { kind: LegKind::Drive, duration_sec: 192.0, distance_m: 1600.0, geometry: g.clone(), depart_iso: None, arrive_iso: None, steps, transit: None };
-        Route { id: "r1".into(), mode: Mode::Car, duration_sec: 192.0, distance_m: 1600.0, geometry: g, legs: vec![leg], tags: vec![], depart_iso: None, arrive_iso: None, transfers: 0, walk_m: 0.0, fare_estimate_ils: None, fare_note: None, avoid_violations: vec![] }
+        Route { id: "r1".into(), mode: Mode::Car, duration_sec: 192.0, distance_m: 1600.0, geometry: g, legs: vec![leg], tags: vec![], depart_iso: None, arrive_iso: None, transfers: 0, walk_m: 0.0, fare_estimate_ils: None, fare_note: None, avoid_violations: vec![], fare_breakdown: vec![] }
     }
 
     fn now() -> chrono::DateTime<chrono::FixedOffset> {

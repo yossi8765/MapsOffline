@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 use anyhow::{bail, Result};
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Asia::Jerusalem;
 use chrono_tz::Tz;
 use rayon::prelude::*;
@@ -36,14 +36,30 @@ pub const ALT_WINDOW_S: i32 = 3600;
 /// Plain re-run this long before a journey the walk check rejected.
 const RETRY_SLACK_S: i32 = 180;
 
-/// Resolve the request time to (local service date, seconds since local midnight, arrive_by).
+/// Resolve the request time to (local service date, GTFS seconds of that service day, arrive_by).
 pub fn resolve_time(ts: &TimeSpec) -> Result<(NaiveDate, i32, bool)> {
     let arrive_by = ts.kind == TimeKind::Arrive;
     let local: DateTime<Tz> = match (&ts.kind, &ts.iso) {
         (TimeKind::Now, _) | (_, None) => Utc::now().with_timezone(&Jerusalem),
         (_, Some(iso)) => parse_iso(iso)?,
     };
-    Ok((local.date_naive(), local.num_seconds_from_midnight() as i32, arrive_by))
+    let (date, secs) = gtfs_time_of(local);
+    Ok((date, secs, arrive_by))
+}
+
+/// The instant GTFS times of service day `date` count from: "noon minus 12 h" (GTFS reference).
+/// That is local midnight, except on the two daylight-saving days, when it is an hour off – so
+/// "08:00:00" is 08:00 on the clock on those days too.
+pub fn service_origin(date: NaiveDate) -> DateTime<Utc> {
+    let noon = date.and_hms_opt(12, 0, 0).expect("valid time");
+    let noon = Jerusalem.from_local_datetime(&noon).single().unwrap_or_else(|| Jerusalem.from_utc_datetime(&(noon - Duration::hours(2))));
+    noon.with_timezone(&Utc) - Duration::hours(12)
+}
+
+/// (service date, GTFS seconds of that day) of a local moment.
+pub fn gtfs_time_of(local: DateTime<Tz>) -> (NaiveDate, i32) {
+    let date = local.date_naive();
+    (date, (local.with_timezone(&Utc) - service_origin(date)).num_seconds() as i32)
 }
 
 pub fn parse_iso(iso: &str) -> Result<DateTime<Tz>> {
@@ -62,23 +78,22 @@ pub fn parse_iso(iso: &str) -> Result<DateTime<Tz>> {
     bail!("bad time: {iso}")
 }
 
-/// ISO-8601 (Asia/Jerusalem) of `secs` after local midnight of `date` (secs may be <0 or >86400).
+/// ISO-8601 (Asia/Jerusalem) of GTFS time `secs` of service day `date` (secs may be <0 or >86400).
 pub fn iso_at(date: NaiveDate, secs: i32) -> String {
-    let n = date.and_hms_opt(0, 0, 0).unwrap() + Duration::seconds(secs as i64);
-    let dt = match Jerusalem.from_local_datetime(&n).earliest() {
-        Some(d) => d,
-        None => Jerusalem.from_utc_datetime(&(n - Duration::hours(2))),
-    };
-    dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    (service_origin(date) + Duration::seconds(secs as i64)).with_timezone(&Jerusalem).format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 fn color_hex(c: Option<u32>) -> Option<String> {
     c.map(|c| format!("#{c:06X}"))
 }
 
-/// Stops used for access/egress: nearest 20 within 1.2 km plus extra rail/light-rail stops.
-fn candidate_stops(t: &Transit, p: LonLat) -> Vec<u32> {
-    let near = t.stops_near(p, ACCESS_RADIUS_M);
+/// Stops used for access/egress: nearest 20 within 1.2 km plus extra rail/light-rail stops
+/// (wheelchair: accessible stops only).
+pub(crate) fn candidate_stops(t: &Transit, p: LonLat, accessible: bool) -> Vec<u32> {
+    let mut near = t.stops_near(p, ACCESS_RADIUS_M);
+    if accessible {
+        near.retain(|x| t.stop_accessible(x.0));
+    }
     let mut out: Vec<u32> = near.iter().take(ACCESS_MAX_STOPS).map(|x| x.0).collect();
     let extra = near
         .iter()
@@ -117,8 +132,9 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
     let want = (req.alternatives.max(1) as usize).min(MAX_ALTERNATIVES);
     let nseg = pts.len() - 1;
 
+    let acc = req.accessible;
     let list: Vec<Cand> = if nseg == 1 {
-        plan_segment(t, pts[0], pts[1], date, secs, arrive_by, want, true, walker)?
+        plan_segment(t, pts[0], pts[1], date, secs, arrive_by, want, true, acc, walker)?
     } else {
         // Chain segments. The anchor segment (first for depart-at, last for arrive-by) gets the
         // full alternatives search; every alternative is then extended segment by segment with
@@ -129,14 +145,14 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
             cache
                 .entry((seg, tq))
                 .or_insert_with(|| {
-                    plan_segment(t, pts[seg], pts[seg + 1], date, tq, arrive_by, 1, false, walker)
+                    plan_segment(t, pts[seg], pts[seg + 1], date, tq, arrive_by, 1, false, acc, walker)
                         .ok()
                         .and_then(|v| v.into_iter().next())
                 })
                 .clone()
         };
         let anchor = if arrive_by { nseg - 1 } else { 0 };
-        let first = plan_segment(t, pts[anchor], pts[anchor + 1], date, secs, arrive_by, want, true, walker)?;
+        let first = plan_segment(t, pts[anchor], pts[anchor + 1], date, secs, arrive_by, want, true, acc, walker)?;
         let mut combined = Vec::new();
         'alt: for c in first {
             let mut chain = vec![c];
@@ -169,7 +185,9 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
     }
     tag_routes(&mut routes);
     super::fares::annotate(&mut routes);
-    Ok(RouteResponse::offline(routes, t0.elapsed().as_millis() as u64))
+    let mut resp = RouteResponse::offline(routes, t0.elapsed().as_millis() as u64);
+    resp.notice = super::notice::service_notice(t, req, &resp.routes);
+    Ok(resp)
 }
 
 /// Concatenate chronologically ordered segment candidates into one.
@@ -206,6 +224,7 @@ fn combine(chain: Vec<Cand>) -> Cand {
         fare_estimate_ils: None,
         fare_note: None,
         avoid_violations: vec![],
+        fare_breakdown: vec![],
     };
     Cand { route, dep, arr, seq, transit: chain.iter().any(|c| c.transit) }
 }
@@ -222,6 +241,7 @@ fn plan_segment(
     arrive_by: bool,
     want: usize,
     full: bool,
+    accessible: bool,
     walker: &dyn WalkRouter,
 ) -> Result<Vec<Cand>> {
     let shift_days = secs.div_euclid(DAY);
@@ -235,8 +255,8 @@ fn plan_segment(
         bail!("NO_TRANSIT_SERVICE_ON_DATE");
     }
     if let Some(day) = day {
-        let acc_stops = candidate_stops(t, o);
-        let egr_stops = candidate_stops(t, d);
+        let acc_stops = candidate_stops(t, o, accessible);
+        let egr_stops = candidate_stops(t, d, accessible);
         // Access/egress durations come from the walker (road network when available), so the
         // boarding times RAPTOR picks already account for real walking detours.
         let access: Vec<(u32, Leg)> =
@@ -268,6 +288,7 @@ fn plan_segment(
                     targets: &targets,
                     max_trips: raptor::MAX_TRIPS,
                     banned_routes: banned,
+                    accessible,
                 };
                 if window > 0 {
                     raptor::run_range(t, &q, window)
@@ -391,6 +412,7 @@ fn plan_segment(
             fare_estimate_ils: None,
             fare_note: None,
             avoid_violations: vec![],
+            fare_breakdown: vec![],
         };
         cands.push(Cand { route, dep, arr, seq: vec![], transit: false });
     }
@@ -667,6 +689,7 @@ fn build_route(
         fare_estimate_ils: None,
         fare_note: None,
         avoid_violations: vec![],
+        fare_breakdown: vec![],
     };
     Some((route, cur))
 }

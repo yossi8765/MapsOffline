@@ -238,10 +238,11 @@ pub fn route(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse
             fare_estimate_ils: None,
             fare_note: None,
             avoid_violations: vec![],
+            fare_breakdown: vec![],
         });
     }
     tag_routes(&mut routes);
-    Ok(RouteResponse { routes, compute_ms: t0.elapsed().as_millis() as u64, source: RouteSource::Online, provider: Some("osrm".into()) })
+    Ok(RouteResponse { routes, compute_ms: t0.elapsed().as_millis() as u64, source: RouteSource::Online, provider: Some("osrm".into()), notice: None })
 }
 
 fn tag_routes(routes: &mut [Route]) {
@@ -278,6 +279,7 @@ mod tests {
             waypoints: vec![Waypoint { lon: 34.7818, lat: 32.0853, name: None }, Waypoint { lon: 35.2137, lat: 31.7683, name: None }],
             mode: Mode::Car,
             time: TimeSpec::default(),
+            accessible: false,
             avoid: Avoid::default(),
             alternatives: 3,
         };

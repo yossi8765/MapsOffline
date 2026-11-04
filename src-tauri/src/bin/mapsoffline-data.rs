@@ -171,6 +171,27 @@ enum Cmd {
     AppCheck,
     /// Download + verify the newest signed installer into the update folder (does not run it)
     AppDownload,
+    /// Convert a transit.bin v2 (bincode) into the current format, no GTFS zip needed
+    TransitConvert {
+        src: String,
+        dst: String,
+    },
+    /// Build transit.bin from a GTFS zip; stop-to-stop transfers are walked on the installed
+    /// road graph unless --no-graph
+    TransitBuild {
+        gtfs: String,
+        out: String,
+        #[arg(long)]
+        no_graph: bool,
+    },
+    /// Transit planning latencies (TA→Jerusalem depart/arrive, Haifa→Beersheba, isochrone,
+    /// stops layer) on the installed or a given transit.bin (use --release)
+    TransitBench {
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        iters: usize,
+    },
     /// Measure load / query latencies on the installed data (use --release)
     Bench {
         #[arg(long, default_value_t = 5)]
@@ -401,6 +422,7 @@ fn main() -> anyhow::Result<()> {
                     Some(iso) => TimeSpec { kind: if arrive { TimeKind::Arrive } else { TimeKind::Depart }, iso: Some(iso) },
                     None => TimeSpec::default(),
                 },
+                accessible: false,
                 avoid,
                 alternatives,
             };
@@ -660,6 +682,26 @@ fn main() -> anyhow::Result<()> {
             println!("geocoder {geo_ms:.1} ms, stops {stop_ms:.1} ms");
         }
         Cmd::Bench { iters } => bench::run(&paths, iters.max(1))?,
+        Cmd::TransitConvert { src, dst } => {
+            let t0 = std::time::Instant::now();
+            let t = mapsoffline_lib::transit::legacy::load_v2(std::path::Path::new(&src))?;
+            mapsoffline_lib::transit::model::save(&t, std::path::Path::new(&dst))?;
+            println!("converted in {:?}: {} stops, {} patterns, {} bytes", t0.elapsed(), t.stops.len(), t.patterns.len(), std::fs::metadata(&dst)?.len());
+        }
+        Cmd::TransitBuild { gtfs, out, no_graph } => {
+            let graph = if no_graph { None } else { mapsoffline_lib::routing::load_graph(&paths.graph_file()).ok() };
+            println!("road graph for transfers: {}", if graph.is_some() { "yes" } else { "no" });
+            let t0 = std::time::Instant::now();
+            let progress = |_: ProgressPhase, done: u64, total: u64, msg: &str| {
+                if total == 0 || done == total {
+                    eprintln!("{msg}");
+                }
+                true
+            };
+            mapsoffline_lib::transit::build_with_graph(std::path::Path::new(&gtfs), std::path::Path::new(&out), &progress, graph.as_ref())?;
+            println!("built in {:?}: {} bytes", t0.elapsed(), std::fs::metadata(&out)?.len());
+        }
+        Cmd::TransitBench { file, iters } => bench::transit(&paths, file.as_deref(), iters.max(1))?,
     }
     Ok(())
 }
@@ -675,9 +717,72 @@ mod bench {
             waypoints: vec![Waypoint { lon: from[0], lat: from[1], name: None }, Waypoint { lon: to[0], lat: to[1], name: None }],
             mode,
             time: TimeSpec::default(),
+            accessible: false,
             avoid: Avoid::default(),
             alternatives,
         }
+    }
+
+    /// Transit scenarios: load, depart-at / arrive-by plans with the road-network walker,
+    /// an isochrone and the stops layer.
+    pub fn transit(paths: &DataPaths, file: Option<&str>, iters: usize) -> anyhow::Result<()> {
+        use chrono::{Datelike, Duration, Weekday};
+        let path = file.map(std::path::PathBuf::from).unwrap_or_else(|| paths.transit_file());
+        let t0 = Instant::now();
+        let t = mapsoffline_lib::transit::load(&path)?;
+        println!("transit load            {:8.1} ms  ({} stops, {} patterns, {} trips, {} MB file)", ms(t0), t.stops.len(), t.patterns.len(), t.trip_service.len(), std::fs::metadata(&path)?.len() / 1_000_000);
+        let graph = mapsoffline_lib::routing::load_graph(&paths.graph_file()).ok();
+        let walker: &dyn mapsoffline_lib::transit::WalkRouter = match &graph {
+            Some(g) => g,
+            None => &mapsoffline_lib::transit::NoWalk,
+        };
+        // a Tuesday inside the feed
+        let mut date = chrono::Utc::now().date_naive();
+        while date.weekday() != Weekday::Tue || t.day_index(date).is_none() {
+            date += Duration::days(1);
+            if date > chrono::Utc::now().date_naive() + Duration::days(60) {
+                anyhow::bail!("no Tuesday in the feed's date range");
+            }
+        }
+        let at = |h: u32| format!("{date}T{h:02}:00:00");
+        let scen: [(&str, [f64; 2], [f64; 2], TimeKind, String); 4] = [
+            ("TA Azrieli → Jerusalem CBS dep 08:00", [34.7925, 32.0745], [35.2033, 31.7890], TimeKind::Depart, at(8)),
+            ("TA Azrieli → Jerusalem CBS arr 10:00", [34.7925, 32.0745], [35.2033, 31.7890], TimeKind::Arrive, at(10)),
+            ("Haifa Merkaz → Beersheba dep 08:00 ", [34.9965, 32.8220], [34.7913, 31.2430], TimeKind::Depart, at(8)),
+            ("Bnei Brak → Ramat Gan dep 17:00    ", [34.8338, 32.0860], [34.8125, 32.0700], TimeKind::Depart, at(17)),
+        ];
+        for (name, a, b, kind, iso) in scen {
+            let mut r = req(a, b, Mode::Transit, 3);
+            r.time = TimeSpec { kind, iso: Some(iso) };
+            let mut first = None;
+            let (med, max) = time(iters, || {
+                let resp = t.route(&r, walker);
+                if first.is_none() {
+                    first = Some(resp);
+                }
+            });
+            let summary = match first {
+                Some(Ok(resp)) => resp
+                    .routes
+                    .first()
+                    .map(|x| format!("{} routes, best {} → {} ({} transfers)", resp.routes.len(), x.depart_iso.as_deref().map(|s| &s[11..16]).unwrap_or("?"), x.arrive_iso.as_deref().map(|s| &s[11..16]).unwrap_or("?"), x.transfers))
+                    .unwrap_or_else(|| format!("no route, notice {:?}", resp.notice)),
+                Some(Err(e)) => format!("error {e:#}"),
+                None => String::new(),
+            };
+            println!("{name} {med:8.1} ms (max {max:.1})  {summary}");
+        }
+        let tspec = TimeSpec { kind: TimeKind::Depart, iso: Some(at(8)) };
+        let (med, max) = time(iters, || {
+            let _ = t.isochrone([34.7925, 32.0745], &tspec, &[15, 30, 45], false);
+        });
+        let bands = t.isochrone([34.7925, 32.0745], &tspec, &[15, 30, 45], false)?;
+        println!("isochrone TA 15/30/45   {med:8.1} ms (max {max:.1})  rings {:?}", bands.iter().map(|b| b.rings.len()).collect::<Vec<_>>());
+        let (med, max) = time(iters, || {
+            let _ = t.stops_in_bbox([34.74, 32.04, 34.84, 32.11], 2000);
+        });
+        println!("stops layer (Tel Aviv)  {med:8.3} ms (max {max:.3})  {} stops", t.stops_in_bbox([34.74, 32.04, 34.84, 32.11], 2000).len());
+        Ok(())
     }
 
     fn ms(t: Instant) -> f64 {
