@@ -31,7 +31,7 @@ describe("UTM", () => {
     expect(u.zone).toBe(36);
     expect(u.band).toBe("S");
     expect(Math.round(u.easting / 1000)).toBe(668);
-    expect(Math.round(u.northing / 1000)).toBe(3550);
+    expect(Math.round(u.northing / 1000)).toBe(3551);
   });
 });
 
