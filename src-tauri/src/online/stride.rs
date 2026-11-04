@@ -121,32 +121,67 @@ fn median(v: &mut [f64]) -> f64 {
     }
 }
 
+type CacheKey = (i64, i64, u32);
+
+fn cache_key(q: &DelayQuery) -> Option<CacheKey> {
+    let dep = DateTime::parse_from_rfc3339(&q.depart_iso).ok()?.with_timezone(&Utc);
+    let hour: u32 = dep.format("%H").to_string().parse().ok()?;
+    Some(((q.lon * 2000.0).round() as i64, (q.lat * 2000.0).round() as i64, hour))
+}
+
+/// At most this many Stride requests run at once.
+const PARALLEL: usize = 4;
+
 /// Typical delay in minutes (median, rounded to 0.5) of each boarding; None when unknown.
+/// The stops not in the cache are fetched in parallel (≤ 4 at a time, each stop/hour once).
 pub fn delays(queries: &[DelayQuery]) -> Vec<Option<f64>> {
+    let keys: Vec<Option<CacheKey>> = queries.iter().map(cache_key).collect();
+    let mut missing: Vec<(CacheKey, f64, f64)> = Vec::new();
+    {
+        let Ok(mut guard) = CACHE.lock() else { return vec![None; queries.len()] };
+        let cache = guard.get_or_insert_with(HashMap::new);
+        for (q, k) in queries.iter().zip(&keys) {
+            let Some(k) = *k else { continue };
+            let fresh = cache.get(&k).is_some_and(|e| e.at.elapsed() < if e.ok { Duration::from_secs(86_400) } else { Duration::from_secs(600) });
+            if !fresh && !missing.iter().any(|m| m.0 == k) {
+                missing.push((k, q.lon, q.lat));
+            }
+        }
+    }
+    for chunk in missing.chunks(PARALLEL) {
+        let fetched: Vec<(CacheKey, Entry)> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|&(k, lon, lat)| {
+                    s.spawn(move || {
+                        let res = fetch(lon, lat, k.2);
+                        if let Err(e) = &res {
+                            log::info!("stride: {e:#}");
+                        }
+                        let entry = match res {
+                            Ok(samples) => Entry { at: Instant::now(), ok: true, samples },
+                            Err(_) => Entry { at: Instant::now(), ok: false, samples: HashMap::new() },
+                        };
+                        (k, entry)
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        if let Ok(mut guard) = CACHE.lock() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            for (k, e) in fetched {
+                cache.insert(k, e);
+            }
+        }
+    }
+    let Ok(guard) = CACHE.lock() else { return vec![None; queries.len()] };
     queries
         .iter()
-        .map(|q| {
-            let dep = DateTime::parse_from_rfc3339(&q.depart_iso).ok()?.with_timezone(&Utc);
-            let hour: u32 = dep.format("%H").to_string().parse().ok()?;
-            let key = ((q.lon * 2000.0).round() as i64, (q.lat * 2000.0).round() as i64, hour);
-            let mut guard = CACHE.lock().ok()?;
-            let cache = guard.get_or_insert_with(HashMap::new);
-            let fresh = cache.get(&key).is_some_and(|e| e.at.elapsed() < if e.ok { Duration::from_secs(86_400) } else { Duration::from_secs(600) });
-            if !fresh {
-                drop(guard);
-                let res = fetch(q.lon, q.lat, hour);
-                if let Err(e) = &res {
-                    log::info!("stride: {e:#}");
-                }
-                let entry = match res {
-                    Ok(samples) => Entry { at: Instant::now(), ok: true, samples },
-                    Err(_) => Entry { at: Instant::now(), ok: false, samples: HashMap::new() },
-                };
-                guard = CACHE.lock().ok()?;
-                guard.get_or_insert_with(HashMap::new).insert(key, entry);
-            }
+        .zip(&keys)
+        .map(|(q, k)| {
             let cache = guard.as_ref()?;
-            let e = cache.get(&key)?;
+            let e = cache.get(&(*k)?)?;
             let mut v = e
                 .samples
                 .iter()
@@ -161,9 +196,162 @@ pub fn delays(queries: &[DelayQuery]) -> Vec<Option<f64>> {
         .collect()
 }
 
+// ---------------------------------------------------------------- vehicle positions
+
+#[derive(Debug, Deserialize)]
+struct GtfsRouteRow {
+    line_ref: Option<i64>,
+    agency_name: Option<String>,
+    route_long_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VehicleRow {
+    lon: Option<f64>,
+    lat: Option<f64>,
+    bearing: Option<f64>,
+    recorded_at_time: Option<String>,
+    #[serde(rename = "siri_ride__id")]
+    ride: Option<i64>,
+}
+
+/// Recent positions are at most this old (Stride lags real time by ~10–15 minutes).
+const VEHICLE_MAX_AGE_MIN: i64 = 25;
+
+static VEHICLE_CACHE: Mutex<Option<HashMap<(String, String), (Instant, Vec<crate::types::TransitVehiclePos>)>>> = Mutex::new(None);
+
+fn quick_client() -> anyhow::Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .user_agent(super::USER_AGENT)
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(8))
+        .build()?)
+}
+
+/// Destination of an Israeli route_long_name ("A-town<->B stop-B town-1#" → "B stop-B town").
+fn destination_of(long_name: &str) -> Option<String> {
+    let (_, b) = long_name.split_once("<->")?;
+    let b = b.trim().trim_end_matches('#');
+    let b = match b.rsplit_once('-') {
+        Some((head, tail)) if tail.chars().next().is_some_and(|c| c.is_ascii_digit()) => head,
+        _ => b,
+    };
+    Some(b.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn fetch_vehicles(short_name: &str, agency: &str) -> anyhow::Result<Vec<crate::types::TransitVehiclePos>> {
+    let c = quick_client()?;
+    let today = Utc::now().with_timezone(&chrono_tz::Asia::Jerusalem).date_naive();
+    let routes: Vec<GtfsRouteRow> = c
+        .get(format!("{BASE}/gtfs_routes/list"))
+        .query(&[("route_short_name", short_name), ("date_from", &today.to_string()), ("date_to", &today.to_string()), ("limit", "100")])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let lines: Vec<(i64, Option<String>)> = routes
+        .into_iter()
+        .filter(|r| agency.is_empty() || r.agency_name.as_deref().is_some_and(|a| a == agency || a.contains(agency) || agency.contains(a)))
+        .filter_map(|r| Some((r.line_ref?, r.route_long_name.as_deref().and_then(destination_of))))
+        .take(8)
+        .collect();
+    let now = Utc::now();
+    let from = (now - CDuration::minutes(VEHICLE_MAX_AGE_MIN)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let to = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut out = Vec::new();
+    for chunk in lines.chunks(PARALLEL) {
+        let res: Vec<anyhow::Result<(Vec<VehicleRow>, Option<String>)>> = std::thread::scope(|s| {
+            let hs: Vec<_> = chunk
+                .iter()
+                .map(|(line, head)| {
+                    let (c, from, to) = (&c, &from, &to);
+                    s.spawn(move || -> anyhow::Result<(Vec<VehicleRow>, Option<String>)> {
+                        let rows: Vec<VehicleRow> = c
+                            .get(format!("{BASE}/siri_vehicle_locations/list"))
+                            .query(&[
+                                ("siri_routes__line_ref", line.to_string().as_str()),
+                                ("recorded_at_time_from", from.as_str()),
+                                ("recorded_at_time_to", to.as_str()),
+                                ("order_by", "recorded_at_time desc"),
+                                ("limit", "500"),
+                            ])
+                            .send()?
+                            .error_for_status()?
+                            .json()?;
+                        Ok((rows, head.clone()))
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("stride thread failed")))).collect()
+        });
+        for r in res {
+            let (rows, head) = r?;
+            // newest position of every ride (rows come newest first)
+            let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+            for v in rows {
+                let (Some(lon), Some(lat), Some(at)) = (v.lon, v.lat, v.recorded_at_time) else { continue };
+                if v.ride.is_some_and(|id| !seen.insert(id)) {
+                    continue;
+                }
+                let Ok(t) = DateTime::parse_from_rfc3339(&at) else { continue };
+                if (now - t.with_timezone(&Utc)).num_minutes() > VEHICLE_MAX_AGE_MIN {
+                    continue;
+                }
+                out.push(crate::types::TransitVehiclePos {
+                    lon,
+                    lat,
+                    bearing: v.bearing,
+                    headsign: head.clone(),
+                    updated_iso: t.with_timezone(&chrono_tz::Asia::Jerusalem).format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Positions of the vehicles of a line (by short name and agency) from Open Bus Stride, cached
+/// for 30 s; empty on any failure.
+pub fn vehicles(short_name: &str, agency: &str) -> Vec<crate::types::TransitVehiclePos> {
+    let key = (short_name.to_string(), agency.to_string());
+    if let Ok(g) = VEHICLE_CACHE.lock() {
+        if let Some((at, v)) = g.as_ref().and_then(|m| m.get(&key)) {
+            if at.elapsed() < Duration::from_secs(30) {
+                return v.clone();
+            }
+        }
+    }
+    let v = match fetch_vehicles(short_name, agency) {
+        Ok(v) => v,
+        Err(e) => {
+            log::info!("stride vehicles {short_name}/{agency}: {e:#}");
+            Vec::new()
+        }
+    };
+    if let Ok(mut g) = VEHICLE_CACHE.lock() {
+        g.get_or_insert_with(HashMap::new).insert(key, (Instant::now(), v.clone()));
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destination_from_long_name() {
+        assert_eq!(destination_of("הכובשים/דניאל-תל אביב יפו<->מסוף עמידר-רמת גן-10").as_deref(), Some("מסוף עמידר-רמת גן"));
+        assert_eq!(destination_of("עוקף דיר חנא ב-דייר חנא<->ת.רכבת כרמיאל/דרור-כרמיאל-1#").as_deref(), Some("ת.רכבת כרמיאל/דרור-כרמיאל"));
+        assert_eq!(destination_of("Line 5"), None);
+    }
+
+    /// Live API (cargo test -- --ignored vehicles_live): Dan 61.
+    #[test]
+    #[ignore]
+    fn vehicles_live() {
+        let t = Instant::now();
+        let v = vehicles("61", "דן");
+        eprintln!("{} vehicles in {:?}: {:?}", v.len(), t.elapsed(), v.first());
+    }
 
     #[test]
     fn median_even_odd() {

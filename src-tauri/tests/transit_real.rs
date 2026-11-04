@@ -100,6 +100,7 @@ fn real_gtfs_tel_aviv_jerusalem() {
         ],
         mode: Mode::Transit,
         time: TimeSpec { kind, iso: Some(format!("{}T{}:00+02:00", date.format("%Y-%m-%d"), hhmm)) },
+        accessible: false,
         avoid: Default::default(),
         alternatives: 5,
     };

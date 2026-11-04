@@ -298,6 +298,7 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
             fare_estimate_ils: None,
             fare_note: None,
             avoid_violations: avoid_violations(g, req, c.paths.iter().flat_map(|p| p.states.iter().map(|s| s >> 1))),
+            fare_breakdown: vec![],
         });
     }
     log::debug!("assembled: {:?}", t0.elapsed());

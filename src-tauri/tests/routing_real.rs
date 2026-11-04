@@ -11,6 +11,7 @@ fn req(from: [f64; 2], to: [f64; 2], mode: Mode, alternatives: u32) -> RouteRequ
         waypoints: vec![Waypoint { lon: from[0], lat: from[1], name: None }, Waypoint { lon: to[0], lat: to[1], name: None }],
         mode,
         time: TimeSpec::default(),
+        accessible: false,
         avoid: Avoid::default(),
         alternatives,
     }

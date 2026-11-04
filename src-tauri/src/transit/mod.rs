@@ -1,9 +1,15 @@
 //! Public transport: GTFS → compact model, RAPTOR (depart-at / arrive-by), journey assembly.
 
+pub(crate) mod binfmt;
 pub mod board;
 pub mod fares;
+pub mod holidays;
+pub mod isochrone;
 pub mod journey;
+#[cfg(feature = "cli")]
+pub mod legacy;
 pub mod model;
+pub mod notice;
 pub mod raptor;
 #[cfg(test)]
 mod tests;
@@ -45,10 +51,43 @@ impl WalkRouter for NoWalk {
     }
 }
 
-/// Build `transit.bin` from the GTFS zip (long running).
+/// Build `transit.bin` from the GTFS zip (long running), stop-to-stop transfers in straight lines.
 pub fn build(gtfs_zip: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()> {
     model::build(gtfs_zip, out, progress)
 }
+
+/// Build `transit.bin` with the stop-to-stop transfers walked on the road network of `graph`
+/// (when given). Every served stop's ≤ 30 neighbours within 400 m are walked once, in parallel.
+pub fn build_with_graph(gtfs_zip: &Path, out: &Path, progress: ProgressFn, graph: Option<&crate::routing::Graph>) -> anyhow::Result<()> {
+    match graph {
+        Some(g) => {
+            let walk = move |o: LonLat, targets: &[LonLat]| walk_times_from(g, o, targets, TRANSFER_WALK_MAX_S);
+            model::build_with(gtfs_zip, out, progress, Some(&walk))
+        }
+        None => model::build_with(gtfs_zip, out, progress, None),
+    }
+}
+
+/// Longest stop-to-stop walk looked for on the road network (a 400 m transfer that needs more
+/// than this keeps its straight-line estimate).
+pub const TRANSFER_WALK_MAX_S: f32 = 1800.0;
+
+/// Walking seconds from `origin` to each target on the road network, None when there is no way
+/// within `max_sec`.
+// MERGE: switch to routing::walk_times_from (R2's one-to-many foot Dijkstra). Until then this is
+// the straight-line estimate the model always used (distance / 1.2 m/s), so the build behaves
+// exactly as before.
+pub fn walk_times_from(_graph: &crate::routing::Graph, origin: LonLat, targets: &[LonLat], max_sec: f32) -> Vec<Option<f32>> {
+    targets
+        .iter()
+        .map(|&t| {
+            let s = (crate::geo::haversine_m(origin, t) / model::TRANSFER_SPEED_MPS) as f32;
+            (s <= max_sec).then_some(s)
+        })
+        .collect()
+}
+
+pub use notice::attach_notice;
 
 pub fn load(path: &Path) -> anyhow::Result<Transit> {
     model::load(path)
@@ -62,5 +101,10 @@ impl Transit {
     /// Stops whose name matches `query` (for the search box).
     pub fn search_stops(&self, query: &str, near: Option<LonLat>, limit: usize) -> Vec<GeoResult> {
         model::search_stops(self, query, near, limit)
+    }
+
+    /// Everywhere reachable from `origin` by transit + walking within each of `minutes`.
+    pub fn isochrone(&self, origin: LonLat, time: &crate::types::TimeSpec, minutes: &[u32], accessible: bool) -> anyhow::Result<Vec<crate::types::IsochroneBand>> {
+        isochrone::transit_isochrone(self, origin, time, minutes, accessible)
     }
 }

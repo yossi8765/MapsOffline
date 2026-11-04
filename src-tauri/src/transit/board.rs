@@ -3,24 +3,28 @@
 //! there is no real-time feed offline).
 use std::collections::BTreeMap;
 
-use chrono::{Datelike, Timelike, Utc};
+use chrono::{Datelike, Utc};
 use chrono_tz::Asia::Jerusalem;
 
-use super::journey::iso_at;
+use super::journey::{gtfs_time_of, iso_at};
 use super::model::{line_group, Transit, NONE};
 use crate::types::{LineDirection, LineSummary, LineTimes, StopBoard, StopInfo, StopLine};
 
 /// (day index, seconds since that service day's midnight) for the current moment, plus the
 /// previous service day whose late trips (after 24:00) may still be ahead of us.
 fn now_in_feed(t: &Transit) -> Option<Vec<(u32, i32)>> {
-    let now = Utc::now().with_timezone(&Jerusalem);
-    let secs = now.num_seconds_from_midnight() as i32;
-    let today = t.day_index(now.date_naive())?;
+    let (date, secs) = gtfs_time_of(Utc::now().with_timezone(&Jerusalem));
+    let today = t.day_index(date)?;
     let mut v = vec![(today, secs)];
     if today > 0 {
         v.push((today - 1, secs + 86_400));
     }
     Some(v)
+}
+
+/// Today's date and GTFS seconds (for "next service" after the break).
+fn now_date_secs() -> (chrono::NaiveDate, i32) {
+    gtfs_time_of(Utc::now().with_timezone(&Jerusalem))
 }
 
 fn agency_of(t: &Transit, route: u32) -> &str {
@@ -88,6 +92,7 @@ pub fn line_times_of(t: &Transit, short_name: &str, agency: &str, headsign: Opti
     let mut dir_len: BTreeMap<String, u32> = BTreeMap::new(); // stops of the pattern that named the direction's terminals
     let mut long_name = String::new();
     let mut color = None;
+    let mut line_cands: Vec<(u32, u32)> = Vec::new();
     for (pi, pt) in t.patterns.iter().enumerate() {
         let r = &t.routes[pt.route as usize];
         if t.s(r.short_name) != short_name || agency_of(t, pt.route) != agency {
@@ -98,6 +103,9 @@ pub fn line_times_of(t: &Transit, short_name: &str, agency: &str, headsign: Opti
         }
         long_name = t.s(r.long_name).to_string();
         color = color_of(t, pt.route);
+        if headsign.is_none_or(|h| h.is_empty() || (0..pt.ntrips).any(|i| t.s(t.trip_headsign[(pt.trips_start + i) as usize]) == h)) {
+            line_cands.push((pi as u32, 0));
+        }
         let stops = t.pstops(pi as u32);
         let (first, last) = (stops[0], stops[stops.len() - 1]);
         for trip in 0..pt.ntrips {
@@ -142,7 +150,13 @@ pub fn line_times_of(t: &Transit, short_name: &str, agency: &str, headsign: Opti
         })
         .collect();
     directions.sort_by_key(|d| d.departures.first().map(|x| x.0).unwrap_or(i32::MAX));
-    Some(LineTimes { short_name: short_name.to_string(), long_name, agency: agency.to_string(), color, directions })
+    let next_service_iso = if directions.iter().all(|d| d.departures.is_empty()) {
+        let (date, secs) = now_date_secs();
+        super::notice::first_departure(t, &line_cands, date, secs, false)
+    } else {
+        None
+    };
+    Some(LineTimes { short_name: short_name.to_string(), long_name, agency: agency.to_string(), color, directions, next_service_iso })
 }
 
 /// The stop for a favorite: by stop code when known, else the nearest served stop within 40 m.
@@ -207,5 +221,17 @@ pub fn stop_board(t: &Transit, code: Option<&str>, lon: f64, lat: f64) -> Option
         })
         .collect();
     lines.sort_by_key(|l| (l.next.first().map(|x| x.0).unwrap_or(i32::MAX), line_key(&l.short_name)));
-    Some(StopBoard { stop, lines, generated_iso: Utc::now().with_timezone(&Jerusalem).format("%Y-%m-%dT%H:%M:%S%:z").to_string(), weekday: Utc::now().with_timezone(&Jerusalem).weekday().num_days_from_sunday() })
+    let next_service_iso = if lines.iter().all(|l| l.next.is_empty()) {
+        let (date, secs) = now_date_secs();
+        super::notice::first_departure(t, &super::notice::stop_cands(t, &[s]), date, secs, false)
+    } else {
+        None
+    };
+    Some(StopBoard {
+        stop,
+        lines,
+        generated_iso: Utc::now().with_timezone(&Jerusalem).format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+        weekday: Utc::now().with_timezone(&Jerusalem).weekday().num_days_from_sunday(),
+        next_service_iso,
+    })
 }

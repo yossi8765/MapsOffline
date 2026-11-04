@@ -79,6 +79,11 @@ S1,32.000,34.860,5
 ";
 
 fn build_model(name: &str) -> Transit {
+    build_model_with(name, &[])
+}
+
+/// The synthetic feed with some files replaced or added (name, content).
+fn build_model_with(name: &str, over: &[(&str, &str)]) -> Transit {
     let dir = std::env::temp_dir().join(format!("mo_transit_{}_{}", std::process::id(), name));
     std::fs::create_dir_all(&dir).unwrap();
     let zip_path: PathBuf = dir.join("gtfs.zip");
@@ -86,7 +91,7 @@ fn build_model(name: &str) -> Transit {
         let f = std::fs::File::create(&zip_path).unwrap();
         let mut z = zip::ZipWriter::new(f);
         let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        for (n, c) in [
+        let mut files: Vec<(&str, &str)> = vec![
             ("agency.txt", AGENCY),
             ("routes.txt", ROUTES),
             ("trips.txt", TRIPS),
@@ -95,7 +100,14 @@ fn build_model(name: &str) -> Transit {
             ("calendar.txt", CALENDAR),
             ("calendar_dates.txt", CAL_DATES),
             ("shapes.txt", SHAPES),
-        ] {
+        ];
+        for &(n, c) in over {
+            match files.iter_mut().find(|f| f.0 == n) {
+                Some(f) => f.1 = c,
+                None => files.push((n, c)),
+            }
+        }
+        for (n, c) in files {
             z.start_file(n, opt).unwrap();
             // BOM on one file to make sure headers are cleaned
             if n == "stops.txt" {
@@ -128,6 +140,7 @@ fn req(t: &Transit, from: &str, to: &str, kind: TimeKind, iso: &str) -> RouteReq
         ],
         mode: Mode::Transit,
         time: TimeSpec { kind, iso: Some(iso.to_string()) },
+        accessible: false,
         avoid: Default::default(),
         alternatives: 3,
     }
@@ -293,6 +306,7 @@ fn via_req(t: &Transit, codes: &[&str], kind: TimeKind, iso: &str) -> RouteReque
             .collect(),
         mode: Mode::Transit,
         time: TimeSpec { kind, iso: Some(iso.to_string()) },
+        accessible: false,
         avoid: Default::default(),
         alternatives: 3,
     }
@@ -373,3 +387,6 @@ fn build_real_transit() {
     let t = crate::transit::load(&out).unwrap();
     println!("built {} bytes, dep stored: {}", std::fs::metadata(&out).unwrap().len(), !t.dep.is_empty());
 }
+
+#[path = "tests_v3.rs"]
+mod v3;

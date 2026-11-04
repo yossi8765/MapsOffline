@@ -218,6 +218,7 @@ mod tests {
             waypoints: vec![Waypoint { lon: 34.7745, lat: 32.0853, name: None }, Waypoint { lon: 35.2137, lat: 31.7795, name: None }],
             mode: Mode::Car,
             time: TimeSpec::default(),
+            accessible: false,
             avoid: Avoid::default(),
             alternatives: 1,
         };

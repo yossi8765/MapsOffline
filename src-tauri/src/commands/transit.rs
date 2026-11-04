@@ -12,16 +12,15 @@ pub async fn transit_stops(state: State<'_, Arc<AppState>>, bbox: [f64; 4], limi
     let limit = limit.unwrap_or(2000).clamp(1, 20000);
     tauri::async_runtime::spawn_blocking(move || -> R<Vec<StopInfo>> {
         let t = st.transit().map_err(err)?;
-        let mut out = Vec::new();
-        for (i, s) in t.stops.iter().enumerate() {
-            if s.lon >= bbox[0] && s.lon <= bbox[2] && s.lat >= bbox[1] && s.lat <= bbox[3] {
-                let code = t.strings.get(s.code as usize).filter(|c| !c.is_empty()).cloned();
-                out.push(StopInfo { id: i as u32, name: t.strings.get(s.name as usize).cloned().unwrap_or_default(), code, lon: s.lon, lat: s.lat });
-                if out.len() >= limit {
-                    break;
-                }
-            }
-        }
+        // grid cells of the box (served stops only), not a scan of every stop
+        let out = t
+            .stops_in_bbox(bbox, limit)
+            .into_iter()
+            .map(|i| {
+                let s = &t.stops[i as usize];
+                StopInfo { id: i, name: t.stop_name(i).to_string(), code: t.stop_code(i), lon: s.lon, lat: s.lat }
+            })
+            .collect();
         Ok(out)
     })
     .await
@@ -84,6 +83,33 @@ pub async fn transit_delays(state: State<'_, Arc<AppState>>, legs: Vec<crate::on
         return Ok(vec![None; legs.len()]);
     }
     tauri::async_runtime::spawn_blocking(move || crate::online::stride::delays(&legs)).await.map_err(err)
+}
+
+/// Everywhere reachable from a point by public transport and walking within each of `minutes`
+/// (leaving at `time_iso`, now when absent), as rings per band. Offline (local model).
+#[tauri::command]
+pub async fn transit_isochrone(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, time_iso: Option<String>, minutes: Vec<u32>) -> R<Vec<crate::types::IsochroneBand>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> R<Vec<crate::types::IsochroneBand>> {
+        let t = st.transit().map_err(err)?;
+        let time = match time_iso {
+            Some(iso) => crate::types::TimeSpec { kind: crate::types::TimeKind::Depart, iso: Some(iso) },
+            None => crate::types::TimeSpec { kind: crate::types::TimeKind::Now, iso: None },
+        };
+        t.isochrone([lon, lat], &time, &minutes, false).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Where the vehicles of a line are now (Open Bus Stride, minutes behind real time). Online
+/// only: empty offline, when `routingMode` is "offline", or on any failure.
+#[tauri::command]
+pub async fn transit_vehicles(state: State<'_, Arc<AppState>>, short_name: String, agency: String) -> R<Vec<crate::types::TransitVehiclePos>> {
+    if state.settings.read().routing_mode == "offline" {
+        return Ok(vec![]);
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::online::stride::vehicles(&short_name, &agency)).await.map_err(err)
 }
 
 /// Departure board of a stop (by code, else nearest served stop within 40 m).

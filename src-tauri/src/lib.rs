@@ -156,6 +156,8 @@ pub fn run() {
             commands::transit::transit_line_times,
             commands::transit::transit_stop_board,
             commands::transit::transit_delays,
+            commands::transit::transit_isochrone,
+            commands::transit::transit_vehicles,
             // [R3] new commands above
             // ---- R4 geocode (commands/geo.rs)
             commands::geo::geocode_search,
