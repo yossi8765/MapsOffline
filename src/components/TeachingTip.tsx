@@ -15,7 +15,7 @@ interface TipDef {
 /** Hidden features worth one hint each, in this order; each is shown once (settings.teachingTipsSeen). */
 export const TEACHING_TIPS: TipDef[] = [
   { id: "mapMenu", target: ".maplibregl-canvas", title: "ttMapMenuTitle", body: "ttMapMenuBody" },
-  { id: "palette", target: "[data-tt='search']", title: "ttPaletteTitle", body: "ttPaletteBody" },
+  { id: "palette", target: "[data-tt='search-input']", title: "ttPaletteTitle", body: "ttPaletteBody" },
   { id: "import", target: "[data-layers-toggle]", title: "ttImportTitle", body: "ttImportBody" },
 ];
 
@@ -35,9 +35,11 @@ export function TeachingTip() {
   const loaded = useStore((s) => s.settingsLoaded);
   const busy = useStore((s) => !!s.navigation || s.paletteOpen || s.shortcutsOpen || !!s.share || s.batchOpen || !s.tilesUrl);
   const [ready, setReady] = useState(false);
+  // one tip per start: the next one waits for the next time the app opens
+  const [shownOne, setShownOne] = useState(false);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const tip = loaded ? nextTip(seen) : undefined;
+  const tip = loaded && !shownOne ? nextTip(seen) : undefined;
 
   useEffect(() => {
     const h = window.setTimeout(() => setReady(true), 4000);
@@ -56,6 +58,7 @@ export function TeachingTip() {
   const dismiss = () => {
     if (!tip) return;
     setRect(null);
+    setShownOne(true);
     void useStore.getState().updateSettings({ teachingTipsSeen: [...seen, tip.id] });
   };
 
@@ -71,7 +74,7 @@ export function TeachingTip() {
 
   if (!tip || !rect) return null;
   // the map: point at its centre; small controls: below them
-  const big = rect.width > 400;
+  const big = rect.width > 700 && rect.height > 300;
   const top = big ? rect.top + rect.height / 2 - 60 : rect.bottom + 10;
   const left = big ? rect.left + rect.width / 2 - 150 : Math.max(8, Math.min(window.innerWidth - 308, rect.left + rect.width / 2 - 150));
 

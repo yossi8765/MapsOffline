@@ -161,8 +161,23 @@ export function useMapInstance(containerRef: RefObject<HTMLDivElement | null>, o
       map.addControl(c.scale, `bottom-${side}`);
       c.side = side;
       c.lang = opts.lang;
-      // start collapsed (MapLibre opens a compact attribution on wide maps)
-      requestAnimationFrame(() => map.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
+      // keep it collapsed: MapLibre re-opens a compact attribution on wide maps after every
+      // style load / resize; only the user's click on the "i" button opens it
+      const attribEl = map.getContainer().querySelector<HTMLElement>(".maplibregl-ctrl-attrib");
+      if (attribEl && !attribEl.dataset.moCollapse) {
+        attribEl.dataset.moCollapse = "1";
+        let userOpen = false;
+        attribEl.querySelector(".maplibregl-ctrl-attrib-button")?.addEventListener("click", () => {
+          userOpen = attribEl.classList.contains("maplibregl-compact-show");
+        });
+        const close = () => {
+          if (!userOpen) attribEl.classList.remove("maplibregl-compact-show");
+        };
+        map.on("styledata", close);
+        map.on("resize", close);
+        map.on("idle", close);
+        requestAnimationFrame(close);
+      }
     }
     c.scale?.setUnit(opts.units === "imperial" ? "imperial" : "metric");
   }, [opts.lang, opts.units, mapReady]);

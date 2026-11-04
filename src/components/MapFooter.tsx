@@ -59,7 +59,7 @@ export function CursorReadout({ mapRef, ready }: { mapRef: RefObject<maplibregl.
     <div
       ref={boxRef}
       style={{ visibility: "hidden" }}
-      className="map-readout absolute bottom-[64px] end-3 z-10 rounded px-2 h-5 flex items-center text-[12px] text-muted num bg-[color-mix(in_srgb,var(--surface-raised)_85%,transparent)] pointer-events-none no-print"
+      className="map-readout absolute bottom-[112px] end-3 z-10 rounded px-2 h-5 flex items-center text-[12px] text-muted num bg-[color-mix(in_srgb,var(--surface-raised)_85%,transparent)] pointer-events-none no-print"
     >
       <bdi dir="ltr" ref={textRef} />
     </div>

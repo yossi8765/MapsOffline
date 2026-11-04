@@ -480,6 +480,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
           onBlur={() => setOpen(false)}
           onKeyDown={onKey}
           role="combobox"
+          data-tt="search-input"
           aria-expanded={shown}
           aria-controls={shown ? listId : undefined}
           aria-autocomplete="list"
