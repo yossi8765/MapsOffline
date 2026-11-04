@@ -3,7 +3,7 @@
 Authoritative for all six wave-1 streams. TypeScript names below are the serde names (camelCase).
 Rust structs use `#[serde(rename_all = "camelCase")]`; optional fields `#[serde(skip_serializing_if = "Option::is_none")]`
 and `#[serde(default)]` on input structs so older frontends/backends stay compatible.
-The TS side of everything listed here is ALREADY written in `src/lib/api.ts` (section "IMPROVEMENTS contract");
+The TS side of everything listed here is ALREADY written in `src/lib/api.ts`: extended interfaces (fields marked `IMPROVEMENTS contract`) and the `apiX` object of new wrappers;
 Rust streams implement it, frontend streams consume it. Do not rename anything; if a stream needs an extra field,
 add it as optional and list it in its final report.
 
@@ -41,7 +41,7 @@ interface UserLayer { id: string; name: string; kind: "import" | "drawing" | "tr
 // favorites – new optional fields + kind "route"
 interface Favorite { /* existing */ group?: string; color?: string; note?: string; kind: "address" | "stop" | "place" | "line" | "route" }
 favorites_add(..., group?, color?, note?)           // extra optional args, same order appended
-favorites_update(id, patch: { name?, icon?, group?, color?, note?, address? })
+favorites_patch(id, patch: { name?, icon?, group?, color?, note?, address?, data? }) -> Favorite   // NEW command; favorites_update(id,name,icon) stays as is
 favorites_groups(): string[]
 // minyanim: snapshot first, live later
 minyanim_for(lon, lat, poiName?) -> MinyanTable | null   // returns the SNAPSHOT immediately (live: false)
@@ -69,7 +69,7 @@ match_track(points: [number, number][], mode: "car" | "foot" | "bike"): Route   
 track_start(): void;  track_stop(save: boolean, name?: string): UserLayer | null
 event "track-update" { points: [number, number, number | null][] /* lon, lat, ele */; distanceM: number; durationSec: number; ascentM: number }
 ```
-- Waypoint limit (7) removed when alternatives = 1. `optimize_order` faster, accepts up to 25 stops (heuristic above 12) and optional `stops: { stayMin?: number; windowStartIso?: string; windowEndIso?: string }[]` aligned with waypoints; returns `{ order: number[]; arrivals: string[] }` — NOTE: return type changes from `number[]` to this object.
+- Waypoint limit (7) removed when alternatives = 1. `optimize_order` (unchanged signature) gets faster; NEW `optimize_trip(req, fixedEnd, stops: TripStop[]) -> TripPlan {order, arrivals}` accepts up to 25 stops (heuristic above 12) with `stops: { stayMin?, windowStartIso?, windowEndIso? }[]` aligned with waypoints.
 - Graph v7 (bump VERSION, reject old with a clear error, `NO_ROUTING_DATA` + details "graph version" so the UI offers an update).
 - Error codes: `NO_ROUTE_TRUCK` (restriction makes it impossible), `TOO_MANY_POINTS`.
 

@@ -28,6 +28,11 @@ export const DEFAULT_SETTINGS: Settings = {
   usePrebuiltData: true,
   transitReliability: true,
   navVoice: true,
+  coordFormat: "dd",
+  uiScale: "system",
+  customLayers: [],
+  wantedComponents: null,
+  teachingTipsSeen: [],
 };
 
 /** Route-panel defaults derived from the settings. */

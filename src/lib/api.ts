@@ -37,10 +37,20 @@ export interface GeoResult {
   interpretation?: string;
   /** Hebrew name of a POI category ("בית כנסת") when `category` is the raw id (map layer, nearby) */
   categoryLabel?: string;
+  // ---- IMPROVEMENTS contract (R4): more POI details
+  phone?: string;
+  website?: string;
+  /** Full street address of a POI. */
+  address?: string;
+  brand?: string;
+  operator?: string;
+  /** OSM wikipedia tag, "he:Title". */
+  wikipedia?: string;
+  wikidata?: string;
 }
 
 // ------------------------------------------------------------- routing
-export type Mode = "car" | "foot" | "bike" | "transit";
+export type Mode = "car" | "foot" | "bike" | "transit" | "truck" | "wheelchair";
 export type TimeKind = "now" | "depart" | "arrive";
 
 export interface TimeSpec {
@@ -61,6 +71,13 @@ export interface Avoid {
   unpavedLongOnly: boolean;
   /** Avoid difficult junctions (left turns / U-turns without traffic lights). */
   hardTurns: boolean;
+  // ---- IMPROVEMENTS contract (R2), all optional
+  /** Avoid the road nearest each point ("avoid this road" on a route step). */
+  points?: LonLat[];
+  /** Areas drawn by the user, lon/lat rings. */
+  polygons?: LonLat[][];
+  /** bike / foot: prefer flatter ways (uses the DEM sampled into graph v7). */
+  hills?: boolean;
 }
 
 export type AvoidAreas = "none" | "a" | "ab";
@@ -78,6 +95,17 @@ export interface RouteRequest {
   time: TimeSpec;
   avoid: Avoid;
   alternatives: number;
+  /** truck profile dimensions (R2) */
+  vehicle?: { heightM?: number; weightT?: number; widthM?: number };
+  /** transit: wheelchair-accessible trips and stops only (R3) */
+  accessible?: boolean;
+}
+
+export interface Lane {
+  /** OSM turn:lanes values of this lane: "left", "through", "right", "slight_right", ... */
+  directions: string[];
+  /** this lane leads along the route */
+  active: boolean;
 }
 
 export type Maneuver =
@@ -104,6 +132,15 @@ export interface Step {
   distanceM: number;
   durationSec: number;
   geometryStart: number;
+  // ---- IMPROVEMENTS contract (R2)
+  /** road number ("1", "443") */
+  ref?: string;
+  /** motorway exit number (junction:ref) */
+  exit?: string;
+  /** signposted destination */
+  destination?: string;
+  speedLimitKmh?: number;
+  lanes?: Lane[];
 }
 
 export type LegKind = "walk" | "drive" | "bike" | "transit";
@@ -166,6 +203,15 @@ export interface Route {
   fareNote?: string;
   /** Avoid options the local route could not honour: "toll" | "motorway" | "unpaved" | "ferry" | "areaA" | "areaB". */
   avoidViolations?: string[];
+  /** fare per ticket (R3) */
+  fareBreakdown?: { label: string; ils: number; train: boolean }[];
+}
+
+export interface ServiceNotice {
+  kind: "shabbat" | "holiday" | "no_service" | "late_night";
+  /** first departure after the break */
+  nextServiceIso?: string;
+  holidayName?: string;
 }
 
 export type RouteSource = "online" | "offline";
@@ -175,6 +221,8 @@ export interface RouteResponse {
   computeMs: number;
   source: RouteSource;
   provider?: string;
+  /** why there is no (or little) transit service (R3) */
+  notice?: ServiceNotice;
 }
 
 export interface StopInfo {
@@ -196,7 +244,7 @@ export interface HistoryItem {
   payload: unknown;
 }
 
-export type FavoriteKind = "address" | "stop" | "place" | "line";
+export type FavoriteKind = "address" | "stop" | "place" | "line" | "route";
 
 export interface Favorite {
   id: number;
@@ -209,6 +257,11 @@ export interface Favorite {
   kind: FavoriteKind;
   /** stop: `{code}`; line: `{routeShortName, routeLongName, agency, headsign, color}` */
   data?: Record<string, unknown>;
+  // ---- IMPROVEMENTS contract (R1); route favorites keep the RouteRequest in `data`
+  group?: string;
+  /** "#rrggbb" */
+  color?: string;
+  note?: string;
 }
 
 /** Extras stored with a favorite transit line. */
@@ -264,6 +317,8 @@ export interface LineTimes {
   agency: string;
   color?: string;
   directions: LineDirection[];
+  /** no more service today: first departure after the break (R3) */
+  nextServiceIso?: string;
 }
 
 export interface StopLine {
@@ -281,6 +336,8 @@ export interface StopBoard {
   lines: StopLine[];
   generatedIso: string;
   weekday: number;
+  /** service over for today / Shabbat: first departure after the break (R3) */
+  nextServiceIso?: string;
 }
 
 /** One direction of a transit line: longest stop pattern + shape. */
@@ -431,6 +488,93 @@ export interface Settings {
   transitReliability: boolean;
   /** live navigation speaks the instructions */
   navVoice: boolean;
+  // ---- IMPROVEMENTS contract (R1); Rust fills defaults
+  coordFormat: CoordFormat;
+  /** "system" = Windows text scale (clamped 1..1.25) */
+  uiScale: "system" | 1 | 1.12 | 1.25;
+  customLayers: CustomLayer[];
+  /** null = every component (old behaviour); update checks only offer these */
+  wantedComponents: DataComponent[] | null;
+  teachingTipsSeen: string[];
+}
+
+export type CoordFormat = "dd" | "dms" | "itm" | "utm";
+
+export interface CustomLayer {
+  id: string;
+  name: string;
+  kind: "xyz" | "wms" | "pmtiles" | "mbtiles";
+  /** XYZ template, WMS base URL, or a local file path */
+  url: string;
+  wmsLayers?: string;
+  opacity: number;
+  visible: boolean;
+  minzoom?: number;
+  maxzoom?: number;
+  attribution?: string;
+}
+
+export interface UserLayer {
+  id: string;
+  name: string;
+  kind: "import" | "drawing" | "track";
+  color: string;
+  visible: boolean;
+  createdIso: string;
+  features: number;
+  bbox?: [number, number, number, number];
+}
+
+export interface SystemAccent {
+  accent: string;
+  light1: string;
+  light2: string;
+  dark1: string;
+}
+
+export interface IsochroneBand {
+  minutes: number;
+  rings: LonLat[][];
+}
+
+export interface TrackUpdate {
+  /** lon, lat, elevation */
+  points: [number, number, number | null][];
+  distanceM: number;
+  durationSec: number;
+  ascentM: number;
+}
+
+export interface TripStop {
+  stayMin?: number;
+  windowStartIso?: string;
+  windowEndIso?: string;
+}
+
+export interface TripPlan {
+  order: number[];
+  arrivals: string[];
+}
+
+export interface TransitVehiclePos {
+  lon: number;
+  lat: number;
+  bearing?: number;
+  headsign?: string;
+  updatedIso: string;
+}
+
+export interface WikiSummary {
+  title: string;
+  extract: string;
+  url: string;
+  lang: string;
+}
+
+export interface ParsedCoord {
+  lon: number;
+  lat: number;
+  format: "dd" | "dms" | "itm" | "utm" | "plus";
 }
 
 /** One live-navigation fix (event "nav-update"). Distances metres, times seconds. */
@@ -440,6 +584,15 @@ export interface NavUpdate {
   lat: number;
   snappedLon: number;
   snappedLat: number;
+  // ---- IMPROVEMENTS contract (R2)
+  speedKmh?: number;
+  speedLimitKmh?: number;
+  accuracyM?: number;
+  /** position is approximate (Wi-Fi / cell): off-route detection is relaxed */
+  approximate?: boolean;
+  /** fixed speed camera ahead on the route, metres */
+  cameraAheadM?: number;
+  lanes?: Lane[];
   /** route bearing at the snapped point, degrees from north (heading-up camera) */
   bearing: number;
   stepIndex: number;
@@ -744,6 +897,50 @@ export const api = {
   onDataProgress: (cb: (p: DataProgress) => void): Promise<UnlistenFn> =>
     listen<DataProgress>("data-progress", (e) => cb(e.payload)),
   onDataUpdated: (cb: () => void): Promise<UnlistenFn> => listen("data-updated", () => cb()),
+};
+
+// ------------------------------------------------------------- IMPROVEMENTS contract (docs/CONTRACT-improvements.md)
+// Implemented by the Rust stream named in each comment; frontend streams call these.
+export const apiX = {
+  // R1
+  systemAccent: () => invoke<SystemAccent | null>("system_accent"),
+  onSystemAccent: (cb: (a: SystemAccent) => void): Promise<UnlistenFn> => listen<SystemAccent>("system-accent-changed", (e) => cb(e.payload)),
+  systemTextScale: () => invoke<number>("system_text_scale"),
+  connectivity: () => invoke<boolean>("connectivity"),
+  logsDir: () => invoke<string>("logs_dir"),
+  userLayersList: () => invoke<UserLayer[]>("user_layers_list"),
+  userLayerGet: (id: string) => invoke<string>("user_layer_get", { id }),
+  userLayerSave: (name: string, kind: UserLayer["kind"], geojson: string, color?: string) =>
+    invoke<UserLayer>("user_layer_save", { name, kind, geojson, color: color ?? null }),
+  userLayerUpdate: (id: string, patch: { name?: string; color?: string; visible?: boolean; geojson?: string }) =>
+    invoke<UserLayer>("user_layer_update", { id, patch }),
+  userLayerDelete: (id: string) => invoke<void>("user_layer_delete", { id }),
+  /** Change fields of a favorite; absent keys stay, null clears. */
+  favoritesPatch: (
+    id: number,
+    patch: { name?: string; icon?: string; group?: string | null; color?: string | null; note?: string | null; address?: string | null; data?: Record<string, unknown> },
+  ) => invoke<Favorite>("favorites_patch", { id, patch }),
+  favoritesGroups: () => invoke<string[]>("favorites_groups"),
+  /** "minyanim-live": the live table after minyanim_for returned the snapshot */
+  onMinyanimLive: (cb: (p: { lon: number; lat: number; table: MinyanTable }) => void): Promise<UnlistenFn> =>
+    listen<{ lon: number; lat: number; table: MinyanTable }>("minyanim-live", (e) => cb(e.payload)),
+  // R2
+  isochrone: (lon: number, lat: number, mode: "car" | "foot" | "bike" | "wheelchair", minutes: number[]) =>
+    invoke<IsochroneBand[]>("isochrone", { lon, lat, mode, minutes }),
+  matchTrack: (points: LonLat[], mode: "car" | "foot" | "bike") => invoke<Route>("match_track", { points, mode }),
+  trackStart: () => invoke<void>("track_start"),
+  trackStop: (save: boolean, name?: string) => invoke<UserLayer | null>("track_stop", { save, name: name ?? null }),
+  onTrackUpdate: (cb: (u: TrackUpdate) => void): Promise<UnlistenFn> => listen<TrackUpdate>("track-update", (e) => cb(e.payload)),
+  /** Up to 25 stops, time windows / stay per waypoint (aligned with req.waypoints). */
+  optimizeTrip: (req: RouteRequest, fixedEnd: boolean, stops: TripStop[]) => invoke<TripPlan>("optimize_trip", { req, fixedEnd, stops }),
+  // R3
+  transitIsochrone: (lon: number, lat: number, timeIso: string | null, minutes: number[]) =>
+    invoke<IsochroneBand[]>("transit_isochrone", { lon, lat, timeIso, minutes }),
+  transitVehicles: (shortName: string, agency: string) => invoke<TransitVehiclePos[]>("transit_vehicles", { shortName, agency }),
+  // R4
+  wikiSummary: (tag: string) => invoke<WikiSummary | null>("wiki_summary", { tag }),
+  geocodeBatch: (queries: string[], near?: LonLat) => invoke<(GeoResult | null)[]>("geocode_batch", { queries, near: near ?? null }),
+  coordsParse: (text: string) => invoke<ParsedCoord | null>("coords_parse", { text }),
 };
 
 // ===== [F1] =====
