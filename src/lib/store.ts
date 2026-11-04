@@ -24,6 +24,7 @@ import {
   type RouteSource,
   type Settings,
   type TimeSpec,
+  type RouteTag,
   type TransitPreference,
 } from "./api";
 import { translate, type I18nKey } from "./i18n";
@@ -170,6 +171,9 @@ interface State {
   routeSource: RouteSource | null;
   routeProvider: string | null;
   routeTick: number;
+  /** Every transit result of the last search, in the preference's order (the list shows the
+   *  first `alternativesCount`); re-sorted when the preference changes. */
+  transitAll: Route[];
   highlight: HighlightState | null;
   lastRequest: RouteRequest | null;
   /** live navigation session (src/lib/nav.ts), null when not navigating */
@@ -297,15 +301,30 @@ export function sortTransit(routes: Route[], pref: TransitPreference, timeKind: 
   const time = (a: Route, b: Route) => (timeKind === "arrive" ? departure(b) - departure(a) : arrival(a) - arrival(b)) || a.durationSec - b.durationSec;
   const transfers = (r: Route) => Math.max(0, r.legs.filter((l) => l.kind === "transit").length - 1);
   const walk = (r: Route) => r.legs.filter((l) => l.kind === "walk").reduce((m, l) => m + l.distanceM, 0);
-  // "fastest" = the shortest trip (what the "fastest" tag marks too), not the earliest arrival:
-  // a 58-minute trip that leaves later beats an 82-minute one that arrives a little earlier
+  // "fastest" = arrives first; "shortest" = the shortest trip (may leave later and arrive later)
   const by =
     pref === "fewestTransfers"
       ? (a: Route, b: Route) => transfers(a) - transfers(b) || time(a, b)
       : pref === "leastWalking"
         ? (a: Route, b: Route) => walk(a) - walk(b) || time(a, b)
-        : (a: Route, b: Route) => a.durationSec - b.durationSec || time(a, b);
-  return [...routes].sort(by);
+        : pref === "shortest"
+          ? (a: Route, b: Route) => a.durationSec - b.durationSec || time(a, b)
+          : time;
+  return retagTransit([...routes].sort(by), time);
+}
+
+/** Transit tags that match the preferences: "fastest" on the route that arrives first (by
+ *  "arrive by": leaves last), "shortest" on the shortest trip; the providers' other tags stay. */
+function retagTransit(routes: Route[], time: (a: Route, b: Route) => number): Route[] {
+  if (!routes.length) return routes;
+  const first = routes.reduce((b, r) => (time(r, b) < 0 ? r : b));
+  const short = routes.reduce((b, r) => (r.durationSec < b.durationSec ? r : b));
+  return routes.map((r) => {
+    const tags: RouteTag[] = r.tags.filter((g) => g !== "fastest" && g !== "shortest");
+    if (r === first) tags.unshift("fastest");
+    if (r === short) tags.splice(r === first ? 1 : 0, 0, "shortest");
+    return { ...r, tags };
+  });
 }
 
 /** `mapsoffline://map=<z>/<lat>/<lon>&q=<label>` (our share links) or RFC 5870
@@ -418,6 +437,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   routeSource: null,
   routeProvider: null,
   routeTick: 0,
+  transitAll: [],
   highlight: null,
   lastRequest: null,
   navigation: null,
@@ -706,6 +726,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       const sorted = req.mode === "transit" ? sortTransit(resp.routes, get().settings.transitPreference ?? "fastest", req.time.kind) : resp.routes;
       const routes = sorted.slice(0, Math.max(1, get().alternativesCount));
       set({
+        transitAll: req.mode === "transit" ? sorted : [],
         routes,
         routeSource: resp.source ?? "offline",
         routeProvider: resp.provider ?? null,

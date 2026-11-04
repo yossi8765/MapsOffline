@@ -533,7 +533,8 @@ export interface InstalledRegion {
   busy: boolean;
 }
 
-export type TransitPreference = "fastest" | "fewestTransfers" | "leastWalking";
+/** fastest = earliest arrival ("arrive by": latest departure); shortest = the shortest trip. */
+export type TransitPreference = "fastest" | "shortest" | "fewestTransfers" | "leastWalking";
 
 export type RegionPart = "map" | "search" | "routing";
 

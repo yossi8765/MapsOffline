@@ -166,7 +166,7 @@ export function RoutePanel() {
               <div className="row justify-between gap-2 flex-wrap">
                 <span>{t("transitPref")}</span>
                 <div className="seg seg-sm seg-fit">
-                  {(["fastest", "fewestTransfers", "leastWalking"] as const).map((p) => (
+                  {(["fastest", "shortest", "fewestTransfers", "leastWalking"] as const).map((p) => (
                     <button
                       key={p}
                       aria-pressed={(transitPref ?? "fastest") === p}
@@ -175,12 +175,13 @@ export function RoutePanel() {
                         void st.updateSettings({ transitPreference: p });
                         // re-order what is already on screen; the best one becomes the selected route
                         if (st.routes.length && st.routes[0].mode === "transit") {
-                          const routes = sortTransit(st.routes, p, st.time.kind);
-                          useStore.setState({ routes, selectedRouteId: routes[0].id, routeTick: st.routeTick + 1 });
+                          const all = sortTransit(st.transitAll.length ? st.transitAll : st.routes, p, st.time.kind);
+                          const routes = all.slice(0, Math.max(1, st.alternativesCount));
+                          useStore.setState({ transitAll: all, routes, selectedRouteId: routes[0].id, routeTick: st.routeTick + 1 });
                         }
                       }}
                     >
-                      <span>{t(p === "fastest" ? "transitPrefFastest" : p === "fewestTransfers" ? "transitPrefTransfers" : "transitPrefWalking")}</span>
+                      <span>{t(p === "fastest" ? "transitPrefFastest" : p === "shortest" ? "transitPrefShortest" : p === "fewestTransfers" ? "transitPrefTransfers" : "transitPrefWalking")}</span>
                     </button>
                   ))}
                 </div>
