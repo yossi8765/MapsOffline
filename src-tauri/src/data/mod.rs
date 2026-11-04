@@ -3,6 +3,7 @@
 pub mod components;
 pub mod disk;
 pub mod download;
+pub mod jobs;
 pub mod manifest;
 pub mod minyanim;
 pub mod orthophoto;
@@ -90,6 +91,12 @@ impl Cancel {
         }
         Ok(())
     }
+    /// Clear the "skip" flags of these components (a new job for them starts while other jobs
+    /// keep running, so the shared flags are not reset as a whole).
+    pub fn clear_components(&self, comps: &[DataComponent]) {
+        let bits = comps.iter().map(|&c| comp_bit(c)).fold(0, |a, b| a | b);
+        self.inner.skip.fetch_and(!bits, Ordering::Relaxed);
+    }
     pub fn reset(&self) {
         self.inner.all.store(false, Ordering::Relaxed);
         self.inner.paused.store(false, Ordering::Relaxed);
@@ -136,6 +143,8 @@ pub fn status(paths: &DataPaths) -> DataStatus {
         minyanim: comp(DataComponent::Minyanim),
         updating: false,
         paused: false,
+        active: Vec::new(),
+        queued: Vec::new(),
     }
 }
 

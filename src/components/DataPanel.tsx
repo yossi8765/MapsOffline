@@ -7,6 +7,7 @@ import { Icon } from "./Icon";
 import { Tip } from "./Tip";
 import { InfoBar } from "./InfoBar";
 import { FirstRunCard } from "./FirstRunCard";
+import { PackageProgress, packageActive, type PackageDl } from "./PackageProgress";
 import { apiX, DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useTauriEvent } from "../lib/useTauriEvent";
@@ -91,6 +92,10 @@ export function DataPanel() {
   const ortho = satelliteSource !== "sentinel";
   const updating = !!status?.updating;
   const paused = !!status?.paused;
+  // component updates run side by side: a component is busy while it runs or waits; only a
+  // package job (export / import / full download) blocks everything
+  const busyComps = new Set<DataComponent>([...(status?.active ?? []), ...(status?.queued ?? [])]);
+  const queuedComps = new Set<DataComponent>(status?.queued ?? []);
   const present = DATA_COMPONENTS.filter((c) => status?.[c]?.present);
   const anyPresent = present.length > 0;
   const [advanced, setAdvanced] = useState(false);
@@ -124,12 +129,22 @@ export function DataPanel() {
       toastError(e);
     }
   };
-  // full ready-made package download: live progress and the saved file (to install / show)
-  const [pkg, setPkg] = useState<{ phase: ProgressPhase; done: number; total: number; message: string } | null>(null);
+  // full ready-made package download: live progress and the saved file (to install / show),
+  // shown where it was started – at the top (first run) or in "transfer to an offline computer"
+  const [pkg, setPkg] = useState<PackageDl | null>(null);
   const [pkgFile, setPkgFile] = useState<string | null>(null);
-  useTauriEvent<{ phase: ProgressPhase; done: number; total: number; message: string }>("package-download", setPkg);
-  const pkgActive = !!pkg && pkg.phase !== "done" && pkg.phase !== "failed" && pkg.phase !== "cancelled";
-  const pkgPct = pkg && pkg.total > 0 ? Math.min(100, Math.round((pkg.done / pkg.total) * 100)) : null;
+  const [pkgOrigin, setPkgOrigin] = useState<"top" | "transfer">("transfer");
+  const pkgTopRef = useRef<HTMLDivElement>(null);
+  const pkgTransferRef = useRef<HTMLDivElement>(null);
+  useTauriEvent<PackageDl>("package-download", setPkg);
+  const pkgActive = packageActive(pkg);
+  // a started download scrolls its progress into view (the panel may be scrolled anywhere)
+  const pkgStarted = pkgActive && pkg?.phase === "queued";
+  useEffect(() => {
+    if (!pkgStarted) return;
+    const h = window.setTimeout(() => (pkgOrigin === "top" ? pkgTopRef : pkgTransferRef).current?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 50);
+    return () => window.clearTimeout(h);
+  }, [pkgStarted, pkgOrigin]);
   /** Download the ready-made package; with `install`, install it right away (first run). */
   const doDownloadPackage = async (install = false) => {
     try {
@@ -140,6 +155,7 @@ export function DataPanel() {
       });
       if (!dest) return;
       setPkgFile(null);
+      setPkgOrigin(install ? "top" : "transfer");
       setPkg({ phase: "queued", done: 0, total: 0, message: "" });
       if (await downloadPackage(dest)) {
         setPkgFile(dest);
@@ -168,6 +184,12 @@ export function DataPanel() {
     void checkUpdates();
   }, [refreshDataStatus, checkUpdates]);
 
+  useEffect(() => {
+    if (!updating) return;
+    const h = window.setInterval(() => void refreshDataStatus(), 2000);
+    return () => window.clearInterval(h);
+  }, [updating, refreshDataStatus]);
+
   // After an update finishes, the check result is stale: re-check so the pills flip to "up to date".
   // Only on the true -> false edge: on mount `updating` is already false, and re-checking there
   // would hit the network on every opening of the panel (the 10-minute throttle covers that).
@@ -189,7 +211,9 @@ export function DataPanel() {
     if (c === "satellite") return (ortho ? SAT_ORTHO_BYTES : SAT_SENTINEL_BYTES)[satelliteQuality] ?? SAT_ORTHO_BYTES.high;
     return NEW_BYTES[c];
   };
-  const pending = DATA_COMPONENTS.filter((c) => isWanted(c, wanted) && ((status && !status[c]?.present) || check?.[c]?.available));
+  const pending = DATA_COMPONENTS.filter((c) => !busyComps.has(c) && isWanted(c, wanted) && ((status && !status[c]?.present) || check?.[c]?.available));
+  // a package job (not a component update) holds the data folder
+  const exclusiveBusy = pkgActive || (updating && busyComps.size === 0);
   const checkErrors = DATA_COMPONENTS.filter((c) => check?.[c]?.error);
   const openPlan = () => setPlan(pending.filter((c) => !(OPTIONAL_EXTRAS.includes(c) && !status?.[c]?.present)));
 
@@ -213,11 +237,18 @@ export function DataPanel() {
     }
   };
 
-  const firstRun = !!status && !anyPresent && !updating && !pkgActive;
+  const firstRun = !!status && !anyPresent && !updating && !pkgActive && !(pkgOrigin === "top" && pkgFile);
+  const pkgAtTop = pkgOrigin === "top" && (pkgActive || !!pkgFile || pkg?.phase === "failed");
 
   return (
     <div className="px-4 pb-5 flex flex-col gap-4">
       {firstRun && <FirstRunCard onPackage={() => void doDownloadPackage(true)} onChoose={openPlan} />}
+      {pkgAtTop && (
+        <section className="card p-4 flex flex-col gap-2 fade-in" aria-label={t("downloadPackage")}>
+          <h2 className="text-base font-semibold m-0">{t("downloadPackage")}</h2>
+          <PackageProgress ref={pkgTopRef} pkg={pkg} file={pkgFile} onInstall={pkgFile ? () => void importData(pkgFile) : undefined} />
+        </section>
+      )}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between px-0.5">
           <h2 className="section-label m-0 p-0">{t("dataTitle")}</h2>
@@ -234,11 +265,12 @@ export function DataPanel() {
           </button>
         </div>
         <div className="flex flex-col gap-2 mb-1">
-          {updating ? (
+          {updating && (
             <button className="btn btn-danger w-full" onClick={() => void cancelUpdate()}>
               <Icon as={X} /> {t("cancelUpdate")}
             </button>
-          ) : pending.length > 0 ? (
+          )}
+          {exclusiveBusy ? null : pending.length > 0 ? (
             // only when there is something to do: an available update or a missing component
             plan ? (
               <div className="card p-3 flex flex-col gap-2 fade-in">
@@ -276,8 +308,8 @@ export function DataPanel() {
               </div>
             ) : (
               !firstRun && (
-                <button className="btn btn-primary w-full" onClick={openPlan}>
-                  <Icon as={Download} /> {t("updateAll")}
+                <button className={clsx("btn w-full", !updating && "btn-primary")} onClick={openPlan}>
+                  <Icon as={Download} /> {updating ? t("updateAlsoRest") : t("updateAll")}
                 </button>
               )
             )
@@ -296,7 +328,8 @@ export function DataPanel() {
               st={status?.[c]}
               chk={check?.[c]}
               prog={progress[c]}
-              updating={updating}
+              updating={exclusiveBusy || busyComps.has(c)}
+              waiting={queuedComps.has(c)}
               paused={paused}
               lang={lang}
               wanted={isWanted(c, wanted)}
@@ -311,7 +344,7 @@ export function DataPanel() {
                       <select
                         className="input h-9 w-full min-w-0"
                         value={satelliteSource}
-                        disabled={updating}
+                        disabled={exclusiveBusy || busyComps.has("satellite")}
                         onChange={(e) => {
                           void updateSettings({ satelliteSource: e.target.value as "govmap" | "sentinel" }).then(() => checkUpdates(true));
                         }}
@@ -325,7 +358,7 @@ export function DataPanel() {
                       <select
                         className="input h-9 w-full min-w-0"
                         value={!ortho && satelliteQuality === "max" ? "high" : satelliteQuality}
-                        disabled={updating}
+                        disabled={exclusiveBusy || busyComps.has("satellite")}
                         onChange={(e) => {
                           void updateSettings({ satelliteQuality: e.target.value as "low" | "medium" | "high" | "max" }).then(() => checkUpdates(true));
                         }}
@@ -375,41 +408,16 @@ export function DataPanel() {
           <span className="flex-1 text-start section-label p-0">{t("advanced")}</span>
           <Icon as={ChevronDown} className={clsx("transition-transform duration-150", advanced && "rotate-180")} />
         </button>
-        {(advanced || pkgActive || !!pkgFile) && (
+        {(advanced || (pkgOrigin === "transfer" && (pkgActive || !!pkgFile))) && (
           <div id="data-advanced" className="flex flex-col gap-4 fade-in">
             <div className="flex flex-col gap-2">
               <h2 className="section-label m-0">{t("offlineTransfer")}</h2>
               <div className="group-list">
                 <div className="px-3 py-2.5 flex flex-col gap-2">
-                  <button className="btn btn-sm btn-primary" disabled={updating} onClick={() => void doDownloadPackage()}>
+                  <button className="btn btn-sm btn-primary" disabled={updating || pkgActive} onClick={() => void doDownloadPackage()}>
                     <Icon as={Download} size={14} /> {t("downloadPackage")}
                   </button>
-                  {pkgActive && (
-                    <div className="flex flex-col gap-1 fade-in">
-                      <div className="flex items-center gap-2 text-xs text-muted">
-                        <span className="flex-1 min-w-0 truncate">
-                          <bdi>{pkg?.message}</bdi>
-                        </span>
-                        {pkgPct !== null && <span className="num shrink-0">{pkgPct}%</span>}
-                        <button className="btn btn-ghost btn-icon btn-sm text-muted shrink-0" aria-label={t("cancel")} onClick={() => void cancelUpdate()}>
-                          <Icon as={X} size={14} />
-                        </button>
-                      </div>
-                      <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pkgPct ?? undefined} aria-label={t("downloadPackage")}>
-                        <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pkgPct === null && "animate-pulse w-1/3")} style={pkgPct !== null ? { width: `${pkgPct}%` } : undefined} />
-                      </div>
-                    </div>
-                  )}
-                  {pkgFile && !pkgActive && (
-                    <div className="flex gap-2 fade-in">
-                      <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void importData(pkgFile)}>
-                        <Icon as={PackageOpen} size={14} /> {t("installDownloaded")}
-                      </button>
-                      <button className="btn btn-sm flex-1" onClick={() => void revealItemInDir(pkgFile).catch(toastError)}>
-                        <Icon as={FolderOpen} size={14} /> {t("showInFolder")}
-                      </button>
-                    </div>
-                  )}
+                  {pkgOrigin === "transfer" && <PackageProgress ref={pkgTransferRef} pkg={pkg} file={pkgFile} onInstall={pkgFile ? () => void importData(pkgFile) : undefined} />}
                   <MoreText text={t("downloadPackageHint")} />
                 </div>
                 {anyPresent && (
@@ -513,6 +521,7 @@ function ComponentCard({
   chk,
   prog,
   updating,
+  waiting,
   paused,
   lang,
   wanted,
@@ -525,7 +534,10 @@ function ComponentCard({
   st?: ComponentStatus;
   chk?: UpdateCheck;
   prog?: { phase: ProgressPhase; done: number; total: number; message: string };
+  /** this component cannot start now (it runs / waits, or a package job holds the data folder) */
   updating: boolean;
+  /** waits for a running job that shares its source */
+  waiting?: boolean;
   paused: boolean;
   lang: string;
   wanted: boolean;
@@ -552,7 +564,7 @@ function ComponentCard({
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold">{t(m.label)}</span>
             {active ? (
-              <span className={clsx("pill", showPaused ? "" : "pill-accent")}>{showPaused ? t("phasePaused") : t(PHASE_KEY[prog!.phase])}</span>
+              <span className={clsx("pill", showPaused ? "" : "pill-accent")}>{showPaused ? t("phasePaused") : waiting ? t("phaseWaitingShared") : t(PHASE_KEY[prog!.phase])}</span>
             ) : !st?.present ? (
               <span className="pill">{t("missing")}</span>
             ) : chk?.available && wanted ? (
@@ -618,7 +630,7 @@ function ComponentCard({
           ) : (
             <>
               <div className="flex justify-between gap-2 text-xs mb-1.5">
-                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active ? (showPaused ? t("phasePaused") : prog.message || t(PHASE_KEY[prog.phase])) : t(PHASE_KEY[prog.phase])}</span>
+                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active ? (showPaused ? t("phasePaused") : waiting ? t("phaseWaitingSharedHint") : prog.message || t(PHASE_KEY[prog.phase])) : t(PHASE_KEY[prog.phase])}</span>
                 {pct !== null && active && <span className="text-muted num shrink-0">{pct}%</span>}
               </div>
               {active && (

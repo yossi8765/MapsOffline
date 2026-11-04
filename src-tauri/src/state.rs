@@ -29,7 +29,10 @@ pub struct AppState {
     /// Serialises country graph loads (held only while reading a file, never while routing).
     region_graph_load: Mutex<()>,
     pub history: Mutex<Option<History>>,
+    /// True while any data job runs or waits (mirror of `data_jobs.busy()`).
     pub updating: std::sync::atomic::AtomicBool,
+    /// Which data jobs run / wait (component updates side by side, package jobs exclusive).
+    pub data_jobs: Mutex<crate::data::jobs::DataJobs>,
     pub cancel: Cancel,
     /// A program (installer) download is running – separate from data updates.
     pub app_updating: std::sync::atomic::AtomicBool,
@@ -85,6 +88,7 @@ impl AppState {
             region_graph_load: Mutex::new(()),
             history: Mutex::new(None),
             updating: std::sync::atomic::AtomicBool::new(false),
+            data_jobs: Mutex::new(Default::default()),
             cancel: Cancel::default(),
             app_updating: std::sync::atomic::AtomicBool::new(false),
             app_cancel: Cancel::default(),
@@ -106,6 +110,68 @@ impl AppState {
 
     /// Drop only what `changed` components replaced: an update of the prayer times no longer
     /// throws away the routing graph and the transit model (which take seconds to load again).
+    /// Start an exclusive data job (package export / import / full download): refused while any
+    /// other data job runs or waits.
+    pub fn begin_exclusive_job(&self) -> Result<(), &'static str> {
+        let mut j = self.data_jobs.lock();
+        if j.busy() {
+            return Err("UPDATE_RUNNING");
+        }
+        j.exclusive = true;
+        self.cancel.reset();
+        self.updating.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    pub fn end_exclusive_job(&self) {
+        let mut j = self.data_jobs.lock();
+        j.exclusive = false;
+        self.updating.store(j.busy(), std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Register a component update: what starts now, what waits for the running OSM work, what
+    /// already runs. Refused while a package job runs.
+    pub fn begin_component_job(&self, requested: &[DataComponent]) -> Result<crate::data::jobs::Plan, &'static str> {
+        let mut j = self.data_jobs.lock();
+        if j.exclusive {
+            return Err("UPDATE_RUNNING");
+        }
+        let plan = crate::data::jobs::plan(&j.running, &j.queued, requested);
+        if !j.busy() {
+            self.cancel.reset();
+        } else {
+            let mut mine = plan.start.clone();
+            mine.extend(&plan.queue);
+            self.cancel.clear_components(&mine);
+        }
+        j.running.extend(&plan.start);
+        j.queued.extend(&plan.queue);
+        self.updating.store(j.busy(), std::sync::atomic::Ordering::SeqCst);
+        Ok(plan)
+    }
+    /// Queued components: `Some(start)` once no running job holds OSM components (they move to
+    /// the running list), `None` while they still wait. Components cancelled meanwhile are
+    /// dropped (returned in the second list).
+    pub fn promote_queued(&self, mine: &[DataComponent]) -> (Option<Vec<DataComponent>>, Vec<DataComponent>) {
+        let mut j = self.data_jobs.lock();
+        let cancelled: Vec<DataComponent> = mine.iter().copied().filter(|&c| j.queued.contains(&c) && self.cancel.is_cancelled_for(c)).collect();
+        j.queued.retain(|c| !cancelled.contains(c));
+        let left: Vec<DataComponent> = mine.iter().copied().filter(|c| j.queued.contains(c)).collect();
+        if left.is_empty() {
+            self.updating.store(j.busy(), std::sync::atomic::Ordering::SeqCst);
+            return (Some(Vec::new()), cancelled);
+        }
+        if !j.startable(&left) {
+            return (None, cancelled);
+        }
+        j.queued.retain(|c| !left.contains(c));
+        j.running.extend(&left);
+        (Some(left), cancelled)
+    }
+    pub fn end_component_job(&self, comps: &[DataComponent]) {
+        let mut j = self.data_jobs.lock();
+        j.running.retain(|c| !comps.contains(c));
+        self.updating.store(j.busy(), std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn unload(&self, changed: &[DataComponent]) {
         if changed.contains(&DataComponent::Routing) {
             *self.graph.write() = None;

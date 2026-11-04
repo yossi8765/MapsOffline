@@ -752,6 +752,12 @@ pub struct DataStatus {
     /// The running update is paused (resumes with `data_pause(false)`).
     #[serde(default)]
     pub paused: bool,
+    /// Components being updated right now (several jobs may run side by side).
+    #[serde(default)]
+    pub active: Vec<DataComponent>,
+    /// Components waiting for a running job that shares their source (the OSM extract).
+    #[serde(default)]
+    pub queued: Vec<DataComponent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -148,12 +148,14 @@ pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: 
     // imports go one after the other (each one replaces files and records its version).
     let todo = parking_lot::Mutex::new(usable(paths, &l, &wanted).into_iter());
     let done = parking_lot::Mutex::new(Vec::new());
-    let import_lock = parking_lot::Mutex::new(());
+    // process-wide: two update jobs may install ready-made components at the same time
+    static IMPORT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let import_lock = &IMPORT_LOCK;
     std::thread::scope(|s| {
         for _ in 0..3 {
             s.spawn(|| loop {
                 let Some((c, version)) = todo.lock().next() else { break };
-                if install_one(paths, &l, c, &version, emit, cancel, &import_lock) {
+                if install_one(paths, &l, c, &version, emit, cancel, import_lock) {
                     done.lock().push(c);
                 }
             });

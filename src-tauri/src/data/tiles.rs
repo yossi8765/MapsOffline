@@ -168,6 +168,12 @@ pub(crate) fn ensure_cli(
     if exe.exists() {
         return Ok(());
     }
+    // map and world extracts run in parallel (also in separate jobs): install the tool once
+    static INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _one = INSTALL.lock();
+    if exe.exists() {
+        return Ok(());
+    }
     progress(ProgressPhase::Processing, 0, 0, "מאתר את כלי ההורדה pmtiles");
     let client = http_client()?;
     let rel: serde_json::Value = client

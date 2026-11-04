@@ -61,8 +61,12 @@ export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
   startUpdate: async (components) => {
     const t = get().t;
     const queued: Partial<Record<DataComponent, DataProgress>> = {};
-    for (const c of components) queued[c] = { component: c, phase: "queued", done: 0, total: 0, message: t("phaseQueued") };
+    // components already running keep their progress (the backend ignores them)
+    const busy = new Set([...(get().dataStatus?.active ?? []), ...(get().dataStatus?.queued ?? [])]);
+    for (const c of components) if (!busy.has(c)) queued[c] = { component: c, phase: "queued", done: 0, total: 0, message: t("phaseQueued") };
     set((s) => ({ progress: { ...s.progress, ...queued }, dataStatus: s.dataStatus && { ...s.dataStatus, updating: true } }));
+    // the backend decides what starts now and what waits (shared sources): show it at once
+    window.setTimeout(() => void get().refreshDataStatus(), 300);
     try {
       await api.dataUpdate(components);
       get().toast("success", t("phaseDone"));

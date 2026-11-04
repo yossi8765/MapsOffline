@@ -606,6 +606,9 @@ const he = {
   err_CHECKSUM_MISMATCH: "הקובץ שהורד פגום (טביעת האצבע אינה תואמת). יש לנסות שוב.",
 
   // ===== [F1] =====
+  updateAlsoRest: "עדכן גם את שאר הרכיבים",
+  phaseWaitingShared: "בתור",
+  phaseWaitingSharedHint: "ממתין לסיום רכיב אחר שמשתמש באותו קובץ מקור (מפת OSM)",
   // shortcuts, palette, dialogs
   shortcutPalette: "פלטת פקודות",
   shortcutRoutePanel: "תכנון מסלול",
@@ -1560,6 +1563,9 @@ const en: Record<I18nKey, string> = {
   err_CHECKSUM_MISMATCH: "The downloaded file is damaged (checksum mismatch). Try again.",
 
   // ===== [F1] =====
+  updateAlsoRest: "Update the other components too",
+  phaseWaitingShared: "Queued",
+  phaseWaitingSharedHint: "Waits for another component that uses the same source file (the OSM extract)",
   shortcutPalette: "Command palette",
   shortcutRoutePanel: "Plan a route",
   shortcutFavorites: "Favorites",

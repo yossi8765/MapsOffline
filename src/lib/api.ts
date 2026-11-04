@@ -437,6 +437,10 @@ export interface DataStatus {
   trails: ComponentStatus;
   minyanim: ComponentStatus;
   updating: boolean;
+  /** Components being updated now (several jobs may run side by side). */
+  active?: DataComponent[];
+  /** Components waiting for a running job that shares their source (the OSM extract). */
+  queued?: DataComponent[];
 }
 
 export type ProgressPhase = "queued" | "downloading" | "processing" | "finalizing" | "done" | "failed" | "cancelled";

@@ -18,7 +18,12 @@ pub fn data_status(state: State<'_, Arc<AppState>>) -> R<DataStatus> {
     s.world.loaded = s.world.present;
     s.satellite.loaded = s.satellite.present;
     s.terrain.loaded = s.terrain.present;
-    s.updating = state.updating.load(Ordering::Relaxed);
+    {
+        let j = state.data_jobs.lock();
+        s.updating = j.busy();
+        s.active = j.running.clone();
+        s.queued = j.queued.clone();
+    }
     s.paused = s.updating && state.cancel.is_paused();
     Ok(s)
 }
@@ -134,6 +139,10 @@ pub async fn minyanim_next(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, 
     .map_err(err)?
 }
 
+/// Update data components. Several requests may run side by side (see `data::jobs`): components
+/// with their own sources start at once, OSM-derived ones wait while another job builds from the
+/// OSM extract, components already running are ignored. Resolves when this request's components
+/// are done; `data-updated` follows every finished job.
 #[tauri::command]
 pub async fn data_update(
     app: AppHandle,
@@ -141,30 +150,103 @@ pub async fn data_update(
     components: Vec<DataComponent>,
 ) -> R<()> {
     let st = state.inner().clone();
-    if st.updating.swap(true, Ordering::SeqCst) {
-        return Err("UPDATE_RUNNING".into());
-    }
-    st.cancel.reset();
-    let paths = st.paths();
     // "update everything" = everything the user wants (Settings.wantedComponents), else all
     let wanted = st.settings.read().wanted_components.clone();
     let comps = if components.is_empty() { wanted.unwrap_or_else(|| DataComponent::ALL.to_vec()) } else { components };
-    let app2 = app.clone();
-    let emit: crate::data::Emit = Arc::new(move |p: DataProgress| {
-        let _ = app2.emit("data-progress", p);
-    });
-    let st2 = st.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || {
-        let r = crate::data::update(&comps, &paths, emit, &st2.cancel);
-        // only what this update could have replaced is dropped (and reloaded lazily)
-        st2.unload(&comps);
-        st2.updating.store(false, Ordering::SeqCst);
-        r
+    let plan = st.begin_component_job(&comps).map_err(AppError::from)?;
+    if !plan.ignored.is_empty() {
+        log::info!("already updating: {:?}", plan.ignored);
+    }
+    let emit_fn = {
+        let app = app.clone();
+        move |p: DataProgress| {
+            let _ = app.emit("data-progress", p);
+        }
+    };
+    for &c in &plan.queue {
+        emit_fn(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: String::new() });
+    }
+
+    // one job: build, drop what it replaced (reloaded lazily), announce
+    let run = |comps: Vec<DataComponent>| {
+        let (st, app) = (st.clone(), app.clone());
+        let emit: crate::data::Emit = Arc::new(emit_fn.clone());
+        async move {
+            if comps.is_empty() {
+                return Ok(());
+            }
+            let st2 = st.clone();
+            let paths = st.paths();
+            let res = tauri::async_runtime::spawn_blocking(move || {
+                let r = crate::data::update(&comps, &paths, emit, &st2.cancel);
+                st2.unload(&comps);
+                st2.end_component_job(&comps);
+                r
+            })
+            .await
+            .map_err(err)?;
+            let _ = app.emit("data-updated", ());
+            res.map_err(err)
+        }
+    };
+
+    let now = run(plan.start.clone());
+    let later = {
+        let (st, queue, emit_fn) = (st.clone(), plan.queue.clone(), emit_fn.clone());
+        let run = &run;
+        async move {
+            if queue.is_empty() {
+                return Ok(());
+            }
+            // wait (off the async runtime) until no running job builds from the OSM extract
+            let st2 = st.clone();
+            let start = tauri::async_runtime::spawn_blocking(move || loop {
+                let (start, cancelled) = st2.promote_queued(&queue);
+                for c in cancelled {
+                    emit_fn(DataProgress { component: c, phase: ProgressPhase::Cancelled, done: 0, total: 0, message: String::new() });
+                }
+                if let Some(s) = start {
+                    return s;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            })
+            .await
+            .map_err(err)?;
+            run(start).await
+        }
+    };
+    let (a, b) = futures_join(now, later).await;
+    a.and(b)
+}
+
+/// Await two futures side by side (no extra crate: tauri's runtime spawns both).
+async fn futures_join<A, B>(a: A, b: B) -> (R<()>, R<()>)
+where
+    A: std::future::Future<Output = R<()>>,
+    B: std::future::Future<Output = R<()>>,
+{
+    let mut a = std::pin::pin!(a);
+    let mut b = std::pin::pin!(b);
+    let (mut ra, mut rb) = (None, None);
+    std::future::poll_fn(move |cx| {
+        use std::task::Poll;
+        if ra.is_none() {
+            if let Poll::Ready(r) = a.as_mut().poll(cx) {
+                ra = Some(r);
+            }
+        }
+        if rb.is_none() {
+            if let Poll::Ready(r) = b.as_mut().poll(cx) {
+                rb = Some(r);
+            }
+        }
+        if ra.is_some() && rb.is_some() {
+            Poll::Ready((ra.take().unwrap_or(Ok(())), rb.take().unwrap_or(Ok(()))))
+        } else {
+            Poll::Pending
+        }
     })
     .await
-    .map_err(err)?;
-    let _ = app.emit("data-updated", ());
-    res.map_err(err)
 }
 
 /// Pack the installed components (all when `components` is empty / missing) into one `.mapsdata`
@@ -222,10 +304,7 @@ struct PackageDownloadProgress {
 pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState>>, dest: String) -> R<u64> {
     check_user_path(&state, &dest, &["mapsdata"]).map_err(err)?;
     let st = state.inner().clone();
-    if st.updating.swap(true, Ordering::SeqCst) {
-        return Err("UPDATE_RUNNING".into());
-    }
-    st.cancel.reset();
+    st.begin_exclusive_job().map_err(AppError::from)?;
     let paths = st.paths();
     let st2 = st.clone();
     let res = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<u64> {
@@ -263,7 +342,7 @@ pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState
             let phase = if st2.cancel.is_cancelled() { ProgressPhase::Cancelled } else { ProgressPhase::Failed };
             emit(phase, 0, 0, &format!("{e:#}"));
         }
-        st2.updating.store(false, Ordering::SeqCst);
+        st2.end_exclusive_job();
         r
     })
     .await
@@ -277,10 +356,7 @@ where
         + Send
         + 'static,
 {
-    if st.updating.swap(true, Ordering::SeqCst) {
-        return Err("UPDATE_RUNNING".into());
-    }
-    st.cancel.reset();
+    st.begin_exclusive_job().map_err(AppError::from)?;
     let paths = st.paths();
     let st2 = st.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
@@ -294,7 +370,7 @@ where
                 let _ = app.emit("data-progress", DataProgress { component: c, phase, done: 0, total: 0, message: format!("{e:#}") });
             }
         }
-        st2.updating.store(false, Ordering::SeqCst);
+        st2.end_exclusive_job();
         r
     })
     .await
