@@ -102,8 +102,9 @@ export function Sidebar() {
                   aria-label={t(g.label)}
                   aria-current={active ? "page" : undefined}
                   data-tt={g.id === "find" ? "search" : undefined}
-                  // a click on the open group goes back to its first tab; folding is the button below
-                  onClick={() => (g.id === group.id ? setPanel(collapsed ? shown : g.panels[0]) : setPanel(lastInGroup.current[g.id] ?? g.panels[0]))}
+                  // a click on the open group folds the panel (the user's choice); a folded panel opens
+                  // where it was; another group switches to its last tab
+                  onClick={() => (g.id === group.id ? (collapsed ? setPanel(shown) : toggle()) : setPanel(lastInGroup.current[g.id] ?? g.panels[0]))}
                   className={clsx(
                     "relative w-14 h-14 rounded flex flex-col items-center justify-center gap-1 transition-colors duration-150",
                     active ? "bg-accent-soft text-accent" : "text-muted hover:text-fg hover:bg-hover",
