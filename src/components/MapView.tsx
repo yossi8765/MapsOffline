@@ -395,7 +395,12 @@ export function MapView() {
   const userLayersTick = useStore((s) => s.userLayersTick);
   const userData = useRef(new Map<string, FeatureCollection>());
   useEffect(() => {
-    if (mapReady) void useStore.getState().loadUserLayers();
+    if (!mapReady) return;
+    void useStore.getState().loadUserLayers();
+    // the address-list dialog (and other non-map code) saves layers and announces it
+    const reload = () => void useStore.getState().loadUserLayers();
+    window.addEventListener("user-layers-changed", reload);
+    return () => window.removeEventListener("user-layers-changed", reload);
   }, [mapReady]);
   useEffect(() => {
     const map = mapRef.current;

@@ -4,8 +4,12 @@ import type { LonLat } from "../lib/api";
 import { useStore } from "../lib/store";
 import { myLocation as meOverlay, routes as routeOverlay } from "./overlays";
 
-/** Width the floating side panel takes from the map (route fit padding). */
-const PANEL_PAD = 480;
+/** Width the side panel takes from the map (route fit padding): measured, 480 as a fallback. */
+function panelPad(): number {
+  const el = document.querySelector<HTMLElement>("[data-sidebar]");
+  const w = el?.getBoundingClientRect().width;
+  return w && w > 0 ? Math.round(w) + 24 : 480;
+}
 
 /**
  * Camera reactions to the store: fly-to requests, fitting new routes, the "N" shortcut, tilting
@@ -28,7 +32,7 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
     const map = mapRef.current;
     const s = useStore.getState();
     if (!map || !s.routes.length) return;
-    routeOverlay.fit(map, s.routes, s.sidebarCollapsed ? 0 : PANEL_PAD, lang === "he" ? "right" : "left");
+    routeOverlay.fit(map, s.routes, s.sidebarCollapsed ? 0 : panelPad(), lang === "he" ? "right" : "left");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitRouteTick]);
 

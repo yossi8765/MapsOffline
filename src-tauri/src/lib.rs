@@ -133,6 +133,7 @@ pub fn run() {
             commands::data::region_delete,
             commands::data::map_tiles_available,
             commands::data::save_text_file,
+            commands::data::read_text_file,
             commands::app::settings_get,
             commands::app::settings_set,
             commands::app::app_info,

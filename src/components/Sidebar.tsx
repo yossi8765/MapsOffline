@@ -82,7 +82,7 @@ export function Sidebar() {
 
   return (
     // docked to the window edge (Windows NavigationView): no strip of map behind the rail
-    <div className="absolute top-0 bottom-0 start-0 z-20 flex items-stretch no-print pointer-events-none">
+    <div data-sidebar className="absolute top-0 bottom-0 start-0 z-20 flex items-stretch no-print pointer-events-none">
       <div className="panel-surface border-y-0 border-s-0 flex items-stretch overflow-hidden pointer-events-auto">
         {/* rail: icon + short label */}
         <nav className="relative w-16 shrink-0 flex flex-col items-center py-2 gap-1" aria-label={t("appName")}>

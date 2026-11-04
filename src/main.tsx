@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import App from "./App";
+import { MapOnlyApp, isMapWindow } from "./components/MapOnlyApp";
 import "./styles.css";
 import { installPageZoomGuard } from "./lib/gestures";
 import { useStore } from "./lib/store";
@@ -25,6 +26,6 @@ setTimeout(() => {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    {isMapWindow() ? <MapOnlyApp /> : <App />}
   </React.StrictMode>,
 );

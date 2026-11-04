@@ -95,7 +95,15 @@ export function add(map: maplibregl.Map, beforeId: string | undefined, dark: boo
     type: "line",
     source: SRC_HL,
     layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["==", ["geometry-type"], "LineString"],
     paint: { "line-color": mc.highlight, "line-width": 10, "line-opacity": 0.75 },
+  });
+  addLayer({
+    id: "route-hl-point",
+    type: "circle",
+    source: SRC_HL,
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-radius": 7, "circle-color": mc.highlight, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
   });
   addLayer({
     id: "route-stops",
@@ -136,6 +144,11 @@ export function sync(map: maplibregl.Map, routes: Route[], selectedId: string | 
 /** The highlighted leg / step of a route (hover in the step list). */
 export function syncHighlight(map: maplibregl.Map, routes: Route[], highlight: HighlightState | null): void {
   if (!map.getSource(SRC_HL)) return;
+  if (highlight?.point) {
+    // elevation-profile hover: one dot on the route
+    setFeatures(map, SRC_HL, [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: highlight.point } }]);
+    return;
+  }
   const r = routes.find((x) => x.id === highlight?.routeId);
   if (!r || !highlight) {
     setFeatures(map, SRC_HL, []);
@@ -146,7 +159,7 @@ export function syncHighlight(map: maplibregl.Map, routes: Route[], highlight: H
   let coords = leg.geometry;
   if (highlight.stepIndex !== undefined && leg.steps?.length) {
     const st = leg.steps[highlight.stepIndex];
-    const next = leg.steps[highlight.stepIndex + 1];
+    const next = leg.steps[highlight.stepIndex + Math.max(1, highlight.stepCount ?? 1)];
     const a = st?.geometryStart ?? 0;
     const b = next ? next.geometryStart + 1 : leg.geometry.length;
     coords = leg.geometry.slice(a, Math.max(b, a + 2));
