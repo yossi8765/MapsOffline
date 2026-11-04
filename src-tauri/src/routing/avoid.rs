@@ -105,10 +105,12 @@ pub fn road_around(g: &Graph, p: LonLat, mode: Mode) -> Vec<u32> {
     let mut seen: FxHashSet<u32> = FxHashSet::default();
     seen.insert(e0);
     // walk both directions from the snapped edge
+    // unnamed roads: only a short stretch (their pieces are not reliably one road)
+    let limit = if name == crate::routing::graph::NO_NAME { AVOID_ROAD_M / 3.0 } else { AVOID_ROAD_M };
     for start in [g.e_from[e0 as usize], g.e_to[e0 as usize]] {
         let mut frontier = vec![(start, 0.0f64)];
         while let Some((v, d)) = frontier.pop() {
-            if d > AVOID_ROAD_M {
+            if d > limit {
                 continue;
             }
             let cand: Vec<u32> = g.incident(v).iter().copied().filter(|&e| !seen.contains(&e) && same(e)).collect();

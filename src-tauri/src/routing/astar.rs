@@ -181,6 +181,29 @@ fn frac_dir(snap: &Snap, dir: u32) -> f32 {
     if dir == 0 { snap.frac } else { 1.0 - snap.frac }
 }
 
+/// Pruning radii: local = straight × [0] clamped to [1]..[2] m, wide = straight × [3] clamped to
+/// [4]..[5] m. Tuned with `mapsoffline-data bench --verify` (docs/PERF.md); the CLI build reads
+/// `MO_PRUNE=a,b,c,d,e,f` to try other values.
+const PRUNE: [f32; 6] = [0.05, 2_500.0, 10_000.0, 0.25, 10_000.0, 40_000.0];
+
+#[cfg(feature = "cli")]
+fn prune_knobs() -> [f32; 6] {
+    static K: std::sync::OnceLock<[f32; 6]> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("MO_PRUNE")
+            .ok()
+            .and_then(|v| v.split(',').map(|x| x.trim().parse().ok()).collect::<Option<Vec<f32>>>())
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or(PRUNE)
+    })
+}
+
+#[cfg(not(feature = "cli"))]
+#[inline]
+fn prune_knobs() -> [f32; 6] {
+    PRUNE
+}
+
 /// Straight-line distance (m) above which long-route pruning kicks in.
 const PRUNE_MIN_STRAIGHT: f32 = 15_000.0;
 
@@ -206,13 +229,17 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
     let straight = d2(ps, pt).sqrt();
     // Hierarchy pruning for long routes: minor roads only near the endpoints, tertiary roads
     // (car) within a wider radius, the main network everywhere.
-    let prune = allow_prune && straight > PRUNE_MIN_STRAIGHT;
+    // in the territories (Gaza, Area A / B) road classes say little about through routes: the
+    // main way in is often a minor road at a crossing, so searches ending there are not pruned
+    let territory = |e: u32| g.e_flags[e as usize] & (crate::routing::graph::flags::AREA_A | crate::routing::graph::flags::AREA_B) != 0;
+    let prune = allow_prune && straight > PRUNE_MIN_STRAIGHT && !territory(from.edge) && !territory(to.edge);
+    let k = prune_knobs();
     let r_local2 = {
-        let r = (straight * 0.05).clamp(2_500.0, 10_000.0);
+        let r = (straight * k[0]).clamp(k[1], k[2]);
         r * r
     };
     let r_wide2 = {
-        let r = (straight * 0.25).clamp(10_000.0, 40_000.0);
+        let r = (straight * k[3]).clamp(k[4], k[5]);
         r * r
     };
     let pot = |v: u32| -> f32 {

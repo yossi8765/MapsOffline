@@ -14,6 +14,8 @@ fn bare(n: &str) -> bool {
 pub fn to_street(name: Option<&str>) -> String {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         None => String::new(),
+        // Latin names take a hyphen: "ל-Sharia Baghdad"
+        Some(n) if n.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) => format!(" ל-{n}"),
         Some(n) if bare(n) => format!(" ל{n}"),
         Some(n) => format!(" לרחוב {n}"),
     }
@@ -23,6 +25,7 @@ pub fn to_street(name: Option<&str>) -> String {
 pub fn on_street(name: Option<&str>) -> String {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         None => String::new(),
+        Some(n) if n.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) => format!(" ב-{n}"),
         Some(n) if bare(n) => format!(" ב{n}"),
         Some(n) => format!(" ברחוב {n}"),
     }

@@ -3075,6 +3075,27 @@ mod tests {
     }
 
     #[test]
+    fn avoid_point_and_polygon() {
+        use crate::types::{Avoid, Mode, RouteRequest, Waypoint};
+        // A - B - C straight (short) and A - D - C around (long)
+        let p = [(34.80, 32.05), (34.801, 32.05), (34.802, 32.05), (34.801, 32.052)];
+        let mut g = mk(&p, &[(0, 1), (1, 2), (0, 3), (3, 2)]);
+        g.name_buf = "הרצליפו".into();
+        g.name_off = vec![0, "הרצל".len() as u32, "הרצליפו".len() as u32];
+        g.e_name = vec![0, 0, 1, 1];
+        g.finish_build();
+        let wp = |i: usize| Waypoint { lon: p[i].0, lat: p[i].1, name: None };
+        let req = |avoid: Avoid| RouteRequest { waypoints: vec![wp(0), wp(2)], mode: Mode::Car, avoid, alternatives: 1, ..Default::default() };
+        let len = |r: &RouteRequest| g.route(r).unwrap().routes[0].distance_m;
+        let direct = len(&req(Avoid::default()));
+        let around = len(&req(Avoid { points: vec![[34.8015, 32.0501]], ..Default::default() }));
+        assert!(direct < 200.0 && around > 300.0, "{direct} {around}");
+        let poly = vec![[34.8013, 32.0495], [34.8017, 32.0495], [34.8017, 32.0505], [34.8013, 32.0505]];
+        let around2 = len(&req(Avoid { polygons: vec![poly], ..Default::default() }));
+        assert!(around2 > 300.0, "{around2}");
+    }
+
+    #[test]
     fn restriction_tags() {
         let mut c = 0;
         let t = |v: &[(&'static str, &'static str)], c: &mut u64| restriction_kind(v.iter().copied(), c);
