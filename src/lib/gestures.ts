@@ -12,25 +12,16 @@
 // The two-finger behaviour is a per-device preference stored in localStorage because it depends on
 // the hardware in front of the user, not on the account.
 import type { LngLat, Map as MLMap } from "maplibre-gl";
+import { getPrefString, setPrefString } from "./prefs";
 
 export type ScrollMode = "pan" | "zoom";
 
-const KEY = "mapsoffline.scrollMode";
-
 export function getScrollMode(): ScrollMode {
-  try {
-    return localStorage.getItem(KEY) === "zoom" ? "zoom" : "pan";
-  } catch {
-    return "pan";
-  }
+  return getPrefString("mapsoffline.scrollMode") === "zoom" ? "zoom" : "pan";
 }
 
 export function setScrollMode(m: ScrollMode): void {
-  try {
-    localStorage.setItem(KEY, m);
-  } catch {
-    /* private window etc. */
-  }
+  setPrefString("mapsoffline.scrollMode", m);
 }
 
 /** Zoom levels per pinch delta unit. Chromium encodes a pinch as deltaY ≈ -100·ln(scale). */
@@ -45,7 +36,7 @@ const MAX_STEP = 1.5;
 const MAC_NOTCH = 4.000244140625;
 
 /** Heuristic: a physical mouse wheel vs. a precision touchpad. */
-function isMouseWheel(e: WheelEvent): boolean {
+export function isMouseWheel(e: WheelEvent): boolean {
   if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return true;
   if (e.deltaX !== 0) return false;
   const d = Math.abs(e.deltaY);

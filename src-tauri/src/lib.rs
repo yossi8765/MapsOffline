@@ -4,6 +4,8 @@
 #![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub mod commands;
 pub mod data;
+pub mod error;
+pub mod logging;
 pub mod geo;
 pub mod geocode;
 pub mod history;
@@ -27,8 +29,8 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
     let state = Arc::new(AppState::new());
+    logging::init(&state.paths().root.join("logs"));
     state.refresh_map_files();
     {
         // the data update closes the pooled index connections before swapping the file
@@ -89,68 +91,77 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::geocode_search,
-            commands::geocode_reverse,
-            commands::regions_catalog,
-            commands::regions_locate,
-            commands::save_text_file,
-            commands::regions_installed,
-            commands::region_size,
-            commands::region_install,
-            commands::region_cancel,
-            commands::region_delete,
-            commands::map_tiles_available,
-            commands::route,
-            commands::transit_stops,
-            commands::poi_layer,
-            commands::transit_line,
-            commands::transit_agencies,
-            commands::transit_lines,
-            commands::transit_line_times,
-            commands::transit_stop_board,
-            commands::transit_delays,
-            commands::history_list,
-            commands::history_add,
-            commands::history_delete,
-            commands::history_clear,
-            commands::favorites_list,
-            commands::favorites_add,
-            commands::favorites_update,
-            commands::favorites_delete,
-            commands::data_status,
-            commands::tiles_path,
-            commands::tiles_online_key,
-            commands::satellite_path,
-            commands::world_path,
-            commands::terrain_path,
-            commands::trails_path,
-            commands::minyanim_for,
-            commands::minyanim_next,
-            commands::locate,
-            commands::app_update_check,
-            commands::app_update_download,
-            commands::app_update_install,
-            commands::optimize_order,
-            commands::elevation_profile,
-            commands::data_update,
-            commands::data_check,
-            commands::data_export,
-            commands::data_import,
-            commands::data_download_package,
-            commands::data_cancel,
-            commands::data_pause,
-            commands::data_preload,
-            commands::settings_get,
-            commands::settings_set,
-            commands::app_info,
-            commands::take_pending_link,
-            commands::nav_start,
-            commands::nav_simulate,
-            commands::nav_set_route,
-            commands::nav_set_voice,
-            commands::nav_stop,
-            commands::speak,
-            commands::voices_list,
+            // ---- R1 data / infra / security (commands/data.rs, commands/app.rs)
+            commands::data::data_status,
+            commands::data::data_check,
+            commands::data::data_update,
+            commands::data::data_export,
+            commands::data::data_import,
+            commands::data::data_download_package,
+            commands::data::data_cancel,
+            commands::data::data_pause,
+            commands::data::data_preload,
+            commands::data::tiles_path,
+            commands::data::tiles_online_key,
+            commands::data::satellite_path,
+            commands::data::world_path,
+            commands::data::terrain_path,
+            commands::data::trails_path,
+            commands::data::minyanim_for,
+            commands::data::minyanim_next,
+            commands::data::regions_catalog,
+            commands::data::regions_locate,
+            commands::data::regions_installed,
+            commands::data::region_size,
+            commands::data::region_install,
+            commands::data::region_cancel,
+            commands::data::region_delete,
+            commands::data::map_tiles_available,
+            commands::data::save_text_file,
+            commands::app::settings_get,
+            commands::app::settings_set,
+            commands::app::app_info,
+            commands::app::take_pending_link,
+            commands::app::logs_dir,
+            commands::app::history_list,
+            commands::app::history_add,
+            commands::app::history_delete,
+            commands::app::history_clear,
+            commands::app::favorites_list,
+            commands::app::favorites_add,
+            commands::app::favorites_update,
+            commands::app::favorites_delete,
+            commands::app::app_update_check,
+            commands::app::app_update_download,
+            commands::app::app_update_install,
+            // [R1] new commands above
+            // ---- R2 routing + navigation (commands/route.rs, commands/nav.rs)
+            commands::route::route,
+            commands::route::optimize_order,
+            commands::route::elevation_profile,
+            commands::nav::locate,
+            commands::nav::nav_start,
+            commands::nav::nav_simulate,
+            commands::nav::nav_set_route,
+            commands::nav::nav_set_voice,
+            commands::nav::nav_stop,
+            commands::nav::speak,
+            commands::nav::voices_list,
+            // [R2] new commands above
+            // ---- R3 transit (commands/transit.rs)
+            commands::transit::transit_stops,
+            commands::transit::transit_line,
+            commands::transit::transit_agencies,
+            commands::transit::transit_lines,
+            commands::transit::transit_line_times,
+            commands::transit::transit_stop_board,
+            commands::transit::transit_delays,
+            // [R3] new commands above
+            // ---- R4 geocode (commands/geo.rs)
+            commands::geo::geocode_search,
+            commands::geo::geocode_reverse,
+            commands::geo::poi_layer,
+            // [R4] new commands above
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapsOffline");

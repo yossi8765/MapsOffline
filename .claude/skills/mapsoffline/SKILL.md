@@ -13,7 +13,13 @@ Stack: Tauri 2 · Rust (data pipeline, routing, transit, geocoding, history) · 
 ```
 src-tauri/src/
   lib.rs            tauri builder, plugin & command registration, AppState
-  commands.rs       ALL #[tauri::command] fns (thin: validate → call module → serialize)
+  commands/         ALL #[tauri::command] fns (thin: validate → call module → serialize), one file per
+                    stream: geo.rs (R4 geocode), route.rs + nav.rs (R2 routing/nav), transit.rs (R3),
+                    data.rs + app.rs (R1 data/infra); register in lib.rs under the stream's `// [Rn]` marker
+  error.rs          AppError {code, message, details?} = what every command returns as Err (R<T>);
+                    code from `CODE: …` prefixes or the cause chain (NETWORK, BLOCKED_HOST, DISK_FULL,
+                    PERMISSION, INTERNAL_PANIC, INTERNAL); guard()/guard_async() turn panics into errors
+  logging.rs        log file <data root>\logs\mapsoffline.log (2 MB × 5), panic hook; command logs_dir()
   state.rs          AppState { graph: RwLock<Option<Arc<Graph>>>, transit: ..., geocoder, history }
   paths.rs          data dir (%APPDATA%\MapsOffline\data), file names
   data/{download,tiles,satellite,package,manifest}.rs   update pipeline, emits "data-progress" events
@@ -26,11 +32,21 @@ src-tauri/src/
   history.rs        SQLite history + favorites
   bin/mapsoffline-data.rs   CLI: build data without the GUI
 src/
-  lib/api.ts        typed invoke() wrappers – single source of truth for IPC types (mirror of Rust serde structs)
-  lib/store.ts      zustand store (route state, ui state, settings)
+  lib/api.ts        typed invoke() wrappers – single source of truth for IPC types (mirror of Rust serde structs);
+                    errors: commands reject with ApiError {code, message, details?}; toApiError / errorCode / errorText
+  lib/errors.ts     describeError(e, t) / errorMessage: code -> i18n key `err_<CODE>` (unknown/INTERNAL -> errGeneric + text)
+  lib/store.ts      re-export of lib/store/ (keeps `import { useStore } from "../lib/store"`)
+  lib/store/        zustand slices: ui, settings (DEFAULT_SETTINGS, serialised writes), map (layers, tiles URLs,
+                    my location, popovers, map-tool stubs for F2), route, data, saved (favorites+history), appUpdate
+  lib/transitSort.ts, links.ts (map/geo links), sun.ts (resolveTheme, isNightInIsrael), prefs.ts (typed localStorage `mapsoffline.*`)
+  lib/useTauriEvent.ts  race-free backend event subscription (hook + subscribe/subscribeWith)
+  lib/useDialog.ts  useDialog (focus in, Tab trap, Escape, focus restore) + useMenuKeys (role=menu arrows/Home/End)
   lib/i18n.ts       Hebrew (default, RTL) + English strings
   lib/gestures.ts   wheel/trackpad gestures (replaces MapLibre scrollZoom: pinch = fast zoom, wheel = stepped zoom, two-finger scroll = pan|zoom per localStorage pref)
-  components/       MapView, Sidebar, RoutePanel, SearchBox, RouteDetails, FavoritesPanel (sections: lines / addresses with home+work first / stops / places), HistoryPanel, DataPanel, SettingsPanel, LayersPanel, PrintSheet
+  map/              MapView internals: useMapInstance (create map, controls, view), useCamera, useHoverCard,
+                    useViewportFetch (POI / stops layers), popups, colors (CSS tokens), icons (bus, POI, shields),
+                    locale, overlays/{routes,transitStops,pois,myLocation,linePreview,waypoints} (add + sync each)
+  components/       MapView (composition only), Sidebar, RoutePanel, SearchBox, RouteDetails, FavoritesPanel (sections: lines / addresses with home+work first / stops / places), HistoryPanel, DataPanel, SettingsPanel, LayersPanel, PrintSheet
   styles.css        tailwind + theme tokens
 public/fonts, public/sprites   offline glyphs/sprites for MapLibre
 ```
@@ -95,11 +111,13 @@ cd src-tauri && cargo check  # fast Rust compile check (add --features cli to in
 cd src-tauri && cargo test
 cd src-tauri && cargo run --bin mapsoffline-data -- build --all   # build data files from CLI
 pnpm tsc --noEmit            # typecheck frontend
+pnpm test --run              # frontend unit tests (vitest; src/**/*.test.ts[x], jsdom per file)
 ```
 Always `cargo check` after touching Rust and `pnpm tsc --noEmit` after touching TS before declaring done.
 
 ## Rules
-- Hebrew UI first, `dir="rtl"` on root; every string goes through `lib/i18n.ts`.
+- Hebrew UI first, `dir="rtl"` on root; every string goes through `lib/i18n.ts`. Parallel streams add keys only under
+  their own `// ===== [F1|F2|R1..R4] =====` marker at the end of each dictionary (same markers at the end of api.ts).
 - No network calls at runtime except inside `data/` update flow and `online/` routing (which must fail fast and never block offline use).
 - Large data (graph, transit) lives in `AppState` behind `RwLock<Option<Arc<_>>>`; load lazily, never block the UI thread; long jobs use `tauri::async_runtime::spawn_blocking` and emit progress events.
 - Binary formats: `MAGIC + VERSION` header. graph.bin (v4: v3 + `v_signal` bitset of signalised junction vertices from node tag `highway=traffic_signals`, 9191 vertices; CLI `route --unpaved allow|avoidLong|avoid --hard-turns`, output line shows `unpaved: N m`) is flat little-endian arrays + a persisted 400 m grid index (loads in ~30 ms) + the restricted-territory rings (`routing/areas.rs`: Area A/B boundary relations stitched into closed rings, u32 edge flags with `AREA_A = 1<<15`, `AREA_B = 1<<16`, classification = any sample point >10 m inside a ring); transit.bin is bincode. CLI: `route --avoid-areas a|ab --avoid-toll`, `area lon,lat` prints which territory a point / its nearest roads are in. Bump the version when a layout changes and reject old versions with a clear error. Measure with `cargo run --release --features cli --bin mapsoffline-data -- bench`; see docs/PERF.md and docs/SIZE.md.

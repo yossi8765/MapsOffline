@@ -1,0 +1,94 @@
+import { useEffect, useRef, type RefObject } from "react";
+import type * as maplibregl from "maplibre-gl";
+import type { LonLat } from "../lib/api";
+import { useStore } from "../lib/store";
+import { myLocation as meOverlay, routes as routeOverlay } from "./overlays";
+
+/** Width the floating side panel takes from the map (route fit padding). */
+const PANEL_PAD = 480;
+
+/**
+ * Camera reactions to the store: fly-to requests, fitting new routes, the "N" shortcut, tilting
+ * for 3D buildings, and following the vehicle while navigating (heading-up, tilted; back to
+ * north-up and flat when the session ends).
+ */
+export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: boolean, lang: string): void {
+  // ---- fly to
+  const flyTo = useStore((s) => s.flyTo);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !flyTo) return;
+    map.flyTo({ center: flyTo.lonlat, zoom: flyTo.zoom ?? Math.max(map.getZoom(), 15), duration: 800 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flyTo]);
+
+  // ---- fit bounds on new routes
+  const fitRouteTick = useStore((s) => s.fitRouteTick);
+  useEffect(() => {
+    const map = mapRef.current;
+    const s = useStore.getState();
+    if (!map || !s.routes.length) return;
+    routeOverlay.fit(map, s.routes, s.sidebarCollapsed ? 0 : PANEL_PAD, lang === "he" ? "right" : "left");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitRouteTick]);
+
+  // ---- "N": north up, flat
+  const northUpTick = useStore((s) => s.northUpTick);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !northUpTick) return;
+    map.easeTo({ bearing: 0, pitch: 0, duration: 500 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [northUpTick]);
+
+  // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
+  // above and below zoom 14), level it again when switched off.
+  const buildings3d = useStore((s) => s.layers.buildings3d);
+  const first3d = useRef(true);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (first3d.current) {
+      first3d.current = false;
+      return;
+    }
+    if (!map) return;
+    if (buildings3d) {
+      const z = map.getZoom();
+      map.easeTo({ pitch: Math.max(map.getPitch(), 55), zoom: z < 15 ? 15.5 : z, duration: 900 });
+    } else if (map.getPitch() > 0) {
+      map.easeTo({ pitch: 0, duration: 500 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildings3d]);
+
+  // ---- live navigation
+  const navUpdate = useStore((s) => s.navigation?.update ?? null);
+  const navigating = useStore((s) => !!s.navigation);
+  const wasNavigating = useRef(false);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (!navigating) {
+      if (wasNavigating.current) {
+        wasNavigating.current = false;
+        map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
+      }
+      return;
+    }
+    wasNavigating.current = true;
+    if (!navUpdate) return;
+    const at: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
+    meOverlay.showSnapped(map, at);
+    // keep the vehicle in the lower third of the view, as navigation apps do
+    map.easeTo({
+      center: at,
+      bearing: navUpdate.bearing,
+      pitch: 50,
+      zoom: 17,
+      offset: [0, Math.round(map.getContainer().clientHeight * 0.2)],
+      duration: 900,
+      easing: (x) => x,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navUpdate, navigating, mapReady]);
+}

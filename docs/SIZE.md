@@ -141,6 +141,20 @@ of the three `public/fonts/Noto Sans */` folders.
 * Icon list trimmed to what Windows uses (`icon.ico` + PNGs); `icon.icns` (macOS) no longer listed.
 * `app.withGlobalTauri: false` (explicit). No `bundle.resources`.
 
+### Panic strategy: `panic = "abort"` kept (measured 2026-11-04)
+Same source (1.7.0), same toolchain (rustc 1.98.1), fat LTO, opt-level "s", stripped:
+
+| profile | mapsoffline.exe |
+|---|---|
+| `panic = "abort"` | 10,340,352 bytes |
+| `panic = "unwind"` | 14,495,232 bytes (+40 %) |
+
+Unwinding would let commands turn a panic into an `INTERNAL_PANIC` error instead of ending the
+process, but 4 MB (+40 %) is far over the 6 % budget. Instead: the panic hook in `src/logging.rs`
+writes message, location and backtrace to `<data root>\logs\mapsoffline.log` before the abort,
+and untrusted input is validated (data files such as `transit.bin`, IPC arguments).
+`error::guard` / `guard_async` exist and act in dev / test builds (which unwind).
+
 ## Recommendations that need source edits (not done – other owners)
 
 1. **chrono-tz: compile only `Asia/Jerusalem`** (est. −150…250 KB exe). The code only uses

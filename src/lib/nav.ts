@@ -7,7 +7,7 @@
  * it is non-null, easeTo({ center: [snappedLon, snappedLat], bearing, pitch: 50, zoom: 17 }).
  */
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, type NavUpdate, type Route, type RouteRequest } from "./api";
+import { api, errorText, type NavUpdate, type Route, type RouteRequest } from "./api";
 import { useStore } from "./store";
 
 export interface NavState {
@@ -25,6 +25,9 @@ export interface NavState {
 }
 
 let unlisten: UnlistenFn[] = [];
+/** Bumped by every start / stop: a start that was overtaken while it awaited (double click)
+ *  drops the listeners it registered instead of leaving them running next to the newer ones. */
+let session = 0;
 
 const patch = (p: Partial<NavState>) => {
   const n = useStore.getState().navigation;
@@ -45,11 +48,12 @@ export async function startNavigation(routeId: string, simulate = false): Promis
     return;
   }
   await stopNavigation();
+  const mine = ++session;
   const voice = s.settings.navVoice ?? true;
   useStore.setState({
     navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false },
   });
-  unlisten = await Promise.all([
+  const subs = await Promise.all([
     api.onNavUpdate(onUpdate),
     api.onNavError((msg) => patch({ error: msg })),
     api.onNavEnded(() => {
@@ -58,15 +62,21 @@ export async function startNavigation(routeId: string, simulate = false): Promis
       if (n && !n.arrived && !n.error) void stopNavigation();
     }),
   ]);
+  if (mine !== session) {
+    subs.forEach((u) => u());
+    return;
+  }
+  unlisten = subs;
   try {
     if (simulate) await api.navSimulate(route, simSpeed(route.mode));
     else await api.navStart(route);
   } catch (e) {
-    patch({ error: String(e) });
+    patch({ error: errorText(e) });
   }
 }
 
 export async function stopNavigation(): Promise<void> {
+  session++;
   unlisten.forEach((u) => u());
   unlisten = [];
   try {

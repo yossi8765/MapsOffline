@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { api } from "./lib/api";
+import { api, type DataProgress } from "./lib/api";
+import { useTauriEvent } from "./lib/useTauriEvent";
 import { resolveTheme, useStore } from "./lib/store";
 import { isRtl } from "./lib/i18n";
 import { MapView } from "./components/MapView";
@@ -25,35 +26,22 @@ export default function App() {
       // transit too: origin/destination search offers bus stops once the model is in memory
       api.dataPreload(true).catch(() => {});
     })();
-    let unProg: (() => void) | undefined;
-    let unUpd: (() => void) | undefined;
-    api.onDataProgress((p) => useStore.getState().setProgress(p)).then((u) => (unProg = u)).catch(() => {});
-    let unAppProg: (() => void) | undefined;
-    api
-      .onAppUpdateProgress((p) => useStore.setState({ appUpdateProgress: { done: p.done, total: p.total, message: p.message } }))
-      .then((u) => (unAppProg = u))
-      .catch(() => {});
     // program update: on every start, a few seconds in (the window is drawn first), when the setting allows it
     const timer = window.setTimeout(() => {
       const s = useStore.getState();
       if (!s.settings.autoCheckAppUpdates || !navigator.onLine) return;
       void s.checkAppUpdate(true);
     }, 5_000);
-    api
-      .onDataUpdated(() => {
-        const st = useStore.getState();
-        void st.refreshDataStatus();
-        void st.refreshTiles();
-      })
-      .then((u) => (unUpd = u))
-      .catch(() => {});
-    return () => {
-      unProg?.();
-      unUpd?.();
-      unAppProg?.();
-      window.clearTimeout(timer);
-    };
+    return () => window.clearTimeout(timer);
   }, []);
+
+  useTauriEvent<DataProgress>("data-progress", (p) => useStore.getState().setProgress(p));
+  useTauriEvent<DataProgress>("app-update-progress", (p) => useStore.setState({ appUpdateProgress: { done: p.done, total: p.total, message: p.message } }));
+  useTauriEvent("data-updated", () => {
+    const st = useStore.getState();
+    void st.refreshDataStatus();
+    void st.refreshTiles();
+  });
 
   // connectivity (gates online-only actions such as "open in Google Maps")
   useEffect(() => {

@@ -872,3 +872,11 @@ pub struct RegionLocate {
     /// region ids that contain the place, smallest first (state → country → continent)
     pub regions: Vec<String>,
 }
+
+// ===== [R1] data / infra / security =====
+
+// ===== [R2] routing + navigation =====
+
+// ===== [R3] transit =====
+
+// ===== [R4] geocode =====

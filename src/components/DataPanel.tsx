@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { BookOpen, Bus, Download, Footprints, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
 import { useStore } from "../lib/store";
+import { useTauriEvent } from "../lib/useTauriEvent";
 import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Toggle } from "./RoutePanel";
@@ -99,12 +99,7 @@ export function DataPanel() {
   // full ready-made package download: live progress and the saved file (to install / show)
   const [pkg, setPkg] = useState<{ phase: ProgressPhase; done: number; total: number; message: string } | null>(null);
   const [pkgFile, setPkgFile] = useState<string | null>(null);
-  useEffect(() => {
-    const un = listen<{ phase: ProgressPhase; done: number; total: number; message: string }>("package-download", (e) => setPkg(e.payload));
-    return () => {
-      void un.then((f) => f());
-    };
-  }, []);
+  useTauriEvent<{ phase: ProgressPhase; done: number; total: number; message: string }>("package-download", setPkg);
   const pkgActive = !!pkg && pkg.phase !== "done" && pkg.phase !== "failed" && pkg.phase !== "cancelled";
   const pkgPct = pkg && pkg.total > 0 ? Math.min(100, Math.round((pkg.done / pkg.total) * 100)) : null;
   const doDownloadPackage = async () => {

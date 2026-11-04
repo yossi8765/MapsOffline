@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Briefcase, Bus, Clock, Heart, Home, LocateFixed, MapPin, Milestone, Search, Star, Store, X } from "lucide-react";
 import clsx from "clsx";
-import { api, type GeoResult, type Favorite, type HistoryItem } from "../lib/api";
+import { api, errorCode, type GeoResult, type Favorite, type HistoryItem } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
 
@@ -182,8 +182,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
       } catch (e) {
         if (id === seq.current) {
           setResults([]);
-          const code = String(e);
-          if (!code.includes("NO_GEOCODE_DATA") && !code.includes("not implemented")) console.warn(e);
+          const code = errorCode(e);
+          if (code !== "NO_GEOCODE_DATA" && code !== "NOT_IMPLEMENTED") console.warn(e);
         }
       } finally {
         if (id === seq.current) setLoading(false);

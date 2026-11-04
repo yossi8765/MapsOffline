@@ -82,6 +82,10 @@ dirs = "6"
 unicode-normalization = "0.1"
 parking_lot = "0.12"
 smallvec = "1"
+# [R1] deps
+# [R2] deps
+# [R3] deps
+# [R4] deps
 
 
 # Windows only. This section must stay last among the dependency lists: every line below a

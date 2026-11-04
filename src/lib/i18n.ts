@@ -233,7 +233,7 @@ const he = {
   avoidAreasOptA: "A בלבד",
   avoidAreasOptNone: "ללא",
   avoidAreasHint: "המסלול לא יעבור בשטחי הרשות הפלסטינית שנבחרו (שטח A כולל גם H1 בחברון ורצועת עזה). חישוב מקוון שעובר בשטח כזה נפסל ומוחלף בחישוב מקומי. ניתן לשנות לכל מסלול בפאנל המסלול.",
-  errNoRouteAreas: "לא נמצא מסלול שנמנע מהשטחים האסורים. אם המוצא או היעד בתוך שטח A/B, שנה את ההגדרה ״שטחים אסורים״ או כבה את ההימנעות בפאנל המסלול.",
+  err_NO_ROUTE_AVOID_AREAS: "לא נמצא מסלול שנמנע מהשטחים האסורים. אם המוצא או היעד בתוך שטח A/B, שנה את ההגדרה ״שטחים אסורים״ או כבה את ההימנעות בפאנל המסלול.",
   alternatives: "מספר מסלולים",
   computeRoute: "חשב מסלול",
   computing: "מחשב מסלול...",
@@ -453,8 +453,8 @@ const he = {
   navNoGps: "המחשב לא מוסר מיקום, ולכן אי אפשר לנווט בזמן אמת. אפשר להציג את הניווט בנסיעה מדומה לאורך המסלול.",
   navTransitUnsupported: "ניווט חי זמין לנסיעה ברכב, באופניים וברגל.",
   navVoiceSetting: "הנחיות קוליות בניווט",
-  locationDenied: "אין הרשאה לשימוש במיקום. אפשר לאשר ב-Windows: הגדרות ← פרטיות ואבטחה ← מיקום.",
-  locationUnavailable: "לא הצלחתי לאתר את המיקום כרגע.",
+  err_LOCATION_DENIED: "אין הרשאה לשימוש במיקום. אפשר לאשר ב-Windows: הגדרות ← פרטיות ואבטחה ← מיקום.",
+  err_LOCATION_UNAVAILABLE: "לא ניתן לאתר את המיקום כרגע.",
   categoriesSearch: "חיפוש קטגוריה",
   sortByTopic: "לפי נושא",
   sortAlpha: "א-ב",
@@ -556,7 +556,7 @@ const he = {
   noTraffic: "ללא עומסי תנועה",
   sourceOnline: "חושב בשירות מקוון",
   sourceOffline: "חושב מהנתונים המקומיים",
-  errOnlineFailed: "החישוב המקוון נכשל. במצב ״מקוון בלבד״ אין מעבר לנתונים המקומיים – בדוק את החיבור לאינטרנט או שנה את מצב חישוב המסלולים בהגדרות.",
+  err_ONLINE_FAILED: "החישוב המקוון נכשל. במצב ״מקוון בלבד״ אין מעבר לנתונים המקומיים – בדוק את החיבור לאינטרנט או שנה את מצב חישוב המסלולים בהגדרות.",
   chooseFolder: "בחר תיקייה",
   resetFolder: "חזרה לברירת המחדל",
   shortcuts: "קיצורי מקלדת",
@@ -568,14 +568,14 @@ const he = {
   shortcutZoom: "זום",
   aboutText: "תוכנת ניווט ומפות לישראל שפועלת גם ללא חיבור לאינטרנט. מקורות הנתונים: OpenStreetMap, Protomaps ומשרד התחבורה.",
   // errors
-  errNoRouting: "נתוני הניווט אינם מותקנים. יש להוריד את חבילת הניווט במסך הנתונים.",
-  errNoRoutingRegion: "אין ניווט בלי אינטרנט לאזור הזה. אפשר להוריד \"ניווט\" למדינה במסך הנתונים ← מדינות נוספות, או להתחבר לאינטרנט.",
-  errNoTransit: "נתוני התחבורה הציבורית אינם מותקנים. יש להוריד אותם במסך הנתונים.",
-  errNoGeocode: "אינדקס הכתובות אינו מותקן. יש להוריד את חבילת הכתובות במסך הנתונים.",
-  errUpdateRunning: "עדכון נתונים כבר מתבצע. יש להמתין לסיומו.",
-  errNeedTwo: "יש לבחור מוצא ויעד.",
+  err_NO_ROUTING_DATA: "נתוני הניווט אינם מותקנים. יש להוריד את חבילת הניווט במסך הנתונים.",
+  err_NO_ROUTING_DATA_REGION: "אין ניווט בלי אינטרנט לאזור הזה. אפשר להוריד \"ניווט\" למדינה במסך הנתונים ← מדינות נוספות, או להתחבר לאינטרנט.",
+  err_NO_TRANSIT_DATA: "נתוני התחבורה הציבורית אינם מותקנים. יש להוריד אותם במסך הנתונים.",
+  err_NO_GEOCODE_DATA: "אינדקס הכתובות אינו מותקן. יש להוריד את חבילת הכתובות במסך הנתונים.",
+  err_UPDATE_RUNNING: "עדכון נתונים כבר מתבצע. יש להמתין לסיומו.",
+  err_NEED_TWO_WAYPOINTS: "יש לבחור מוצא ויעד.",
   errGeneric: "אירעה שגיאה",
-  errNotImplemented: "האפשרות הזו עדיין אינה זמינה בגרסה זו.",
+  err_NOT_IMPLEMENTED: "האפשרות הזו עדיין אינה זמינה בגרסה זו.",
   // units
   minutes: "דק׳",
   lessThanMinute: "פחות מדקה",
@@ -590,6 +590,47 @@ const he = {
   ft: "רגל",
   now: "עכשיו",
   justNow: "הרגע",
+  // ---- error codes (lib/errors.ts: err_<CODE>; {host} = blocked host)
+  errDetails: "פרטים",
+  errCopyDetails: "העתקת הפרטים",
+  err_NETWORK: "אין חיבור לשרת. יש לבדוק את החיבור לאינטרנט ולנסות שוב.",
+  err_DISK_FULL: "אין מספיק מקום פנוי בדיסק. יש לפנות מקום ולנסות שוב.",
+  err_PERMISSION: "אין הרשאת כתיבה לתיקייה. יש לבחור תיקייה אחרת או לבדוק את ההרשאות.",
+  err_BLOCKED_HOST: "האתר {host} חסום בסינון התוכן. יש לבקש מספק הסינון לאשר אותו.",
+  err_INTERNAL: "אירעה שגיאה פנימית.",
+  err_INTERNAL_PANIC: "אירעה תקלה פנימית בפעולה. הפרטים נשמרו בקובץ היומן.",
+  err_NO_TERRAIN_DATA: "נתוני הגובה אינם מותקנים. יש להוריד אותם במסך הנתונים.",
+  err_NO_MINYANIM_DATA: "נתוני זמני התפילות אינם מותקנים. יש להוריד אותם במסך הנתונים.",
+  err_SAVE_FAILED: "שמירת הקובץ נכשלה.",
+  err_UNKNOWN_REGION: "האזור המבוקש אינו מוכר.",
+  err_TOO_MANY_WAYPOINTS: "יש יותר מדי תחנות ביניים למסלול הזה.",
+  err_TOO_MANY_POINTS: "יש יותר מדי נקודות לחישוב הזה.",
+  err_ORDER_NOT_FOR_TRANSIT: "סידור תחנות הביניים אינו זמין בתחבורה ציבורית.",
+  err_NO_ROAD_NEAR_WAYPOINT: "אין דרך סמוכה לאחת הנקודות. יש לבחור נקודה קרובה יותר לכביש או לשביל.",
+  err_NO_ROUTE_TRUCK: "אין מסלול שמתאים למגבלות הרכב (גובה, משקל או רוחב).",
+  err_NO_TRANSIT_SERVICE_ON_DATE: "אין שירות תחבורה ציבורית בתאריך הזה.",
+  err_NO_SERVICE: "אין שירות תחבורה ציבורית בשעה הזו.",
+  err_LINE_NOT_FOUND: "הקו לא נמצא בלוח הזמנים המותקן.",
+  err_TRANSIT_DATA_CORRUPT: "נתוני התחבורה הציבורית פגומים. יש להוריד אותם מחדש במסך הנתונים.",
+  err_NAV_NOT_RUNNING: "הניווט אינו פעיל.",
+  err_REGION_BUSY: "המדינה הזו נמצאת כרגע בהורדה או בעדכון.",
+  err_UPDATE_FILE_INVALID: "קובץ העדכון אינו תקין.",
+  err_INVALID_DATA_DIR: "לא ניתן להשתמש בתיקייה הזו לנתונים. יש לבחור תיקייה קיימת עם הרשאת כתיבה.",
+  err_INVALID_PATH: "הנתיב שנבחר אינו מותר לפעולה הזו.",
+  err_CHECKSUM_MISMATCH: "הקובץ שהורד פגום (טביעת האצבע אינה תואמת). יש לנסות שוב.",
+
+  // ===== [F1] =====
+
+  // ===== [F2] =====
+
+  // ===== [R1] =====
+
+  // ===== [R2] =====
+
+  // ===== [R3] =====
+
+  // ===== [R4] =====
+
 };
 
 export type I18nKey = keyof typeof he;
@@ -823,7 +864,7 @@ const en: Record<I18nKey, string> = {
   avoidAreasOptA: "A only",
   avoidAreasOptNone: "None",
   avoidAreasHint: "Routes will not pass through the selected Palestinian Authority areas (Area A also covers H1 in Hebron and the Gaza Strip). An online route that crosses such an area is rejected and replaced by a local one. Can be changed per route in the route panel.",
-  errNoRouteAreas: "No route avoids the restricted areas. If the origin or destination is inside Area A/B, change the \"Restricted areas\" setting or switch the avoidance off in the route panel.",
+  err_NO_ROUTE_AVOID_AREAS: "No route avoids the restricted areas. If the origin or destination is inside Area A/B, change the \"Restricted areas\" setting or switch the avoidance off in the route panel.",
   alternatives: "Alternatives",
   computeRoute: "Get directions",
   computing: "Computing route...",
@@ -1039,8 +1080,8 @@ const en: Record<I18nKey, string> = {
   navNoGps: "This computer reports no location, so live navigation is not possible. You can show the navigation as a simulated drive along the route.",
   navTransitUnsupported: "Live navigation is available for driving, cycling and walking.",
   navVoiceSetting: "Voice guidance while navigating",
-  locationDenied: "Location access is not allowed. Enable it in Windows: Settings → Privacy & security → Location.",
-  locationUnavailable: "Could not determine the location right now.",
+  err_LOCATION_DENIED: "Location access is not allowed. Enable it in Windows: Settings → Privacy & security → Location.",
+  err_LOCATION_UNAVAILABLE: "Could not determine the location right now.",
   categoriesSearch: "Search categories",
   sortByTopic: "By topic",
   sortAlpha: "A–Z",
@@ -1141,7 +1182,7 @@ const en: Record<I18nKey, string> = {
   noTraffic: "no live traffic",
   sourceOnline: "Computed by an online service",
   sourceOffline: "Computed from local data",
-  errOnlineFailed: "Online routing failed. In \"Online only\" mode there is no fallback to local data – check your internet connection or change the routing mode in Settings.",
+  err_ONLINE_FAILED: "Online routing failed. In \"Online only\" mode there is no fallback to local data – check your internet connection or change the routing mode in Settings.",
   chooseFolder: "Choose folder",
   resetFolder: "Restore default",
   shortcuts: "Keyboard shortcuts",
@@ -1152,14 +1193,14 @@ const en: Record<I18nKey, string> = {
   shortcutEsc: "Close menu / popup",
   shortcutZoom: "Zoom",
   aboutText: "Navigation and maps for Israel that work without an internet connection. Data sources: OpenStreetMap, Protomaps and the Ministry of Transport.",
-  errNoRouting: "Routing data is not installed. Download the routing package in the Data panel.",
-  errNoRoutingRegion: "No offline routing for this area. Download \"Routing\" for the country in Data → More countries, or connect to the internet.",
-  errNoTransit: "Public transport data is not installed. Download it in the Data panel.",
-  errNoGeocode: "The address index is not installed. Download the addresses package in the Data panel.",
-  errUpdateRunning: "A data update is already in progress. Please wait for it to finish.",
-  errNeedTwo: "Choose an origin and a destination.",
+  err_NO_ROUTING_DATA: "Routing data is not installed. Download the routing package in the Data panel.",
+  err_NO_ROUTING_DATA_REGION: "No offline routing for this area. Download \"Routing\" for the country in Data → More countries, or connect to the internet.",
+  err_NO_TRANSIT_DATA: "Public transport data is not installed. Download it in the Data panel.",
+  err_NO_GEOCODE_DATA: "The address index is not installed. Download the addresses package in the Data panel.",
+  err_UPDATE_RUNNING: "A data update is already in progress. Please wait for it to finish.",
+  err_NEED_TWO_WAYPOINTS: "Choose an origin and a destination.",
   errGeneric: "Something went wrong",
-  errNotImplemented: "This feature is not available in this version yet.",
+  err_NOT_IMPLEMENTED: "This feature is not available in this version yet.",
   minutes: "min",
   lessThanMinute: "< 1 min",
   hours: "hr",
@@ -1173,6 +1214,47 @@ const en: Record<I18nKey, string> = {
   ft: "ft",
   now: "now",
   justNow: "just now",
+  // ---- error codes (lib/errors.ts: err_<CODE>; {host} = blocked host)
+  errDetails: "Details",
+  errCopyDetails: "Copy details",
+  err_NETWORK: "Could not reach the server. Check the internet connection and try again.",
+  err_DISK_FULL: "There is not enough free disk space. Free some space and try again.",
+  err_PERMISSION: "The folder cannot be written to. Choose another folder or check its permissions.",
+  err_BLOCKED_HOST: "The site {host} is blocked by the content filter. Ask the filter provider to allow it.",
+  err_INTERNAL: "An internal error occurred.",
+  err_INTERNAL_PANIC: "An internal fault stopped the action. The details were written to the log file.",
+  err_NO_TERRAIN_DATA: "Elevation data is not installed. Download it in the Data panel.",
+  err_NO_MINYANIM_DATA: "Prayer times are not installed. Download them in the Data panel.",
+  err_SAVE_FAILED: "Saving the file failed.",
+  err_UNKNOWN_REGION: "Unknown region.",
+  err_TOO_MANY_WAYPOINTS: "This route has too many stops.",
+  err_TOO_MANY_POINTS: "Too many points for this calculation.",
+  err_ORDER_NOT_FOR_TRANSIT: "Reordering stops is not available for public transport.",
+  err_NO_ROAD_NEAR_WAYPOINT: "One of the points has no road nearby. Choose a point closer to a road or path.",
+  err_NO_ROUTE_TRUCK: "No route fits the vehicle's limits (height, weight or width).",
+  err_NO_TRANSIT_SERVICE_ON_DATE: "There is no public transport service on this date.",
+  err_NO_SERVICE: "There is no public transport service at this time.",
+  err_LINE_NOT_FOUND: "The line is not in the installed timetable.",
+  err_TRANSIT_DATA_CORRUPT: "The public transport data is damaged. Download it again in the Data panel.",
+  err_NAV_NOT_RUNNING: "Navigation is not running.",
+  err_REGION_BUSY: "This country is being downloaded or updated right now.",
+  err_UPDATE_FILE_INVALID: "The update file is not valid.",
+  err_INVALID_DATA_DIR: "This folder cannot hold the data. Choose an existing folder you can write to.",
+  err_INVALID_PATH: "The chosen path is not allowed for this action.",
+  err_CHECKSUM_MISMATCH: "The downloaded file is damaged (checksum mismatch). Try again.",
+
+  // ===== [F1] =====
+
+  // ===== [F2] =====
+
+  // ===== [R1] =====
+
+  // ===== [R2] =====
+
+  // ===== [R3] =====
+
+  // ===== [R4] =====
+
 };
 
 const dicts: Record<string, Record<I18nKey, string>> = { he, en };

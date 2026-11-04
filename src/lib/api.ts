@@ -467,25 +467,95 @@ export interface AppInfo {
 }
 
 // ------------------------------------------------------------- error helpers
+/** What a failed command rejects with. Current Rust commands reject with this object
+ *  (`AppError` in src-tauri); older ones reject with a string such as "NO_TRANSIT_DATA: …",
+ *  which `toApiError` turns into the same shape. */
+export interface ApiError {
+  /** UPPER_SNAKE code ("NO_TRANSIT_DATA", "NETWORK", "INTERNAL", …) */
+  code: string;
+  /** developer text (English, may be long) */
+  message: string;
+  /** extra detail, e.g. the blocked host, the path, the anyhow cause chain */
+  details?: string;
+}
+
+/** Codes the UI knows by name (others still work through `code`). */
 export const ERROR_CODES = [
-  // longer codes first: errorCode() matches by substring
   "NO_ROUTING_DATA_REGION",
   "NO_ROUTING_DATA",
   "NO_TRANSIT_DATA",
   "NO_GEOCODE_DATA",
+  "NO_TERRAIN_DATA",
+  "NO_MINYANIM_DATA",
+  "NO_ROUTE_AVOID_AREAS",
+  "ONLINE_FAILED",
   "UPDATE_RUNNING",
-  "NEED_TWO_WAYPOINTS", "LOCATION_DENIED", "LOCATION_UNAVAILABLE", "NO_TERRAIN_DATA"] as const;
+  "NEED_TWO_WAYPOINTS",
+  "LOCATION_DENIED",
+  "LOCATION_UNAVAILABLE",
+  "SAVE_FAILED",
+  "NOT_IMPLEMENTED",
+  "NETWORK",
+  "DISK_FULL",
+  "PERMISSION",
+  "BLOCKED_HOST",
+  "INTERNAL",
+  "INTERNAL_PANIC",
+  "UNKNOWN_REGION",
+  "TOO_MANY_WAYPOINTS",
+  "TOO_MANY_POINTS",
+  "ORDER_NOT_FOR_TRANSIT",
+  "NO_ROAD_NEAR_WAYPOINT",
+  "NO_ROUTE_TRUCK",
+  "NO_TRANSIT_SERVICE_ON_DATE",
+  "NO_SERVICE",
+  "LINE_NOT_FOUND",
+  "TRANSIT_DATA_CORRUPT",
+  "NAV_NOT_RUNNING",
+  "REGION_BUSY",
+  "UPDATE_FILE_INVALID",
+  "INVALID_DATA_DIR",
+  "INVALID_PATH",
+  "CHECKSUM_MISMATCH",
+] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
-export function errorCode(e: unknown): ErrorCode | null {
-  const s = errorText(e);
-  for (const c of ERROR_CODES) if (s.includes(c)) return c;
-  return null;
+const LEADING_CODE = /^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z]{4,})(?=$|[\s:\-–])(?:\s*[:\-–]\s*)?([\s\S]*)$/;
+const SINGLE_WORD_CODES = new Set<string>(ERROR_CODES.filter((c) => !c.includes("_")));
+
+/** Any rejection (the new object, a legacy string, an Error) as an ApiError. */
+export function toApiError(e: unknown): ApiError {
+  if (e && typeof e === "object" && !(e instanceof Error) && typeof (e as { code?: unknown }).code === "string") {
+    const o = e as { code: string; message?: unknown; details?: unknown };
+    return {
+      code: o.code,
+      message: typeof o.message === "string" ? o.message : String(o.message ?? o.code),
+      ...(o.details != null && o.details !== "" ? { details: String(o.details) } : {}),
+    };
+  }
+  const text = errorText(e);
+  const m = LEADING_CODE.exec(text.trim());
+  // a one-word code only when it is a known one ("OSRM request failed" is not a code)
+  if (m && (m[1].includes("_") || SINGLE_WORD_CODES.has(m[1]))) return { code: m[1], message: text, ...(m[2] ? { details: m[2].trim() } : {}) };
+  // legacy strings that carry a code somewhere inside
+  for (const c of ERROR_CODES) if (c.length > 6 && text.includes(c)) return { code: c, message: text };
+  if (/not implemented/i.test(text)) return { code: "NOT_IMPLEMENTED", message: text };
+  return { code: "INTERNAL", message: text };
 }
 
+/** The error's code, or null for an unclassified failure. */
+export function errorCode(e: unknown): string | null {
+  const c = toApiError(e).code;
+  return c === "INTERNAL" && !(e && typeof e === "object" && (e as { code?: unknown }).code === "INTERNAL") ? null : c;
+}
+
+/** Developer text of any rejection (for logs and "details"). */
 export function errorText(e: unknown): string {
   if (typeof e === "string") return e;
-  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  if (e && typeof e === "object" && "message" in e) {
+    const o = e as { message: unknown; details?: unknown };
+    return o.details ? `${String(o.message)} (${String(o.details)})` : String(o.message);
+  }
   try {
     return JSON.stringify(e);
   } catch {
@@ -675,3 +745,15 @@ export const api = {
     listen<DataProgress>("data-progress", (e) => cb(e.payload)),
   onDataUpdated: (cb: () => void): Promise<UnlistenFn> => listen("data-updated", () => cb()),
 };
+
+// ===== [F1] =====
+
+// ===== [F2] =====
+
+// ===== [R1] =====
+
+// ===== [R2] =====
+
+// ===== [R3] =====
+
+// ===== [R4] =====

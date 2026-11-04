@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import clsx from "clsx";
-import { api, type InstalledRegion, type RegionEntry, type RegionLocate, type RegionPart, type RegionProgress } from "../lib/api";
+import { api, errorText, type InstalledRegion, type RegionEntry, type RegionLocate, type RegionPart, type RegionProgress } from "../lib/api";
 import { useStore } from "../lib/store";
+import { useTauriEvent } from "../lib/useTauriEvent";
 import { useT } from "../lib/i18n";
 import { askConfirm, fmtBytes, fmtDateTime } from "../lib/format";
 
@@ -67,35 +68,21 @@ export function RegionsSection() {
   }, [refreshInstalled]);
 
   // Progress events from the backend (one per region and part).
-  useEffect(() => {
-    let un: (() => void) | undefined;
-    let dead = false;
-    void api
-      .onRegionProgress((p) => {
-        setProgress((cur) => {
-          const next = { ...cur };
-          const parts = { ...(next[p.id] ?? {}) };
-          if (p.phase === "done" || p.phase === "cancelled") delete parts[p.part];
-          else parts[p.part] = p;
-          if (Object.keys(parts).length) next[p.id] = parts;
-          else delete next[p.id];
-          return next;
-        });
-        if (p.phase === "done" || p.phase === "failed" || p.phase === "cancelled") {
-          void refreshInstalled();
-          void useStore.getState().refreshTiles();
-        }
-      })
-      .then((u) => {
-        if (dead) u();
-        else un = u;
-      })
-      .catch(() => {});
-    return () => {
-      dead = true;
-      un?.();
-    };
-  }, [refreshInstalled]);
+  useTauriEvent<RegionProgress>("region-progress", (p) => {
+    setProgress((cur) => {
+      const next = { ...cur };
+      const parts = { ...(next[p.id] ?? {}) };
+      if (p.phase === "done" || p.phase === "cancelled") delete parts[p.part];
+      else parts[p.part] = p;
+      if (Object.keys(parts).length) next[p.id] = parts;
+      else delete next[p.id];
+      return next;
+    });
+    if (p.phase === "done" || p.phase === "failed" || p.phase === "cancelled") {
+      void refreshInstalled();
+      void useStore.getState().refreshTiles();
+    }
+  });
 
   const loadCatalog = useCallback(async (refresh: boolean) => {
     setLoadingCatalog(true);
@@ -103,7 +90,7 @@ export function RegionsSection() {
     try {
       setCatalog(await api.regionsCatalog(refresh));
     } catch (e) {
-      setCatalogError(e instanceof Error ? e.message : typeof e === "string" ? e : t("regCatalogFailed"));
+      setCatalogError(errorText(e) || t("regCatalogFailed"));
     } finally {
       setLoadingCatalog(false);
     }
