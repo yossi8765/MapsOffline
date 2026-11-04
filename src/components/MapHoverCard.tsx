@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 import { Flag, Navigation } from "lucide-react";
+import { Icon } from "./Icon";
 import { api, type GeoResult, type LonLat, type Minyan } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -156,10 +157,10 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose, elRef }: Props
       )}
       <div className="flex gap-1.5">
         <button className="btn btn-sm btn-primary flex-1" onClick={() => go(true)}>
-          <Flag size={13} /> {t("ctxToHere")}
+          <Icon as={Flag} size={13} /> {t("ctxToHere")}
         </button>
         <button className="btn btn-sm flex-1" onClick={() => go(false)}>
-          <Navigation size={13} className="rtl:-scale-x-100" /> {t("ctxFromHere")}
+          <Icon as={Navigation} size={13} className="rtl:-scale-x-100" /> {t("ctxFromHere")}
         </button>
       </div>
       <button className="btn btn-ghost btn-sm text-muted self-start -ms-1.5" onClick={details}>

@@ -10,7 +10,8 @@ export type PrefKey =
   | "mapsoffline.nearby" // "what's nearby" radius + category (JSON)
   | "mapsoffline.rememberView" // "1" | "0": mirror of settings.rememberMapView for the early read
   | "mapsoffline.lastView" // last map view {lon, lat, zoom} (JSON)
-  | "mapsoffline.scrollMode"; // two-finger scroll: "pan" | "zoom"
+  | "mapsoffline.scrollMode" // two-finger scroll: "pan" | "zoom"
+  | "mapsoffline.favGroupsOnMap"; // favorite groups shown on the map (JSON string[]; "" = no group)
 
 export function getPrefString(key: PrefKey): string | null {
   try {
@@ -57,7 +58,7 @@ export function removePref(key: PrefKey): void {
 }
 
 /** Every `mapsoffline.*` key (settings reset). */
-export const ALL_PREF_KEYS: PrefKey[] = ["mapsoffline.layers", "mapsoffline.nearby", "mapsoffline.rememberView", "mapsoffline.lastView", "mapsoffline.scrollMode"];
+export const ALL_PREF_KEYS: PrefKey[] = ["mapsoffline.layers", "mapsoffline.nearby", "mapsoffline.rememberView", "mapsoffline.lastView", "mapsoffline.scrollMode", "mapsoffline.favGroupsOnMap"];
 
 // ---------------------------------------------------------------- typed accessors
 

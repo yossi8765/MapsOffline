@@ -1,16 +1,11 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { ListChecks, PackageCheck } from "lucide-react";
 import { Icon } from "./Icon";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtBytes } from "../lib/format";
+import { apiX, type PackageInfo } from "../lib/api";
 
-/** Size / date of the weekly ready-made package (R1's `package_info`, HEAD on the package). */
-interface PackageInfo {
-  sizeBytes: number;
-  version?: string;
-}
 
 /** Fallback when the backend has no `package_info` yet or is offline. */
 const PACKAGE_BYTES_FALLBACK = 420e6;
@@ -26,7 +21,8 @@ export function FirstRunCard({ onPackage, onChoose }: { onPackage: () => void; o
   const [info, setInfo] = useState<PackageInfo | null>(null);
   useEffect(() => {
     let dead = false;
-    invoke<PackageInfo>("package_info")
+    apiX
+      .packageInfo()
       .then((i) => !dead && i && typeof i.sizeBytes === "number" && setInfo(i))
       .catch(() => {});
     return () => {

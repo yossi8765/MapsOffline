@@ -3,6 +3,7 @@
 // layout too (D = ג, L = ך, N = מ, T = א, / = .).
 import type { I18nKey } from "./i18n";
 import type { Store } from "./store";
+import { toggleFullscreen } from "./fullscreen";
 
 export interface Shortcut {
   id: string;
@@ -49,6 +50,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "measure", codes: ["KeyR"], keys: ["R"], label: "shortcutMeasure", run: (s) => s.startMeasure() },
   { id: "north", codes: ["KeyN"], keys: ["N"], label: "shortcutNorth", run: (s) => s.bumpNorthUp() },
   { id: "3d", codes: ["KeyT"], keys: ["T"], label: "shortcut3d", run: (s) => s.setLayers({ buildings3d: !s.layers.buildings3d }) },
+  { id: "fullscreen", codes: ["F11"], keys: ["F11"], label: "shortcutFullscreen", run: () => void toggleFullscreen() },
   { id: "help", codes: ["Slash"], shift: true, keys: ["?"], label: "shortcutHelp", run: (s) => s.setShortcutsOpen(!s.shortcutsOpen) },
   { id: "zoom", codes: [], keys: ["+", "−"], label: "shortcutZoom", displayOnly: true },
   { id: "esc", codes: [], keys: ["Esc"], label: "shortcutEsc", displayOnly: true },

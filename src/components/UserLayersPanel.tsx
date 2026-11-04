@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { userLayerData } from "../map/userLayerData";
 import { Crosshair, FileUp, Loader2, Mountain, Navigation, Pencil, Trash2, Upload, X } from "lucide-react";
+import { Icon } from "./Icon";
 import clsx from "clsx";
 import { api, type UserLayer } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -48,7 +49,7 @@ export function ImportDialog() {
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold m-0">{t("importTitle")}</h2>
           <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")}>
-            <X size={16} />
+            <Icon as={X} size={16} />
           </button>
         </div>
         <div
@@ -64,10 +65,10 @@ export function ImportDialog() {
             if (e.dataTransfer.files.length) void run(e.dataTransfer.files);
           }}
         >
-          {busy ? <Loader2 size={22} className="animate-spin text-muted" /> : <FileUp size={22} strokeWidth={1.75} className="text-muted" />}
+          {busy ? <Icon as={Loader2} size={22} className="animate-spin text-muted" /> : <Icon as={FileUp} size={22} className="text-muted" />}
           <div className="text-sm">{t("importDrop")}</div>
           <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => inputRef.current?.click()}>
-            <Upload size={14} /> {t("importPick")}
+            <Icon as={Upload} size={14} /> {t("importPick")}
           </button>
           <input
             ref={inputRef}
@@ -190,7 +191,7 @@ function LayerRow({ l }: { l: UserLayer }) {
           <div className="flex flex-wrap items-center gap-1.5">
             {l.bbox && (
               <button className="btn btn-sm" onClick={() => st.fitToBox(l.bbox!)}>
-                <Crosshair size={13} /> {t("userZoomTo")}
+                <Icon as={Crosshair} size={13} /> {t("userZoomTo")}
               </button>
             )}
             <select className="input h-7 w-auto text-xs" value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} aria-label={t("userRouteMode")}>
@@ -199,10 +200,10 @@ function LayerRow({ l }: { l: UserLayer }) {
               <option value="car">{t("modeCar")}</option>
             </select>
             <button className="btn btn-sm" onClick={() => void st.routeAlongLayer(l.id, mode)}>
-              <Navigation size={13} className="rtl:-scale-x-100" /> {t("userRouteAlong")}
+              <Icon as={Navigation} size={13} className="rtl:-scale-x-100" /> {t("userRouteAlong")}
             </button>
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
-              <Pencil size={13} /> {t("userRename")}
+              <Icon as={Pencil} size={13} /> {t("userRename")}
             </button>
             <span className="flex-1" />
             <button
@@ -216,7 +217,7 @@ function LayerRow({ l }: { l: UserLayer }) {
                 void st.deleteUserLayer(l.id);
               }}
             >
-              <Trash2 size={13} /> {confirm ? t("userDeleteConfirm") : t("delete")}
+              <Icon as={Trash2} size={13} /> {confirm ? t("userDeleteConfirm") : t("delete")}
             </button>
           </div>
         </div>
@@ -240,18 +241,18 @@ export function UserLayersPanel() {
       <div className="flex items-center justify-between ps-4 pe-2 h-12 shrink-0">
         <h2 className="text-base font-semibold m-0">{t("userLayersTitle")}</h2>
         <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")} title={t("close")}>
-          <X size={16} />
+          <Icon as={X} size={16} />
         </button>
       </div>
       <div className="px-4 pb-2 flex flex-wrap gap-1.5 shrink-0">
         <button className="btn btn-sm" onClick={() => st.openImport()}>
-          <FileUp size={14} /> {t("importTitle")}
+          <Icon as={FileUp} size={14} /> {t("importTitle")}
         </button>
         <button className="btn btn-sm" onClick={() => st.startDrawing()}>
-          <Pencil size={14} /> {t("drawTitle")}
+          <Icon as={Pencil} size={14} /> {t("drawTitle")}
         </button>
         <button className={clsx("btn btn-sm", track.recording && "text-danger")} onClick={() => st.toggleTrackRecording()} disabled={track.starting}>
-          <Mountain size={14} /> {track.recording ? t("trackStop") : t("trackStart")}
+          <Icon as={Mountain} size={14} /> {track.recording ? t("trackStop") : t("trackStart")}
         </button>
       </div>
       <div className="flex-1 min-h-0 scroll-y">

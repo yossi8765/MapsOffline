@@ -5,6 +5,7 @@ import { useTauriEvent } from "./lib/useTauriEvent";
 import { resolveTheme, useStore } from "./lib/store";
 import { isRtl, translate } from "./lib/i18n";
 import { isBrowserKey, matchShortcut } from "./lib/shortcuts";
+import { exitFullscreen, isFullscreenNow } from "./lib/fullscreen";
 import { askConfirm } from "./lib/format";
 import { MapView } from "./components/MapView";
 import { Sidebar } from "./components/Sidebar";
@@ -202,7 +203,10 @@ export default function App() {
           e.preventDefault();
           const t = (k: Parameters<typeof translate>[1]) => translate(s.settings.language, k);
           void askConfirm(t("navEndConfirm"), t("navEnd"), t("cancel"), t("appName")).then((ok) => ok && void useStore.getState().stopNavigation());
+          return;
         }
+        // nothing else wanted Escape: leave full screen (F11)
+        if (!typing && isFullscreenNow()) void exitFullscreen();
         return;
       }
       const sc = matchShortcut(e, typing);

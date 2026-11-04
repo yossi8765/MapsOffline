@@ -6,7 +6,8 @@
 import { useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowDown, ArrowUp, FolderOpen, Plus, Trash2, X } from "lucide-react";
-import type { CustomLayer } from "../lib/api";
+import { Icon } from "./Icon";
+import { apiX, type CustomLayer } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { useDialog } from "../lib/useDialog";
@@ -57,7 +58,7 @@ export function CustomLayersDialog() {
       <div className="flex items-center justify-between ps-4 pe-2 h-12 shrink-0">
         <h2 className="text-base font-semibold m-0">{t("customLayersTitle")}</h2>
         <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")} title={t("close")}>
-          <X size={16} />
+          <Icon as={X} size={16} />
         </button>
       </div>
       <div className="flex-1 min-h-0 scroll-y px-4 pb-4 flex flex-col gap-4">
@@ -81,13 +82,17 @@ export function CustomLayersDialog() {
                   </label>
                   <input id={`op-${c.id}`} type="range" min={0.1} max={1} step={0.05} value={c.opacity} onChange={(e) => patch(c.id, { opacity: Number(e.target.value) })} className="flex-1" />
                   <button className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t("moveUp")}>
-                    <ArrowUp size={14} />
+                    <Icon as={ArrowUp} size={14} />
                   </button>
                   <button className="btn btn-ghost btn-icon btn-sm" onClick={() => move(i, 1)} disabled={i === list.length - 1} aria-label={t("moveDown")}>
-                    <ArrowDown size={14} />
+                    <Icon as={ArrowDown} size={14} />
                   </button>
-                  <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => save(list.filter((x) => x.id !== c.id))} aria-label={t("delete")}>
-                    <Trash2 size={14} />
+                  <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => {
+                      save(list.filter((x) => x.id !== c.id));
+                      // the backend keeps a disk cache of online layers: drop it with the layer
+                      void apiX.customLayerClearCache(c.id).catch(() => undefined);
+                    }} aria-label={t("delete")}>
+                    <Icon as={Trash2} size={14} />
                   </button>
                 </div>
               </li>
@@ -108,7 +113,7 @@ export function CustomLayersDialog() {
             <input className="input h-9 flex-1 min-w-0" dir="ltr" placeholder={local ? t("customFile") : draft.kind === "wms" ? "https://…/wms" : "https://…/{z}/{x}/{y}.png"} aria-label={t("customUrl")} value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
             {local && (
               <button className="btn btn-sm h-9" onClick={() => void pickFile()} aria-label={t("customPickFile")}>
-                <FolderOpen size={14} />
+                <Icon as={FolderOpen} size={14} />
               </button>
             )}
           </div>
@@ -116,7 +121,7 @@ export function CustomLayersDialog() {
           <input className="input h-9" placeholder={t("customAttribution")} aria-label={t("customAttribution")} value={draft.attribution ?? ""} onChange={(e) => setDraft({ ...draft, attribution: e.target.value || undefined })} />
           {err && <div className="text-xs text-danger">{err}</div>}
           <button className="btn btn-primary btn-sm self-start" onClick={add}>
-            <Plus size={14} /> {t("customAddButton")}
+            <Icon as={Plus} size={14} /> {t("customAddButton")}
           </button>
           <p className="m-0 text-xs text-muted">{t("customHint")}</p>
         </section>

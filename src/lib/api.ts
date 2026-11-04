@@ -908,6 +908,12 @@ export const apiX = {
   systemTextScale: () => invoke<number>("system_text_scale"),
   connectivity: () => invoke<boolean>("connectivity"),
   logsDir: () => invoke<string>("logs_dir"),
+  /** Size / version of the combined ready-made data package (first-run choice); null offline. */
+  packageInfo: () => invoke<PackageInfo | null>("package_info"),
+  /** Stop a running program (installer) download – separate from data updates. */
+  appUpdateCancel: () => invoke<void>("app_update_cancel"),
+  /** Forget the disk cache of an online custom layer (URL changed / layer removed). */
+  customLayerClearCache: (id: string) => invoke<void>("custom_layer_clear_cache", { id }),
   userLayersList: () => invoke<UserLayer[]>("user_layers_list"),
   userLayerGet: (id: string) => invoke<string>("user_layer_get", { id }),
   userLayerSave: (name: string, kind: UserLayer["kind"], geojson: string, color?: string) =>
@@ -957,15 +963,8 @@ export interface PackageInfo {
   sizeBytes: number;
   version: string;
 }
-export const apiR1 = {
-  packageInfo: () => invoke<PackageInfo | null>("package_info"),
-  /** Stop a running program (installer) download – separate from data updates now. */
-  appUpdateCancel: () => invoke<void>("app_update_cancel"),
-  /** Forget the disk cache of an online custom layer (URL changed / layer removed). */
-  customLayerClearCache: (id: string) => invoke<void>("custom_layer_clear_cache", { id }),
-  /** Tile URL template of a custom layer for MapLibre (scheme `mo-user`). */
-  customLayerTiles: (id: string) => `http://mo-user.localhost/${id}/{z}/{x}/{y}`,
-};
+// R1's extra wrappers live in `apiX` (one object for every new command); the custom-layer tile
+// URL template is `customLayerTiles` in lib/mapStyle.ts.
 
 // ===== [R2] =====
 

@@ -1,5 +1,6 @@
 import { api, apiX, type Favorite, type FavoriteKind, type GeoResult, type HistoryItem, type LineRef, type LineShape, type LonLat } from "../api";
 import { routeArrow } from "../format";
+import { getPrefJson, setPrefJson } from "../prefs";
 import type { SliceCreator } from "./types";
 
 /** Favorites, the favorite-line preview and the search / route history. */
@@ -27,7 +28,13 @@ export interface SavedSlice {
   removeFavorite: (f: Favorite) => void;
   /** Save the current route request (points, mode, avoid options) as a favorite. */
   saveRouteFavorite: (name?: string) => Promise<void>;
+  /** Favorite groups drawn on the map ("" = favorites without a group); remembered per device. */
+  visibleFavoriteGroups: string[];
+  toggleFavoriteGroupOnMap: (group: string) => void;
 }
+
+const loadVisibleGroups = (): string[] =>
+  getPrefJson("mapsoffline.favGroupsOnMap", (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined), []);
 
 /** The favorite saved at this spot (within ~10 cm), if any. */
 export function findFavorite(favs: Favorite[], lon: number, lat: number): Favorite | undefined {
@@ -48,6 +55,13 @@ export const createSavedSlice: SliceCreator<SavedSlice> = (set, get) => ({
   linePreview: null,
   history: [],
   favoriteGroups: [],
+  visibleFavoriteGroups: loadVisibleGroups(),
+  toggleFavoriteGroupOnMap: (group) => {
+    const cur = get().visibleFavoriteGroups;
+    const next = cur.includes(group) ? cur.filter((g) => g !== group) : [...cur, group];
+    setPrefJson("mapsoffline.favGroupsOnMap", next);
+    set({ visibleFavoriteGroups: next });
+  },
 
   toggleFavorite: async (p) => {
     const t = get().t;

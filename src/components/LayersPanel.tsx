@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import { AppWindow, Columns2, FileUp, Grid2x2, Layers3, Pencil, Ruler, Route as RouteIcon } from "lucide-react";
+import { Icon } from "./Icon";
 import { useStore, type MapLayers } from "../lib/store";
 import { useT } from "../lib/i18n";
 
@@ -114,15 +115,15 @@ export function LayersPanel() {
         <h2 className="section-label m-0">{t("myLayersSection")}</h2>
         <div className="grid grid-cols-2 gap-1.5">
           <button className="btn btn-sm justify-start" onClick={() => st.setMapPopover("userLayers")}>
-            <Layers3 size={14} /> {t("userLayersTitle")}
+            <Icon as={Layers3} size={14} /> {t("userLayersTitle")}
             {userCount > 0 && <span className="num text-xs text-muted ms-auto">{userCount}</span>}
           </button>
           <button className="btn btn-sm justify-start" onClick={() => st.setMapPopover("customLayers")}>
-            <Grid2x2 size={14} /> {t("customLayersTitle")}
+            <Icon as={Grid2x2} size={14} /> {t("customLayersTitle")}
             {customCount > 0 && <span className="num text-xs text-muted ms-auto">{customCount}</span>}
           </button>
           <button className="btn btn-sm justify-start" onClick={tool(() => st.openImport())}>
-            <FileUp size={14} /> {t("importTitle")}
+            <Icon as={FileUp} size={14} /> {t("importTitle")}
           </button>
         </div>
       </section>
@@ -131,19 +132,19 @@ export function LayersPanel() {
         <h2 className="section-label m-0">{t("toolsSection")}</h2>
         <div className="grid grid-cols-2 gap-1.5">
           <button className="btn btn-sm justify-start" onClick={tool(() => st.startMeasure())}>
-            <Ruler size={14} /> {t("measureTitle")}
+            <Icon as={Ruler} size={14} /> {t("measureTitle")}
           </button>
           <button className="btn btn-sm justify-start" onClick={tool(() => st.startDrawing())}>
-            <Pencil size={14} /> {t("drawTitle")}
+            <Icon as={Pencil} size={14} /> {t("drawTitle")}
           </button>
           <button className={clsx("btn btn-sm justify-start", recording && "text-danger")} onClick={tool(() => st.toggleTrackRecording())}>
-            <RouteIcon size={14} /> {recording ? t("trackStop") : t("trackStart")}
+            <Icon as={RouteIcon} size={14} /> {recording ? t("trackStop") : t("trackStart")}
           </button>
           <button className={clsx("btn btn-sm justify-start", compare !== "off" && "text-accent")} onClick={tool(() => st.setCompare(compare === "off" ? "swipe" : "off"))}>
-            <Columns2 size={14} /> {t("compareTitle")}
+            <Icon as={Columns2} size={14} /> {t("compareTitle")}
           </button>
           <button className="btn btn-sm justify-start" onClick={tool(() => st.openMapWindow())}>
-            <AppWindow size={14} /> {t("mapWindowOpen")}
+            <Icon as={AppWindow} size={14} /> {t("mapWindowOpen")}
           </button>
         </div>
       </section>
