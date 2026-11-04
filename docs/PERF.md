@@ -120,14 +120,37 @@ delays the first route.
 - Cold-start graph load is bounded by disk read of 95 MB (~0.1–0.3 s on SSD); memory-mapping the file
   would make even that lazy but needs `memmap2` or unsafe Win32 code.
 
-### Transit (`src/transit/**`, owned by another agent – recommendations only)
-- `transit::load` uses `bincode::deserialize_from(BufReader)`: per-element decoding, slow in the dev
-  profile. The same raw-array format as graph v2 (`put`/`get` helpers in `routing/graph.rs`) would make
-  it a few `read_exact` calls; precompute in the builder whatever `finalize()` derives.
+### Transit (`src/transit/**`)
+- Done (transit.bin v3, 2026-11-04): raw little-endian arrays (`transit/binfmt.rs`), the indexes
+  `finalize()` used to derive at every load (stop modes, stop grid as CSR, search keys) are built
+  once and stored, `END!` trailer, `Transit::validate()` before use. See the numbers below.
 - `search_stops` scans all stops with `contains` on every keystroke (fine at ~1 ms); a prefix index
   would only matter if the stop count grows.
-- `transit_stops` (map layer) scans all stops per viewport; a grid index like the graph's would make
-  it O(visible stops).
+- Done: `transit_stops` (map layer) walks the stop grid of the viewport (`Transit::stops_in_bbox`).
+
+### Transit v3 measurements (2026-11-04, release CLI `transit-bench`, 5 runs, median)
+
+Model: the installed GTFS model converted to v3 with `mapsoffline-data transit-convert` (35,164
+stops, 8,404 patterns, 314,351 trips); road-network walker = graph.bin g6. Date: the next Tuesday.
+
+| Scenario | Time | Answer |
+|---|---|---|
+| `transit::load` (v3, 74.8 MB, incl. validate) | 37.8 ms | – |
+| TA Azrieli → Jerusalem CBS, depart 08:00 (range RAPTOR + repair + diversification) | 967 ms | 3 routes, best 08:02 → 08:54 |
+| TA Azrieli → Jerusalem CBS, arrive by 10:00 | 279 ms | 3 routes, best 09:02 → 09:54 |
+| Haifa Merkaz → Beersheba, depart 08:00 | 382 ms | 3 routes, best 08:00 → 10:58 |
+| Bnei Brak → Ramat Gan, depart 17:00 | 385 ms | 3 routes, 2 transfers |
+| Transit isochrone TA, 15/30/45 min (one-to-all RAPTOR + raster union) | 19 ms | 15 / 55 / 78 rings |
+| Stops layer, central Tel Aviv viewport | 0.007 ms | 1,260 stops |
+
+- Loading: v2 needed bincode per-element decoding plus `finalize()` (≈0.3 s in release, seconds in
+  dev); v3 is a sequence of bulk reads (38 ms including validation). The file is 1.5 % larger
+  (stored indexes and search keys).
+- The depart-at plan from Tel Aviv is the slow case (~1 s): the range query iterates every boarding
+  in the hour at ~30 access stops, then up to 4 plain runs, 3 retries after the road-walk check and
+  one diversification run. With transfers walked on the road network at build time
+  (`build_with_graph`, once `routing::walk_times_from` exists) the retries should mostly disappear;
+  re-measure then. Next step if still slow: coarsen range shifts to 60 s buckets.
 
 ## Frontend recommendations (for the next frontend pass)
 1. **Search debounce** (`SearchBox.tsx`, 200 ms): the backend answers in ≤ 4 ms (median 0.15 ms);
