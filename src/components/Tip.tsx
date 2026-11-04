@@ -79,7 +79,11 @@ export function Tip({ text, shortcut, side = "bottom", children }: Props) {
         createPortal(
           <div id={id} role="tooltip" className="tip fade-in" style={style}>
             {text}
-            {shortcut && <kbd dir="ltr">{shortcut}</kbd>}
+            {shortcut && (
+              <span className="tip-key">
+                <kbd dir="ltr">{shortcut}</kbd>
+              </span>
+            )}
           </div>,
           document.body,
         )}

@@ -365,8 +365,12 @@
     pointer-events: none;
     white-space: normal;
   }
+  /* the gap sits on a wrapper in the page's direction: the kbd itself is dir="ltr", so its own
+     "start" margin would land on the far side in Hebrew */
+  .tip .tip-key {
+    margin-inline-start: 8px;
+  }
   .tip kbd {
-    margin-inline-start: 6px;
     color: var(--fg-muted);
     font-family: var(--font-sans);
   }
