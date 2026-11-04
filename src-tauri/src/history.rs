@@ -4,10 +4,12 @@ use std::path::Path;
 use anyhow::Context;
 use rusqlite::{params, Connection, Row};
 
-use crate::types::{Favorite, HistoryItem, HistoryKind};
+use crate::types::{Favorite, FavoritePatch, HistoryItem, HistoryKind};
 
 const MAX_HISTORY: i64 = 2000;
 const DEDUPE_WINDOW: i64 = 50;
+/// A history payload larger than this is stored without its bulky parts (geometries).
+const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
 pub struct History {
     conn: Connection,
@@ -66,7 +68,38 @@ pub fn open(path: &Path) -> anyhow::Result<History> {
     if !cols.iter().any(|c| c == "kind") {
         conn.execute_batch("ALTER TABLE favorites ADD COLUMN kind TEXT NOT NULL DEFAULT 'address'; ALTER TABLE favorites ADD COLUMN data TEXT;")?;
     }
+    // folders, colours and notes (2026-11 improvements)
+    if !cols.iter().any(|c| c == "grp") {
+        conn.execute_batch("ALTER TABLE favorites ADD COLUMN grp TEXT; ALTER TABLE favorites ADD COLUMN color TEXT; ALTER TABLE favorites ADD COLUMN note TEXT;")?;
+    }
     Ok(History { conn })
+}
+
+/// Drop geometries (and, if still too big, everything but the request) from a payload so the
+/// history table stays small: a route is recomputed from its request anyway.
+fn slim_payload(mut v: serde_json::Value) -> serde_json::Value {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("geometry");
+                m.remove("legs");
+                m.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    if v.to_string().len() <= MAX_PAYLOAD_BYTES {
+        return v;
+    }
+    strip(&mut v);
+    if v.to_string().len() > MAX_PAYLOAD_BYTES {
+        if let Some(req) = v.get("request").cloned() {
+            return serde_json::json!({ "request": req });
+        }
+        return serde_json::Value::Null;
+    }
+    v
 }
 
 fn row_item(r: &Row) -> rusqlite::Result<HistoryItem> {
@@ -92,6 +125,9 @@ fn row_fav(r: &Row) -> rusqlite::Result<Favorite> {
         created_iso: r.get(6)?,
         kind: r.get(7)?,
         data: r.get::<_, Option<String>>(8)?.and_then(|s| serde_json::from_str(&s).ok()),
+        group: r.get(9)?,
+        color: r.get(10)?,
+        note: r.get(11)?,
     })
 }
 
@@ -124,6 +160,7 @@ impl History {
             params![k, label, DEDUPE_WINDOW],
         )?;
         let created = now_iso();
+        let payload = slim_payload(payload);
         let payload_s = serde_json::to_string(&payload)?;
         self.conn.execute(
             "INSERT INTO history(kind, created_iso, label, payload) VALUES (?1, ?2, ?3, ?4)",
@@ -153,7 +190,7 @@ impl History {
     pub fn favorites(&self) -> anyhow::Result<Vec<Favorite>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, name, icon, lon, lat, address, created_iso, kind, data FROM favorites ORDER BY id")?;
+            .prepare("SELECT id, name, icon, lon, lat, address, created_iso, kind, data, grp, color, note FROM favorites ORDER BY id")?;
         let rows = st.query_map([], row_fav)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -161,16 +198,40 @@ impl History {
     /// Adds a favorite, or returns the existing one for the same place (same kind within ~10 cm)
     /// or the same line (same data), so a second click cannot create a duplicate.
     pub fn favorite_add(&self, name: &str, icon: &str, lon: f64, lat: f64, address: Option<&str>, kind: &str, data: Option<&serde_json::Value>) -> anyhow::Result<Favorite> {
+        self.favorite_add_ext(name, icon, lon, lat, address, kind, data, None, None, None)
+    }
+
+    /// [`favorite_add`] with a folder, colour and note. Lines and routes are the same favorite
+    /// when their data is equal; other kinds when they are at the same spot.
+    pub fn favorite_add_ext(
+        &self,
+        name: &str,
+        icon: &str,
+        lon: f64,
+        lat: f64,
+        address: Option<&str>,
+        kind: &str,
+        data: Option<&serde_json::Value>,
+        group: Option<&str>,
+        color: Option<&str>,
+        note: Option<&str>,
+    ) -> anyhow::Result<Favorite> {
         if let Some(existing) = self.favorites()?.into_iter().find(|f| {
-            f.kind == kind && if kind == "line" { f.data.as_ref() == data } else { (f.lon - lon).abs() < 1e-6 && (f.lat - lat).abs() < 1e-6 }
+            f.kind == kind
+                && if kind == "line" || kind == "route" { f.data.as_ref() == data } else { (f.lon - lon).abs() < 1e-6 && (f.lat - lat).abs() < 1e-6 }
         }) {
             return Ok(existing);
         }
         let created = now_iso();
         let data_s = data.map(|d| d.to_string());
+        let clean = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        let (group, color, note) = (clean(group), clean(color), clean(note));
+        if let Some(c) = &color {
+            check_color(c)?;
+        }
         self.conn.execute(
-            "INSERT INTO favorites(name, icon, lon, lat, address, created_iso, kind, data) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![name, icon, lon, lat, address, created, kind, data_s],
+            "INSERT INTO favorites(name, icon, lon, lat, address, created_iso, kind, data, grp, color, note) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![name, icon, lon, lat, address, created, kind, data_s, group, color, note],
         )?;
         Ok(Favorite {
             id: self.conn.last_insert_rowid(),
@@ -182,7 +243,62 @@ impl History {
             created_iso: created,
             kind: kind.to_string(),
             data: data.cloned(),
+            group,
+            color,
+            note,
         })
+    }
+
+    pub fn favorite_get(&self, id: i64) -> anyhow::Result<Favorite> {
+        self.favorites()?.into_iter().find(|f| f.id == id).ok_or_else(|| anyhow::anyhow!("favorite {id} not found"))
+    }
+
+    /// Change some fields of a favorite (absent = unchanged, explicit null = cleared).
+    pub fn favorite_patch(&self, id: i64, p: &FavoritePatch) -> anyhow::Result<Favorite> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(n) = &p.name {
+            tx.execute("UPDATE favorites SET name = ?2 WHERE id = ?1", params![id, n])?;
+        }
+        if let Some(i) = &p.icon {
+            tx.execute("UPDATE favorites SET icon = ?2 WHERE id = ?1", params![id, i])?;
+        }
+        let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        if let Some(g) = &p.group {
+            tx.execute("UPDATE favorites SET grp = ?2 WHERE id = ?1", params![id, opt(g)])?;
+        }
+        if let Some(c) = &p.color {
+            let c = opt(c);
+            if let Some(c) = &c {
+                check_color(c)?;
+            }
+            tx.execute("UPDATE favorites SET color = ?2 WHERE id = ?1", params![id, c])?;
+        }
+        if let Some(n) = &p.note {
+            tx.execute("UPDATE favorites SET note = ?2 WHERE id = ?1", params![id, opt(n)])?;
+        }
+        if let Some(a) = &p.address {
+            tx.execute("UPDATE favorites SET address = ?2 WHERE id = ?1", params![id, opt(a)])?;
+        }
+        if let Some(d) = &p.data {
+            tx.execute("UPDATE favorites SET data = ?2 WHERE id = ?1", params![id, d.to_string()])?;
+        }
+        tx.commit()?;
+        self.favorite_get(id)
+    }
+
+    /// Folder names in use, alphabetical.
+    pub fn favorite_groups(&self) -> anyhow::Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT DISTINCT grp FROM favorites WHERE grp IS NOT NULL AND grp <> '' ORDER BY grp")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Fold the write-ahead log into the database (called when the app exits, so the folder does
+    /// not keep a WAL file larger than the database).
+    pub fn checkpoint(&self) {
+        if let Err(e) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            log::warn!("history checkpoint: {e}");
+        }
     }
 
     pub fn favorite_update(&self, id: i64, name: &str, icon: &str) -> anyhow::Result<()> {
@@ -195,6 +311,12 @@ impl History {
         self.conn.execute("DELETE FROM favorites WHERE id = ?1", params![id])?;
         Ok(())
     }
+}
+
+fn check_color(c: &str) -> anyhow::Result<()> {
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    anyhow::ensure!(ok, "INVALID_COLOR: {c}");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -265,5 +387,38 @@ mod tests {
         assert_eq!(favs[0].icon, "star");
         h.favorite_delete(f.id).unwrap();
         assert_eq!(h.favorites().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn favorite_groups_patch_and_routes() {
+        let p = tmp("groups");
+        let h = open(&p).unwrap();
+        let a = h.favorite_add_ext("מעיין", "star", 35.0, 31.8, None, "place", None, Some("טיולים"), Some("#2266aa"), Some("מים קרים")).unwrap();
+        assert_eq!(a.group.as_deref(), Some("טיולים"));
+        let req = json!({"waypoints": [{"lon": 34.7, "lat": 32.0}, {"lon": 35.2, "lat": 31.7}], "mode": "car"});
+        let r1 = h.favorite_add_ext("לעבודה", "route", 34.7, 32.0, None, "route", Some(&req), None, None, None).unwrap();
+        // same request = same favorite even from another start point field
+        assert_eq!(h.favorite_add_ext("x", "route", 0.0, 0.0, None, "route", Some(&req), None, None, None).unwrap().id, r1.id);
+        assert!(h.favorite_add_ext("bad", "star", 1.0, 1.0, None, "place", None, None, Some("red"), None).is_err());
+        let patched = h
+            .favorite_patch(a.id, &serde_json::from_value::<FavoritePatch>(json!({"group": null, "note": "קר מאוד", "color": "#ff0000"})).unwrap())
+            .unwrap();
+        assert_eq!(patched.group, None);
+        assert_eq!(patched.note.as_deref(), Some("קר מאוד"));
+        assert_eq!(patched.color.as_deref(), Some("#ff0000"));
+        assert_eq!(patched.name, "מעיין"); // untouched
+        h.favorite_patch(r1.id, &serde_json::from_value::<FavoritePatch>(json!({"group": "נסיעות"})).unwrap()).unwrap();
+        assert_eq!(h.favorite_groups().unwrap(), vec!["נסיעות".to_string()]);
+        h.checkpoint();
+    }
+
+    #[test]
+    fn big_payload_is_slimmed() {
+        let geometry: Vec<[f64; 2]> = (0..5000).map(|i| [34.0 + i as f64 * 1e-4, 32.0]).collect();
+        let v = json!({"request": {"mode": "car"}, "summary": {"distanceM": 5}, "route": {"geometry": geometry}});
+        let s = slim_payload(v);
+        assert!(s.to_string().len() < MAX_PAYLOAD_BYTES);
+        assert_eq!(s["request"]["mode"], "car");
+        assert_eq!(s["summary"]["distanceM"], 5);
     }
 }

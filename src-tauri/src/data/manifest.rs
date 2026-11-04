@@ -24,10 +24,27 @@ fn key(c: DataComponent) -> String {
 
 impl Manifest {
     pub fn load(paths: &DataPaths) -> Self {
-        std::fs::read(paths.manifest_file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let file = paths.manifest_file();
+        let Ok(bytes) = std::fs::read(&file) else { return Self::default() };
+        match serde_json::from_slice(&bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                // keep the damaged file for diagnosis instead of overwriting it silently
+                log::warn!("manifest.json is damaged ({e}); kept as manifest.json.bad");
+                let _ = std::fs::copy(&file, file.with_extension("json.bad"));
+                Self::default()
+            }
+        }
+    }
+
+    /// Read-modify-write one entry under a process-wide lock (jobs finish on different threads:
+    /// package import, prebuilt downloads and the update pipeline all record components).
+    pub fn record(paths: &DataPaths, c: DataComponent, version: Option<String>) -> anyhow::Result<()> {
+        static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let _g = LOCK.lock();
+        let mut m = Self::load(paths);
+        m.set(c, version);
+        m.save(paths)
     }
     pub fn save(&self, paths: &DataPaths) -> anyhow::Result<()> {
         std::fs::create_dir_all(&paths.root)?;

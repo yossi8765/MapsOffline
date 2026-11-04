@@ -88,12 +88,51 @@ fn write_json_atomic(path: &Path, m: &DownloadMeta) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The shared blocking HTTP client (connection pool + TLS set up once; cloning is cheap).
 pub fn http_client() -> anyhow::Result<Client> {
-    Ok(Client::builder()
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let c = Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60))
-        .build()?)
+        .build()?;
+    Ok(CLIENT.get_or_init(|| c).clone())
+}
+
+/// Run `f` up to `attempts` times with a growing pause in between. An error whose text is
+/// exactly "paused" (the job stopped for a pause) is retried without counting; cancellation
+/// returns at once. Used by every download loop that is not `ensure_fresh` itself.
+pub fn retry<T>(attempts: u32, cancel: &Cancel, progress: ProgressFn, label: &str, mut f: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let mut attempt = 0u32;
+    loop {
+        cancel.wait_if_paused();
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(e);
+                }
+                if e.to_string() == "paused" {
+                    continue;
+                }
+                attempt += 1;
+                if attempt >= attempts {
+                    return Err(e);
+                }
+                log::warn!("{label}: attempt {attempt} failed: {e:#}");
+                progress(ProgressPhase::Downloading, 0, 100, &format!("ההורדה נכשלה, ניסיון חוזר ({attempt}/{attempts})"));
+                for _ in 0..(3 * attempt) * 2 {
+                    if cancel.is_cancelled() {
+                        return Err(e);
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+    }
 }
 
 fn hdr(h: &HeaderMap, name: impl reqwest::header::AsHeaderName) -> Option<String> {
@@ -258,6 +297,10 @@ pub fn ensure_fresh(
     }
     // the finished file's meta stays as it is until the new copy is complete
     write_json_atomic(&part_meta, &meta)?;
+    if let Some(len) = meta.content_length {
+        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        super::disk::ensure_free(dest.parent().unwrap_or(dest), len.saturating_sub(have))?;
+    }
 
     let mut last_err = anyhow!("download failed");
     let mut attempt = 0u32;
@@ -453,9 +496,64 @@ async fn attempt_download_async(
     Ok(())
 }
 
+/// Hex digest of a file, streamed (MD5 / SHA-256 of downloads).
+pub fn file_digest<D: sha2::Digest>(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut f = std::io::BufReader::with_capacity(1 << 20, File::open(path)?);
+    let mut h = D::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Compare a downloaded file with the checksum the server publishes next to it (`<url>.md5`,
+/// Geofabrik). No published checksum (or no network) = nothing to compare; a mismatch deletes the
+/// file and its meta (so the next run downloads again) and fails with `CHECKSUM_MISMATCH`.
+pub fn verify_md5_sidecar(url: &str, file: &Path) -> anyhow::Result<()> {
+    let client = http_client()?;
+    let Ok(r) = client.get(format!("{url}.md5")).timeout(Duration::from_secs(15)).send() else { return Ok(()) };
+    if !r.status().is_success() {
+        return Ok(());
+    }
+    let text = r.text().unwrap_or_default();
+    let Some(want) = text.split_whitespace().next().filter(|h| h.len() == 32 && h.chars().all(|c| c.is_ascii_hexdigit())) else {
+        return Ok(());
+    };
+    check_digest::<md5::Md5>(file, want)
+}
+
+/// Fail with `CHECKSUM_MISMATCH` (and remove the file) when its digest is not `want` (hex).
+pub fn check_digest<D: sha2::Digest>(file: &Path, want: &str) -> anyhow::Result<()> {
+    let got = file_digest::<D>(file)?;
+    if !got.eq_ignore_ascii_case(want) {
+        let _ = std::fs::remove_file(file);
+        let _ = std::fs::remove_file(meta_path(file));
+        bail!("CHECKSUM_MISMATCH: {} (expected {want}, got {got})", file.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digests() {
+        let p = std::env::temp_dir().join(format!("mo-digest-{}.bin", std::process::id()));
+        std::fs::write(&p, b"abc").unwrap();
+        assert_eq!(file_digest::<md5::Md5>(&p).unwrap(), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(file_digest::<sha2::Sha256>(&p).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert!(check_digest::<md5::Md5>(&p, "900150983CD24FB0D6963F7D28E17F72").is_ok());
+        let e = check_digest::<md5::Md5>(&p, "00000000000000000000000000000000").unwrap_err().to_string();
+        assert!(e.starts_with("CHECKSUM_MISMATCH"), "{e}");
+        assert!(!p.exists(), "a mismatching file is removed");
+    }
 
     #[test]
     fn meta_roundtrip() {

@@ -930,6 +930,9 @@ const he = {
   printTo: "יעד",
 
   // ===== [R1] =====
+  err_INVALID_LAYER: "הקובץ אינו שכבה תקינה (GeoJSON, GPX או KML).",
+  err_INVALID_COLOR: "הצבע שנבחר אינו תקין.",
+  logsFolder: "תיקיית היומן",
 
   // ===== [R2] =====
 
@@ -1839,6 +1842,9 @@ const en: Record<I18nKey, string> = {
   printTo: "Destination",
 
   // ===== [R1] =====
+  err_INVALID_LAYER: "The file is not a valid layer (GeoJSON, GPX or KML).",
+  err_INVALID_COLOR: "The chosen colour is not valid.",
+  logsFolder: "Log folder",
 
   // ===== [R2] =====
 

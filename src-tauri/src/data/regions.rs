@@ -10,7 +10,10 @@
 //!
 //! Routing and transit stay Israel-only offline (online routing works everywhere).
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Context};
@@ -68,7 +71,7 @@ pub fn catalog(paths: &DataPaths, refresh: bool) -> anyhow::Result<Arc<Vec<Featu
         }
     }
     let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).context("region catalogue missing")?;
-    let mut g = CATALOG.lock().unwrap();
+    let mut g = CATALOG.lock();
     if let Some((t, c)) = g.as_ref() {
         if *t == mtime {
             return Ok(c.clone());
@@ -226,6 +229,33 @@ pub fn locate(paths: &DataPaths, query: &str, lang: &str) -> anyhow::Result<Vec<
         return Ok(Vec::new());
     }
     let cat = catalog(paths, false)?;
+    // Nominatim's usage policy: at most one request per second; the same query is answered from
+    // memory (typing back and forth repeats queries)
+    static ASKED: Mutex<Option<(std::time::Instant, std::collections::HashMap<String, Vec<crate::types::RegionLocate>>)>> = Mutex::new(None);
+    let key = format!("{lang}|{}", q.to_lowercase());
+    {
+        let mut g = ASKED.lock();
+        let (last, memo) = g.get_or_insert_with(|| (std::time::Instant::now() - Duration::from_secs(2), Default::default()));
+        if let Some(hit) = memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let wait = Duration::from_millis(1100).saturating_sub(last.elapsed());
+        *last = std::time::Instant::now() + wait;
+        drop(g);
+        std::thread::sleep(wait);
+    }
+    let out = locate_online(&cat, q, lang)?;
+    let mut g = ASKED.lock();
+    if let Some((_, memo)) = g.as_mut() {
+        if memo.len() > 200 {
+            memo.clear();
+        }
+        memo.insert(key, out.clone());
+    }
+    Ok(out)
+}
+
+fn locate_online(cat: &[Feature], q: &str, lang: &str) -> anyhow::Result<Vec<crate::types::RegionLocate>> {
     let url = reqwest::Url::parse_with_params(
         "https://nominatim.openstreetmap.org/search",
         &[("q", q), ("format", "jsonv2"), ("limit", "6"), ("addressdetails", "1"), ("accept-language", if lang == "en" { "en" } else { "he,en" })],
@@ -238,7 +268,7 @@ pub fn locate(paths: &DataPaths, query: &str, lang: &str) -> anyhow::Result<Vec<
     let mut out: Vec<crate::types::RegionLocate> = Vec::new();
     for h in hits {
         let (Some(lat), Some(lon)) = (h["lat"].as_str().and_then(|v| v.parse().ok()), h["lon"].as_str().and_then(|v| v.parse::<f64>().ok())) else { continue };
-        let mut regions = containing(&cat, lon, lat);
+        let mut regions = containing(cat, lon, lat);
         // a whole country: start the chain at the country itself, not at the sub-region that
         // happens to hold its centre point ("צרפת" → France, not Centre)
         if h["addresstype"].as_str() == Some("country") {
@@ -295,7 +325,40 @@ fn write_meta(dir: &Path, m: &RegionMeta) -> anyhow::Result<()> {
     let tmp = dir.join("region.json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(m)?)?;
     atomic_replace(&dir.join("region.json"), &tmp)?;
+    META_GEN.fetch_add(1, Ordering::SeqCst);
     Ok(())
+}
+
+/// Bumped whenever a region.json is written or a region folder removed.
+static META_GEN: AtomicU64 = AtomicU64::new(0);
+/// Re-read the folders at least this often (a folder copied in by hand shows up).
+const META_TTL: Duration = Duration::from_secs(10);
+
+/// (folder, meta) of every installed region. Every search and map refresh asked for this; it
+/// used to list the folder and parse each region.json every time.
+fn metas(paths: &DataPaths) -> Arc<Vec<(PathBuf, RegionMeta)>> {
+    type Cached = (PathBuf, u64, std::time::Instant, Arc<Vec<(PathBuf, RegionMeta)>>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+    let root = paths.regions_dir();
+    let gen = META_GEN.load(Ordering::SeqCst);
+    let mut g = CACHE.lock();
+    if let Some((r, gn, t, v)) = g.as_ref() {
+        if *r == root && *gn == gen && t.elapsed() < META_TTL {
+            return v.clone();
+        }
+    }
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if let Some(m) = read_meta(&dir) {
+                v.push((dir, m));
+            }
+        }
+    }
+    let v = Arc::new(v);
+    *g = Some((root, gen, std::time::Instant::now(), v.clone()));
+    v
 }
 
 /// Installed regions (folders with a `region.json`), sorted by name.
@@ -330,15 +393,10 @@ pub fn installed(paths: &DataPaths, busy: &dyn Fn(&str) -> bool) -> Vec<Installe
 /// Region folders whose map / search index is ready (for the tile server and the geocoder).
 pub fn ready_maps(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
     let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(paths.regions_dir()) {
-        for e in rd.flatten() {
-            let dir = e.path();
-            if let Some(m) = read_meta(&dir) {
-                let f = map_file(&dir);
-                if f.exists() {
-                    v.push((m.id, f, m.bbox));
-                }
-            }
+    for (dir, m) in metas(paths).iter() {
+        let f = map_file(dir);
+        if f.exists() {
+            v.push((m.id.clone(), f, m.bbox));
         }
     }
     v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -348,15 +406,10 @@ pub fn ready_maps(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
 /// Countries with an offline routing graph: (id, file, bbox).
 pub fn ready_graphs(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
     let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(paths.regions_dir()) {
-        for e in rd.flatten() {
-            let dir = e.path();
-            if let Some(m) = read_meta(&dir) {
-                let f = graph_file(&dir);
-                if f.exists() && m.routing_version.is_some() {
-                    v.push((m.id, f, m.bbox));
-                }
-            }
+    for (dir, m) in metas(paths).iter() {
+        let f = graph_file(dir);
+        if f.exists() && m.routing_version.is_some() {
+            v.push((m.id.clone(), f, m.bbox));
         }
     }
     v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -365,15 +418,10 @@ pub fn ready_graphs(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
 
 pub fn ready_geocoders(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
     let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(paths.regions_dir()) {
-        for e in rd.flatten() {
-            let dir = e.path();
-            if let Some(m) = read_meta(&dir) {
-                let f = geocode_file(&dir);
-                if f.exists() && m.search_version.is_some() {
-                    v.push((m.id, f, m.bbox));
-                }
-            }
+    for (dir, m) in metas(paths).iter() {
+        let f = geocode_file(dir);
+        if f.exists() && m.search_version.is_some() {
+            v.push((m.id.clone(), f, m.bbox));
         }
     }
     v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -531,6 +579,7 @@ pub fn delete(paths: &DataPaths, id: &str) -> anyhow::Result<()> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
     }
+    META_GEN.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 

@@ -15,7 +15,9 @@
 //! Licence: govmap's terms keep all rights with the Survey of Israel and allow personal use only;
 //! the imagery is downloaded by each user to their own computer and never redistributed.
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
@@ -48,8 +50,12 @@ const RES: [f64; 12] = [
 pub const EOX_MAX_ZOOM: u8 = 9;
 /// Parallel renderers (each fetches its source tiles; CloudFront takes this easily).
 pub const WORKERS: usize = 16;
-/// Encoded source tiles kept in memory: a WebMercator row of zoom 17 touches ~3,000 of them.
-const CACHE_TILES: usize = 8192;
+/// Encoded source tiles kept in memory (~20–40 KB each, so at most ~80 MB). Was 8,192 (up to
+/// ~330 MB); the decoded cache below now catches the re-use between neighbouring target tiles.
+const CACHE_TILES: usize = 2048;
+/// Decoded (256 × 256 RGB = 192 KB) source tiles shared by the renderers: neighbouring z17 target
+/// tiles read the same 4–9 source tiles, which used to be JPEG-decoded again by every worker.
+const DECODED_TILES: usize = 192;
 const JPEG_QUALITY: u8 = 85;
 
 /// Max zoom for the quality setting.
@@ -247,6 +253,7 @@ type Raw = Option<Arc<Vec<u8>>>;
 pub struct Source {
     client: Client,
     map: Mutex<(HashMap<(usize, u32, u32), Arc<OnceLock<Raw>>>, VecDeque<(usize, u32, u32)>)>,
+    decoded: Mutex<(HashMap<(usize, u32, u32), Arc<Vec<u8>>>, VecDeque<(usize, u32, u32)>)>,
     pace: Mutex<Pace>,
     max_rate: f64,
     /// Download jobs wait out a rate-limit challenge and retry; the live map gives up at once.
@@ -286,13 +293,13 @@ impl Source {
 
     fn with_rates(client: Client, start: f64, max_rate: f64, patient: bool) -> Self {
         let pace = Pace { next: Instant::now(), interval: Duration::from_secs_f64(1.0 / start), good: 0, resume_at: None };
-        Self { client, map: Mutex::new((HashMap::new(), VecDeque::new())), pace: Mutex::new(pace), max_rate, patient }
+        Self { client, map: Mutex::new((HashMap::new(), VecDeque::new())), decoded: Mutex::new((HashMap::new(), VecDeque::new())), pace: Mutex::new(pace), max_rate, patient }
     }
 
     /// Block until this request's slot (or the end of a challenge pause).
     fn wait_turn(&self, cancel: &Cancel) -> anyhow::Result<()> {
         let slot = {
-            let mut p = self.pace.lock().unwrap();
+            let mut p = self.pace.lock();
             let now = Instant::now();
             if !self.patient && p.resume_at.is_some_and(|r| r > now) {
                 bail!("{RATE_LIMITED_MSG}");
@@ -318,7 +325,7 @@ impl Source {
     }
 
     fn on_good(&self) {
-        let mut p = self.pace.lock().unwrap();
+        let mut p = self.pace.lock();
         p.good += 1;
         if p.good >= 400 {
             p.good = 0;
@@ -327,7 +334,7 @@ impl Source {
     }
 
     fn on_challenge(&self) {
-        let mut p = self.pace.lock().unwrap();
+        let mut p = self.pace.lock();
         let now = Instant::now();
         // one slowdown per pause, however many workers saw the challenge
         if p.resume_at.is_some_and(|r| r > now) {
@@ -342,7 +349,7 @@ impl Source {
     fn get(&self, level: usize, row: u32, col: u32, cancel: &Cancel) -> anyhow::Result<Raw> {
         let key = (level, row, col);
         let cell = {
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock();
             if let Some(c) = m.0.get(&key) {
                 c.clone()
             } else {
@@ -370,11 +377,31 @@ impl Source {
         });
         if let Some(e) = err {
             // do not cache a failure as "no tile"
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock();
             m.0.remove(&key);
             return Err(e);
         }
         Ok(v.clone())
+    }
+
+    /// A source tile as RGB pixels (decoded once, shared through a small LRU).
+    fn get_decoded(&self, level: usize, row: u32, col: u32, cancel: &Cancel) -> anyhow::Result<Option<Arc<Vec<u8>>>> {
+        let key = (level, row, col);
+        if let Some(t) = self.decoded.lock().0.get(&key) {
+            return Ok(Some(t.clone()));
+        }
+        let Some(rgb) = self.get(level, row, col, cancel)?.and_then(|b| decode(&b)) else { return Ok(None) };
+        let rgb = Arc::new(rgb);
+        let mut d = self.decoded.lock();
+        if d.0.insert(key, rgb.clone()).is_none() {
+            d.1.push_back(key);
+        }
+        while d.1.len() > DECODED_TILES {
+            if let Some(old) = d.1.pop_front() {
+                d.0.remove(&old);
+            }
+        }
+        Ok(Some(rgb))
     }
 
     fn download(&self, url: &str, cancel: &Cancel) -> anyhow::Result<Option<Vec<u8>>> {
@@ -529,11 +556,11 @@ pub fn render(src: &Source, z: u8, x: u32, y: u32, cancel: &Cancel) -> anyhow::R
     if cols * rows > 64 {
         bail!("too many source tiles for {z}/{x}/{y}");
     }
-    let mut tiles: Vec<Option<Vec<u8>>> = Vec::with_capacity(cols * rows);
+    let mut tiles: Vec<Option<Arc<Vec<u8>>>> = Vec::with_capacity(cols * rows);
     let mut any = false;
     for r in r0..=r1 {
         for c in c0..=c1 {
-            let t = src.get(level, r, c, cancel)?.and_then(|b| decode(&b));
+            let t = src.get_decoded(level, r, c, cancel)?;
             any |= t.is_some();
             tiles.push(t);
         }

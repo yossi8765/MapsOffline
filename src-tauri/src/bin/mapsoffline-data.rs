@@ -69,6 +69,16 @@ enum Cmd {
     },
     /// Show status of data files
     Status,
+    /// Prayer timetable of the synagogue at lon,lat (the installed snapshot; --live asks Nedarim Plus)
+    Minyan {
+        at: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        live: bool,
+    },
+    /// The newest ready-made data package and which components this data folder would take from it
+    Prebuilt,
     /// Ask the servers whether newer data is available (no download)
     Check,
     /// Bring the local OSM extract up to date – daily Geofabrik diffs when possible – without rebuilding
@@ -325,6 +335,24 @@ fn main() -> anyhow::Result<()> {
         Cmd::Status => {
             let s = data::status(&paths);
             println!("{}", serde_json::to_string_pretty(&s)?);
+        }
+        Cmd::Minyan { at, name, live } => {
+            let (lon, lat) = at.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))).ok_or_else(|| anyhow::anyhow!("expected lon,lat"))?;
+            let t = if live { data::minyanim::table_live(&paths, lon, lat, name.as_deref())? } else { data::minyanim::table_for(&paths, lon, lat, name.as_deref())? };
+            println!("{}", serde_json::to_string_pretty(&t)?);
+        }
+        Cmd::Prebuilt => {
+            let client = data::download::http_client()?;
+            let l = data::prebuilt::latest(&client)?;
+            let usable: Vec<_> = data::prebuilt::usable(&paths, &l, &DataComponent::ALL).into_iter().map(|(c, v)| serde_json::json!({ "component": c, "version": v })).collect();
+            let out = serde_json::json!({
+                "package": l.version,
+                "ageDays": l.age_days,
+                "files": l.sha256.len(),
+                "manifest": l.manifest.components,
+                "wouldInstall": usable,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Export { dest, only } => {
             let only = only

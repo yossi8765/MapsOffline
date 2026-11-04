@@ -76,26 +76,37 @@ pub fn trails_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
     Ok(p.exists().then(|| p.display().to_string()))
 }
 
+/// Payload of event `minyanim-live`: the live timetable that replaces the snapshot.
+#[derive(Clone, serde::Serialize)]
+struct MinyanimLive {
+    lon: f64,
+    lat: f64,
+    table: crate::data::minyanim::MinyanTable,
+}
+
 /// Weekly prayer timetable of the synagogue at this point (`poi_name` helps between neighbours).
-/// Err "NO_MINYANIM_DATA" when the component is not installed.
+/// Answers at once from the installed weekly snapshot; when online, the current timetable from
+/// Nedarim Plus follows as event `minyanim-live` {lon, lat, table} (it used to make the place card
+/// wait up to 16 s). Err "NO_MINYANIM_DATA" when offline and the component is not installed.
 #[tauri::command]
-pub async fn minyanim_for(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, poi_name: Option<String>) -> R<Option<crate::data::minyanim::MinyanTable>> {
+pub async fn minyanim_for(app: AppHandle, state: State<'_, Arc<AppState>>, lon: f64, lat: f64, poi_name: Option<String>) -> R<Option<crate::data::minyanim::MinyanTable>> {
     let paths = state.paths();
     let online = state.settings.read().routing_mode != "offline";
-    tauri::async_runtime::spawn_blocking(move || {
-        // online: the current timetable from Nedarim Plus; any failure -> the weekly snapshot
-        if online {
-            match crate::data::minyanim::table_live(&paths, lon, lat, poi_name.as_deref()) {
-                Ok(Some(t)) => return Ok(Some(t)),
-                Ok(None) => {}
-                Err(e) => log::info!("live minyanim failed, using the snapshot: {e:#}"),
+    if online {
+        let (paths, name) = (paths.clone(), poi_name.clone());
+        std::thread::spawn(move || match crate::data::minyanim::table_live(&paths, lon, lat, name.as_deref()) {
+            Ok(Some(table)) => {
+                let _ = app.emit("minyanim-live", MinyanimLive { lon, lat, table });
             }
-        }
-        match crate::data::minyanim::table_for(&paths, lon, lat, poi_name.as_deref()) {
-            Ok(t) => Ok(t),
-            Err(_) if online => Ok(None),
-            Err(e) => Err(err(e)),
-        }
+            Ok(None) => {}
+            Err(e) => log::info!("live minyanim failed, the snapshot stays: {e:#}"),
+        });
+    }
+    tauri::async_runtime::spawn_blocking(move || match crate::data::minyanim::table_for(&paths, lon, lat, poi_name.as_deref()) {
+        Ok(t) => Ok(t),
+        // not installed: the live answer may still come
+        Err(_) if online => Ok(None),
+        Err(e) => Err(err(e)),
     })
     .await
     .map_err(err)?
@@ -135,7 +146,9 @@ pub async fn data_update(
     }
     st.cancel.reset();
     let paths = st.paths();
-    let comps = if components.is_empty() { DataComponent::ALL.to_vec() } else { components };
+    // "update everything" = everything the user wants (Settings.wantedComponents), else all
+    let wanted = st.settings.read().wanted_components.clone();
+    let comps = if components.is_empty() { wanted.unwrap_or_else(|| DataComponent::ALL.to_vec()) } else { components };
     let app2 = app.clone();
     let emit: crate::data::Emit = Arc::new(move |p: DataProgress| {
         let _ = app2.emit("data-progress", p);
@@ -143,7 +156,8 @@ pub async fn data_update(
     let st2 = st.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         let r = crate::data::update(&comps, &paths, emit, &st2.cancel);
-        st2.unload_all();
+        // only what this update could have replaced is dropped (and reloaded lazily)
+        st2.unload(&comps);
         st2.updating.store(false, Ordering::SeqCst);
         r
     })
@@ -157,6 +171,7 @@ pub async fn data_update(
 /// file (for machines without internet).
 #[tauri::command]
 pub async fn data_export(app: AppHandle, state: State<'_, Arc<AppState>>, dest: String, components: Option<Vec<DataComponent>>) -> R<Vec<DataComponent>> {
+    check_user_path(&state, &dest, &["mapsdata"]).map_err(err)?;
     let only = components.unwrap_or_default();
     run_package_job(app, state.inner().clone(), move |paths, progress, cancel| {
         crate::data::package::export(paths, std::path::Path::new(&dest), &only, progress, cancel)
@@ -179,7 +194,10 @@ pub async fn data_import(app: AppHandle, state: State<'_, Arc<AppState>>, src: S
         crate::data::package::import(paths, &src_path, &[], progress, cancel)
     })
     .await;
-    st.unload_all();
+    match &res {
+        Ok(installed) => st.unload(installed),
+        Err(_) => st.unload_all(),
+    }
     let _ = app.emit("data-updated", ());
     res
 }
@@ -202,6 +220,7 @@ struct PackageDownloadProgress {
 /// resumes where it stopped; cancel with `data_cancel()`. Returns the file size.
 #[tauri::command]
 pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState>>, dest: String) -> R<u64> {
+    check_user_path(&state, &dest, &["mapsdata"]).map_err(err)?;
     let st = state.inner().clone();
     if st.updating.swap(true, Ordering::SeqCst) {
         return Err("UPDATE_RUNNING".into());
@@ -229,6 +248,8 @@ pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState
             if dest != file {
                 // same drive: a rename; otherwise a copy
                 if std::fs::rename(&file, &dest).is_err() {
+                    let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+                    crate::data::disk::ensure_free(dest.parent().unwrap_or(&dest), size)?;
                     std::fs::copy(&file, &dest)?;
                     let _ = std::fs::remove_file(&file);
                 }
@@ -436,16 +457,50 @@ pub async fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
     .map_err(err)
 }
 
-/// Write a text file the user picked in the save dialog (route export: GPX / KML).
+/// Size and version of the combined ready-made data package (for the first-run choice); `null`
+/// when the package host cannot be reached.
 #[tauri::command]
-pub async fn save_text_file(path: String, contents: String) -> R<()> {
-    // Only the route-export kinds the save dialog offers: the path comes from the webview, and
-    // this must not become a way to overwrite arbitrary files (programs, settings).
-    let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    // (json: favorites export)
-    if !matches!(ext.as_deref(), Some("gpx" | "kml" | "txt" | "json")) {
-        return Err("SAVE_FAILED: unsupported file type".into());
+pub async fn package_info() -> R<Option<PackageInfo>> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let client = crate::data::download::http_client().ok()?;
+        let m = crate::data::download::probe(&client, FULL_PACKAGE_URL).ok()?;
+        Some(PackageInfo { size_bytes: m.content_length?, version: m.version().unwrap_or_default() })
+    })
+    .await
+    .map_err(err)
+}
+
+/// A path the webview asks the program to write: absolute, one of `exts`, and outside the data
+/// folder and the program folder (settings, manifest, indexes and the program itself must never
+/// be overwritten through a "save as"). Errors carry `INVALID_PATH`.
+pub(crate) fn check_user_path(state: &AppState, path: &str, exts: &[&str]) -> anyhow::Result<()> {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        anyhow::bail!("INVALID_PATH: not an absolute path");
     }
+    let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    if !exts.contains(&ext.as_str()) {
+        anyhow::bail!("INVALID_PATH: unsupported file type .{ext}");
+    }
+    let mut forbidden = vec![state.paths().root, crate::paths::DataPaths::default_root()];
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf)) {
+        forbidden.push(dir);
+    }
+    if let Ok(win) = std::env::var("SystemRoot") {
+        forbidden.push(win.into());
+    }
+    if forbidden.iter().any(|d| crate::paths::is_inside(p, d)) {
+        anyhow::bail!("INVALID_PATH: the program and data folders cannot be written from here");
+    }
+    Ok(())
+}
+
+/// Write a text file the user picked in the save dialog (route export: GPX / KML, favorites JSON,
+/// route text). The path comes from the webview: only these kinds, never into the program or
+/// data folders.
+#[tauri::command]
+pub async fn save_text_file(state: State<'_, Arc<AppState>>, path: String, contents: String) -> R<()> {
+    check_user_path(&state, &path, &["gpx", "kml", "txt", "json", "geojson", "csv"]).map_err(err)?;
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, contents).map_err(|e| AppError::from(anyhow::Error::new(e).context("SAVE_FAILED")))).await.map_err(err)?
 }
 
@@ -455,4 +510,18 @@ pub async fn regions_locate(state: State<'_, Arc<AppState>>, query: String) -> R
     let paths = state.paths();
     let lang = state.settings.read().language.clone();
     tauri::async_runtime::spawn_blocking(move || crate::data::regions::locate(&paths, &query, &lang).map_err(err)).await.map_err(err)?
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn user_paths_are_scoped() {
+        let st = crate::state::AppState::new();
+        let root = st.paths().root;
+        let out = std::env::temp_dir().join("mo-export-test.gpx");
+        assert!(super::check_user_path(&st, &out.display().to_string(), &["gpx"]).is_ok());
+        assert!(super::check_user_path(&st, &root.join("settings.json").display().to_string(), &["json"]).is_err());
+        assert!(super::check_user_path(&st, &out.with_extension("exe").display().to_string(), &["gpx"]).is_err());
+        assert!(super::check_user_path(&st, "relative.gpx", &["gpx"]).is_err());
+    }
 }

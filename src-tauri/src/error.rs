@@ -17,6 +17,11 @@
 //! - classified from the cause chain: `NETWORK` (any reqwest error), `BLOCKED_HOST` (HTTP 418 /
 //!   content filter; `details` = host), `DISK_FULL`, `PERMISSION`
 //! - `INTERNAL_PANIC` (a command panicked; `details` = location), `INTERNAL` (anything else)
+//! - R1 (2026-11): `DISK_FULL` also as an explicit check before large writes (`details` =
+//!   "needed=<bytes> free=<bytes> (<folder>)"), `CHECKSUM_MISMATCH` (download did not match the
+//!   server's MD5), `INVALID_DATA_DIR`, `INVALID_PATH` (save path outside the allowed places or
+//!   wrong type), `INVALID_LAYER` / `INVALID_COLOR` (user layers, favorites); `details` = the
+//!   text after the code for the first four and `INVALID_LAYER`
 //!
 //! Any message (or cause in the chain) that starts with an `UPPER_SNAKE` word containing an
 //! underscore, followed by end of text, `:` or a space, yields that word as the code – so new
@@ -61,7 +66,14 @@ impl AppError {
         for cause in e.chain() {
             let s = cause.to_string();
             if let Some(code) = leading_code(&s) {
-                return AppError::new(code, message);
+                let err = AppError::new(code, message.clone());
+                // codes whose text after "CODE: " is data the UI shows (sizes, the folder…)
+                if matches!(code, "DISK_FULL" | "CHECKSUM_MISMATCH" | "INVALID_DATA_DIR" | "INVALID_PATH" | "INVALID_LAYER") {
+                    if let Some(rest) = s[code.len()..].strip_prefix(':').map(str::trim).filter(|r| !r.is_empty()) {
+                        return err.with_details(rest);
+                    }
+                }
+                return err;
             }
         }
         if let Some(host) = blocked_host(&message) {

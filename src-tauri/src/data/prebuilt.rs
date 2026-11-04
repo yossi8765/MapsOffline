@@ -36,26 +36,20 @@ pub const PUBLISHED: [DataComponent; 9] = [
 ];
 
 pub fn file_name(c: DataComponent) -> String {
-    let key = serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-    format!("{key}.mapsdata")
+    format!("{}.mapsdata", super::components::spec(c).key)
 }
 
-/// The format tail of a component's manifest version, as this program builds it: a package
-/// made by another program version may hold an incompatible graph / index.
-fn format_suffix(c: DataComponent) -> Option<String> {
-    match c {
-        DataComponent::Routing => Some(format!(" g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV)),
-        DataComponent::Geocode => Some(format!(" s{}.{}", crate::geocode::SCHEMA_VERSION, crate::geocode::BUILD_REV)),
-        DataComponent::Transit => Some(format!(" t{}", crate::transit::model::VERSION)),
-        DataComponent::Trails => Some(format!(" r{}", super::trails::BUILD_REV)),
-        _ => None,
-    }
-}
+// The format tail of a component's manifest version, as this program builds it: a package
+// made by another program version may hold an incompatible graph / index.
+use super::components::format_suffix;
 
 pub struct Latest {
     pub version: String,
     pub age_days: i64,
     pub manifest: Manifest,
+    /// SHA-256 of each file of the package as the registry recorded it at upload (file name →
+    /// hex); a downloaded file must match before it is installed.
+    pub sha256: std::collections::HashMap<String, String>,
 }
 
 fn file_url(version: &str, name: &str) -> String {
@@ -75,11 +69,23 @@ pub fn latest(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
         .find(|p| p["name"].as_str() == Some(PACKAGE) && p["status"].as_str().is_none_or(|s| s == "default"))
         .ok_or_else(|| anyhow!("no published data package"))?;
     let version = p["version"].as_str().ok_or_else(|| anyhow!("package without version"))?.to_string();
+    let sha256 = p["id"]
+        .as_i64()
+        .and_then(|id| {
+            let url = format!("{API}/{id}/package_files?per_page=100");
+            let list: Vec<serde_json::Value> = client.get(&url).timeout(Duration::from_secs(15)).send().ok()?.error_for_status().ok()?.json().ok()?;
+            Some(
+                list.iter()
+                    .filter_map(|f| Some((f["file_name"].as_str()?.to_string(), f["file_sha256"].as_str()?.to_string())))
+                    .collect::<std::collections::HashMap<_, _>>(),
+            )
+        })
+        .unwrap_or_default();
     let created = p["created_at"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
     let age_days = created.map(|c| (chrono::Utc::now() - c.with_timezone(&chrono::Utc)).num_days()).unwrap_or(i64::MAX);
     let m = client.get(file_url(&version, "manifest.json")).timeout(Duration::from_secs(15)).send()?.error_for_status()?;
     let manifest: Manifest = serde_json::from_slice(&m.bytes()?).context("package manifest")?;
-    Ok(Latest { version, age_days, manifest })
+    Ok(Latest { version, age_days, manifest, sha256 })
 }
 
 /// Which of `comps` the package should provide: version different from the installed one,
@@ -138,12 +144,31 @@ pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: 
             return Vec::new();
         }
     };
-    let mut done = Vec::new();
-    for (c, version) in usable(paths, &l, &wanted) {
+    // Downloads run three at a time (the registry serves each file at a fraction of the line);
+    // imports go one after the other (each one replaces files and records its version).
+    let todo = parking_lot::Mutex::new(usable(paths, &l, &wanted).into_iter());
+    let done = parking_lot::Mutex::new(Vec::new());
+    let import_lock = parking_lot::Mutex::new(());
+    std::thread::scope(|s| {
+        for _ in 0..3 {
+            s.spawn(|| loop {
+                let Some((c, version)) = todo.lock().next() else { break };
+                if install_one(paths, &l, c, &version, emit, cancel, &import_lock) {
+                    done.lock().push(c);
+                }
+            });
+        }
+    });
+    done.into_inner()
+}
+
+/// Download, check and install one component of the package; false = build it locally.
+fn install_one(paths: &DataPaths, l: &Latest, c: DataComponent, version: &str, emit: &Emit, cancel: &Cancel, import_lock: &parking_lot::Mutex<()>) -> bool {
+    {
         // a handle that answers for this component only: cancelling it stops its download
         let cancel = &cancel.bound_to(&[c]);
         if cancel.is_cancelled() {
-            continue;
+            return false;
         }
         let file = paths.downloads_dir().join(format!("prebuilt-{}", file_name(c)));
         let progress = |phase: ProgressPhase, d: u64, t: u64, msg: &str| -> bool {
@@ -154,6 +179,11 @@ pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: 
         };
         let r = (|| -> anyhow::Result<()> {
             download::ensure_fresh(&file_url(&l.version, &file_name(c)), &file, &progress, cancel)?;
+            if let Some(want) = l.sha256.get(&file_name(c)) {
+                progress(ProgressPhase::Processing, 0, 1, "מאמת את הקובץ שהורד");
+                download::check_digest::<sha2::Sha256>(&file, want)?;
+            }
+            let _one_import = import_lock.lock();
             let info = super::package::inspect(&file)?;
             if !info.components.contains(&c) {
                 bail!("the package file does not hold {c:?}");
@@ -169,12 +199,14 @@ pub fn install(paths: &DataPaths, comps: &[DataComponent], emit: &Emit, cancel: 
         match r {
             Ok(()) => {
                 log::info!("{c:?}: installed ready-made {version} from package {}", l.version);
-                done.push(c);
+                true
             }
-            Err(e) => log::warn!("{c:?}: ready-made package not used ({e:#}); building locally"),
+            Err(e) => {
+                log::warn!("{c:?}: ready-made package not used ({e:#}); building locally");
+                false
+            }
         }
     }
-    done
 }
 
 #[cfg(test)]
@@ -202,7 +234,7 @@ mod tests {
         remote.set(DataComponent::Tiles, Some("20261101.pmtiles".into()));
         remote.set(DataComponent::Satellite, Some("s2cloudless-2025 z12".into()));
         remote.set(DataComponent::Terrain, Some("terrarium Sat, 02 Dec 2017 02:55:39 GMT".into())); // old DEM: not usable
-        let l = Latest { version: "2026-11-01".into(), age_days: 2, manifest: remote };
+        let l = Latest { version: "2026-11-01".into(), age_days: 2, manifest: remote, sha256: Default::default() };
         let all = [DataComponent::Routing, DataComponent::Transit, DataComponent::Geocode, DataComponent::Tiles, DataComponent::Satellite, DataComponent::Terrain];
         let got: Vec<DataComponent> = usable(&paths, &l, &all).into_iter().map(|x| x.0).collect();
         // satellite: the default settings ask for govmap, so the package's Sentinel-2 is skipped

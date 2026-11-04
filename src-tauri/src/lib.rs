@@ -20,8 +20,11 @@ pub mod online;
 pub mod paths;
 pub mod routing;
 pub mod state;
+pub mod system;
 pub mod transit;
 pub mod types;
+pub mod user_layers;
+pub mod user_tiles;
 
 use std::sync::Arc;
 
@@ -57,19 +60,29 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // Online map without local data: the webview reads the Protomaps world build with HTTP
         // range requests through this proxy (the build host sends no CORS headers).
+        // (every scheme answers on a bounded worker pool: local file reads apart from network waits)
         .register_asynchronous_uri_scheme_protocol("mo-tiles", |_ctx, request, responder| {
-            std::thread::spawn(move || responder.respond(online_tiles::proxy(request)));
+            system::net_pool().run(move || responder.respond(online_tiles::proxy(request)));
         })
         // Every installed detailed map (Israel + downloaded countries) as one vector-tile source.
         .register_asynchronous_uri_scheme_protocol("mo-map", |_ctx, request, responder| {
-            std::thread::spawn(move || responder.respond(map_tiles::serve(request)));
+            system::local_pool().run(move || responder.respond(map_tiles::serve(request)));
         })
         // Satellite layer: downloaded archive, else tiles seen before, else live from govmap / EOX.
         .register_asynchronous_uri_scheme_protocol("mo-sat", |ctx, request, responder| {
             use tauri::Manager;
             let st = ctx.app_handle().state::<Arc<AppState>>().inner().clone();
-            std::thread::spawn(move || responder.respond(online_sat::serve(st, request)));
+            system::net_pool().run(move || responder.respond(online_sat::serve(st, request)));
         })
+        // The user's own tile layers (XYZ / WMS online with a disk cache, PMTiles / MBTiles files).
+        .register_asynchronous_uri_scheme_protocol("mo-user", |ctx, request, responder| {
+            use tauri::Manager;
+            let st = ctx.app_handle().state::<Arc<AppState>>().inner().clone();
+            let pool = if user_tiles::is_local(&st, request.uri().path()) { system::local_pool() } else { system::net_pool() };
+            pool.run(move || responder.respond(user_tiles::serve(st, request)));
+        })
+        // size, position and maximised state of the windows survive a restart
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
@@ -88,6 +101,7 @@ pub fn run() {
             }
             // a link that started the app waits until the webview asks for it (take_pending_link)
             *PENDING_LINK.lock() = link_arg(&std::env::args().collect::<Vec<_>>());
+            system::watch_accent(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -134,6 +148,19 @@ pub fn run() {
             commands::app::app_update_check,
             commands::app::app_update_download,
             commands::app::app_update_install,
+            commands::app::app_update_cancel,
+            commands::app::favorites_patch,
+            commands::app::favorites_groups,
+            commands::app::system_accent,
+            commands::app::system_text_scale,
+            commands::app::connectivity,
+            commands::app::user_layers_list,
+            commands::app::user_layer_get,
+            commands::app::user_layer_save,
+            commands::app::user_layer_update,
+            commands::app::user_layer_delete,
+            commands::app::custom_layer_clear_cache,
+            commands::data::package_info,
             // [R1] new commands above
             // ---- R2 routing + navigation (commands/route.rs, commands/nav.rs)
             commands::route::route,
@@ -163,8 +190,14 @@ pub fn run() {
             commands::geo::poi_layer,
             // [R4] new commands above
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running MapsOffline");
+        .build(tauri::generate_context!())
+        .expect("error while running MapsOffline")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                app.state::<Arc<AppState>>().on_exit();
+            }
+        });
 }
 
 /// Let the webview read files under `dir` through the asset protocol (the static scope in

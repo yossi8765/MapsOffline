@@ -6,11 +6,17 @@
 //! archive that has it and "first hit wins" never cuts features. Files are opened per request
 //! (no handle stays open, so updates can replace them); headers and directories are cached by
 //! (path, length, mtime).
+//!
+//! `Archive` is the program's one PMTiles v3 reader: the satellite / terrain archives, the
+//! custom layers (`user_tiles`) and the verification code read through it too; the writer
+//! lives in `data::satellite`.
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+
+use parking_lot::{Mutex, RwLock};
 use std::time::SystemTime;
 
 use tauri::http::{header, Request, Response, StatusCode};
@@ -26,6 +32,7 @@ struct Archive {
     max_zoom: u8,
     gzip_tiles: bool,
     gzip_dirs: bool,
+    tile_type: u8,
     /// [min_lon, min_lat, max_lon, max_lat]
     bounds: [f64; 4],
     leaves: Mutex<HashMap<u64, Arc<Vec<Entry>>>>,
@@ -59,6 +66,7 @@ impl Archive {
             data_off: u(56),
             gzip_dirs,
             gzip_tiles: h[98] == 2,
+            tile_type: h[99],
             min_zoom: h[100],
             max_zoom: h[101],
             bounds: [i(102), i(106), i(110), i(114)],
@@ -70,6 +78,12 @@ impl Archive {
         if z < self.min_zoom || z > self.max_zoom || !self.covers(z, x, y) {
             return Ok(None);
         }
+        self.tile_raw(path, z, x, y)
+    }
+
+    /// The stored tile without the header's zoom / bounds shortcut (verification reads what is
+    /// really in the directories).
+    fn tile_raw(&self, path: &Path, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let id = tile_id(z, x, y);
         let Some(mut e) = find_entry(&self.root, id) else { return Ok(None) };
         let mut f = File::open(path)?;
@@ -85,12 +99,12 @@ impl Archive {
     }
 
     fn leaf(&self, f: &mut File, off: u64, len: u32) -> anyhow::Result<Arc<Vec<Entry>>> {
-        if let Some(l) = self.leaves.lock().unwrap().get(&off) {
+        if let Some(l) = self.leaves.lock().get(&off) {
             return Ok(l.clone());
         }
         let raw = read_at(f, self.leaf_off + off, u64::from(len))?;
         let l = Arc::new(deserialize_dir(&if self.gzip_dirs { gunzip(&raw)? } else { raw })?);
-        let mut g = self.leaves.lock().unwrap();
+        let mut g = self.leaves.lock();
         if g.len() >= MAX_LEAVES {
             g.clear();
         }
@@ -115,17 +129,17 @@ static CACHE: Mutex<Option<HashMap<PathBuf, Arc<Archive>>>> = Mutex::new(None);
 
 /// Replace the list of archives (Israel first, then the countries).
 pub fn set_files(files: Vec<PathBuf>) {
-    *FILES.write().unwrap() = files;
+    *FILES.write() = files;
 }
 
 pub fn has_files() -> bool {
-    !FILES.read().unwrap().is_empty()
+    !FILES.read().is_empty()
 }
 
 fn archive(path: &Path) -> Option<Arc<Archive>> {
     let md = std::fs::metadata(path).ok()?;
     let stamp = (md.len(), md.modified().ok()?);
-    let mut g = CACHE.lock().unwrap();
+    let mut g = CACHE.lock();
     let cache = g.get_or_insert_with(HashMap::new);
     if let Some(a) = cache.get(path) {
         if a.stamp == stamp {
@@ -151,6 +165,18 @@ pub fn archive_tile(path: &Path, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     archive(path)?.tile(path, z, x, y).ok().flatten()
 }
 
+/// One tile read without the cache (verification of a file that is about to be replaced).
+pub fn read_tile_uncached(path: &Path, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+    let md = std::fs::metadata(path)?;
+    let a = Archive::open(path, (md.len(), md.modified()?))?;
+    a.tile_raw(path, z, x, y)
+}
+
+/// Tile type byte of an archive header (1 mvt, 2 png, 3 jpeg, 4 webp, 5 avif).
+pub fn archive_tile_type(path: &Path) -> Option<u8> {
+    archive(path).map(|a| a.tile_type)
+}
+
 /// Max zoom of an archive.
 pub fn archive_max_zoom(path: &Path) -> Option<u8> {
     archive(path).map(|a| a.max_zoom)
@@ -158,7 +184,7 @@ pub fn archive_max_zoom(path: &Path) -> Option<u8> {
 
 /// The first installed archive's tile, if any.
 pub fn tile(z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
-    let files = FILES.read().unwrap().clone();
+    let files = FILES.read().clone();
     for p in &files {
         let Some(a) = archive(p) else { continue };
         match a.tile(p, z, x, y) {

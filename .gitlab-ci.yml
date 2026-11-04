@@ -1,30 +1,69 @@
-# MapsOffline CI: only the weekly ready-made data package (tools/ci-data.sh).
-# Runs on the pipeline schedule ("CI/CD > Schedules") or when started by hand (Run pipeline);
-# pushes do not start pipelines. Releases are still built on Windows with tools/release.ps1.
+# MapsOffline CI:
+# - `test` on every push / merge request: Rust unit tests, clippy and a dependency audit (Linux).
+# - `data-package` (weekly schedule or started by hand): the ready-made data package
+#   (tools/ci-data.sh), followed by the tests that need real data.
+# Releases are still built on Windows with tools/release.ps1.
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-data-package:
+.rust-linux:
   image: rust:1-bookworm
-  timeout: 3h
   variables:
     CARGO_HOME: $CI_PROJECT_DIR/.cargo
     CARGO_TERM_COLOR: never
+  before_script:
+    - apt-get update -qq
+    # Tauri's Linux libraries (the data tool lives in the app crate) + tools for the scripts
+    - >
+      apt-get install -y -qq --no-install-recommends
+      libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      libssl-dev pkg-config file jq ca-certificates webp > /dev/null
+    # the crate embeds the frontend at compile time; tests never use it
+    - mkdir -p dist && [ -f dist/index.html ] || echo '<!doctype html><title>MapsOffline</title>' > dist/index.html
+
+test:
+  extends: .rust-linux
+  timeout: 1h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  cache:
+    key: test-cargo-v1
+    paths:
+      - .cargo/registry/index
+      - .cargo/registry/cache
+      - src-tauri/target
+  script:
+    - cd src-tauri
+    - rustup component add clippy
+    - cargo clippy --features cli --all-targets -- -D warnings
+    - cargo test --features cli
+    # known vulnerabilities in the dependency tree (RustSec advisory database)
+    - cargo install cargo-audit --locked --quiet || true
+    - cargo audit || echo "WARNING - cargo audit reported advisories (see above)"
+
+data-package:
+  extends: .rust-linux
+  timeout: 3h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+  variables:
     RUST_LOG: info
   cache:
     key: data-cargo-registry-v1
     paths:
       - .cargo/registry/index
       - .cargo/registry/cache
-  before_script:
-    - apt-get update -qq
-    # Tauri's Linux libraries (the data tool lives in the app crate) + tools for the script
-    - >
-      apt-get install -y -qq --no-install-recommends
-      libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
-      libssl-dev pkg-config file jq ca-certificates webp > /dev/null
   script:
     - bash tools/ci-data.sh
+    # tests against the freshly built data (routes, addresses, timetable); failures are reported
+    # but never hold back the package, which is already uploaded at this point
+    - bash tools/ci-test-real.sh || echo "WARNING - real-data tests failed"

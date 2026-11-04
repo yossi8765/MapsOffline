@@ -585,6 +585,9 @@ impl Writer {
         h.extend_from_slice(&e7((meta.bbox[1] + meta.bbox[3]) / 2.0));
         debug_assert_eq!(h.len(), HEADER_LEN);
 
+        // the archive is written next to its tile data and briefly needs the room twice: say so
+        // clearly before writing (the temp files stay, so the next run only finishes the archive)
+        super::disk::ensure_free(dest.parent().unwrap_or(dest), self.data_len + leaves.len() as u64 + root.len() as u64)?;
         let mut out = BufWriter::with_capacity(1 << 20, File::create(dest)?);
         out.write_all(&h)?;
         out.write_all(&root)?;
@@ -644,26 +647,10 @@ pub(crate) fn find_entry(entries: &[Entry], id: u64) -> Option<Entry> {
     }
 }
 
-/// Tile bytes for (z, x, y) or `None` when the archive has no such tile.
+/// Tile bytes for (z, x, y) or `None` when the archive has no such tile (the one reader in
+/// `map_tiles`, without its cache: the file may be about to be replaced).
 pub fn read_tile(path: &Path, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut f = File::open(path)?;
-    let h = read_header(&mut f)?;
-    if z > h.max_zoom {
-        return Ok(None);
-    }
-    let id = tile_id(z, x, y);
-    let root = deserialize_dir(&gunzip(&read_at(&mut f, h.root_off, h.root_len)?)?)?;
-    let Some(e) = find_entry(&root, id) else { return Ok(None) };
-    let e = if e.run_length == 0 {
-        let leaf = deserialize_dir(&gunzip(&read_at(&mut f, h.leaf_off + e.offset, u64::from(e.length))?)?)?;
-        match find_entry(&leaf, id) {
-            Some(e) if e.run_length > 0 => e,
-            _ => return Ok(None),
-        }
-    } else {
-        e
-    };
-    Ok(Some(read_at(&mut f, h.data_off + e.offset, u64::from(e.length))?))
+    crate::map_tiles::read_tile_uncached(path, z, x, y)
 }
 
 /// Dedup table of a resumed archive. Without it every sea / blank tile fetched after the resume
@@ -755,6 +742,23 @@ fn has_signature(b: &[u8], jpeg: bool) -> bool {
 
 /// Header sanity, one real tile (Tel Aviv at zoom 10) carries the archive's image signature,
 /// and – when `placeholders` – no content-filter placeholders among the low-zoom tiles.
+/// [`verify`] remembered per (file, size, mtime): "check for updates" asked again every time and
+/// read every directory of a multi-GB archive.
+pub(crate) fn verify_cached(path: &Path, placeholders: bool) -> bool {
+    type Key = (std::path::PathBuf, bool, u64, Option<std::time::SystemTime>);
+    static SEEN: parking_lot::Mutex<Vec<(Key, bool)>> = parking_lot::Mutex::new(Vec::new());
+    let Ok(md) = std::fs::metadata(path) else { return false };
+    let key: Key = (path.to_path_buf(), placeholders, md.len(), md.modified().ok());
+    if let Some((_, ok)) = SEEN.lock().iter().find(|(k, _)| *k == key) {
+        return *ok;
+    }
+    let ok = verify(path, placeholders).is_ok();
+    let mut g = SEEN.lock();
+    g.retain(|(k, _)| k.0 != key.0 || k.1 != key.1);
+    g.push((key, ok));
+    ok
+}
+
 pub(crate) fn verify(path: &Path, placeholders: bool) -> anyhow::Result<()> {
     let md = std::fs::metadata(path).context("raster archive missing")?;
     if md.len() < MIN_SIZE {
