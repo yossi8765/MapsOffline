@@ -117,6 +117,19 @@ export default function App() {
     };
   }, [theme]);
 
+  // colour scheme of the whole interface (a light colour row in Settings); "white" = plain
+  const colorScheme = useStore((s) => s.settings.colorScheme);
+  useEffect(() => {
+    // `?scheme=mint` previews a scheme without touching the settings (headless screenshots)
+    const preview = typeof location !== "undefined" ? new URLSearchParams(location.search).get("scheme") : null;
+    document.documentElement.setAttribute("data-scheme", preview || colorScheme || "white");
+  }, [colorScheme]);
+  // the old "pastel" accent was a whole-panel scheme: it becomes the lavender scheme
+  useEffect(() => {
+    const st = useStore.getState();
+    if (settingsLoaded && (st.settings.accent as string) === "pastel") void st.updateSettings({ accent: "system", colorScheme: "lavender" });
+  }, [settingsLoaded]);
+
   // accent colour; "system" follows the Windows accent and its changes
   const accent = useStore((s) => s.settings.accent);
   useEffect(() => {

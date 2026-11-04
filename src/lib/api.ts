@@ -490,6 +490,8 @@ export interface Settings {
   navVoice: boolean;
   // ---- IMPROVEMENTS contract (R1); Rust fills defaults
   coordFormat: CoordFormat;
+  /** Colour scheme of the whole interface; "white" = plain surfaces with the accent colour. */
+  colorScheme: ColorScheme;
   /** "system" = Windows text scale (clamped 1..1.25) */
   uiScale: "system" | 1 | 1.12 | 1.25;
   customLayers: CustomLayer[];
@@ -499,6 +501,8 @@ export interface Settings {
 }
 
 export type CoordFormat = "dd" | "dms" | "itm" | "utm";
+export type ColorScheme = "white" | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua";
+export const COLOR_SCHEMES: ColorScheme[] = ["white", "sky", "mint", "lavender", "peach", "rose", "sand", "aqua"];
 
 export interface CustomLayer {
   id: string;

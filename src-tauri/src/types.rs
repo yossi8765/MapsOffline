@@ -854,6 +854,10 @@ pub struct Settings {
     /// How coordinates are shown and copied: "dd" | "dms" | "itm" | "utm".
     #[serde(default = "default_coord_format")]
     pub coord_format: String,
+    /// Colour scheme of the whole interface (panel, rail, cards, controls and the accent):
+    /// "white" (plain, the accent colour applies) | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua".
+    #[serde(default = "default_color_scheme")]
+    pub color_scheme: String,
     /// UI scale: "system" (Windows text scale, clamped 1..1.25) or 1 / 1.12 / 1.25.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: serde_json::Value,
@@ -866,6 +870,10 @@ pub struct Settings {
     /// Teaching tips already shown (ids).
     #[serde(default)]
     pub teaching_tips_seen: Vec<String>,
+}
+
+pub fn default_color_scheme() -> String {
+    "white".into()
 }
 
 pub fn default_coord_format() -> String {
@@ -949,6 +957,7 @@ impl Default for Settings {
             nav_voice: true,
             transit_reliability: true,
             coord_format: default_coord_format(),
+            color_scheme: default_color_scheme(),
             ui_scale: default_ui_scale(),
             custom_layers: Vec::new(),
             wanted_components: None,

@@ -733,10 +733,15 @@ fn main() -> anyhow::Result<()> {
             let mut stops = Vec::new();
             let mut stop_ms = 0.0;
             if paths.transit_file().exists() {
-                let t = mapsoffline_lib::transit::load(&paths.transit_file())?;
-                let t1 = std::time::Instant::now();
-                stops = t.search_stops(&query, near, 5);
-                stop_ms = t1.elapsed().as_secs_f64() * 1e3;
+                // like the app: unreadable / old transit data only means no stops in the results
+                match mapsoffline_lib::transit::load(&paths.transit_file()) {
+                    Ok(t) => {
+                        let t1 = std::time::Instant::now();
+                        stops = t.search_stops(&query, near, 5);
+                        stop_ms = t1.elapsed().as_secs_f64() * 1e3;
+                    }
+                    Err(e) => eprintln!("(stops skipped: {e:#})"),
+                }
             }
             for r in mapsoffline_lib::geocode::merge_with_stops(geo, stops, 10) {
                 println!(

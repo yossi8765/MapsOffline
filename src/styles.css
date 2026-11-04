@@ -965,6 +965,60 @@
   --shadow-pop: var(--shadow-panel);
 }
 
+
+/* ---------- colour schemes (Settings → appearance → colour scheme): a row of light colours; each
+   one recolours the whole interface – window background, panel, rail, cards, fields, borders and
+   the accent. "white" keeps the plain surfaces and lets the accent colour row apply. The dark
+   theme gets the same hue as a faint tint of the dark surfaces with a light accent. ---------- */
+:root[data-scheme="sky"] { --scheme-tint: #cfe3fb; --scheme-ink: #1f6fd1; --scheme-glow: #6aa8f5; }
+:root[data-scheme="mint"] { --scheme-tint: #cdeedd; --scheme-ink: #1d8352; --scheme-glow: #5cd194; }
+:root[data-scheme="lavender"] { --scheme-tint: #ded6f7; --scheme-ink: #6b4fd8; --scheme-glow: #a690f5; }
+:root[data-scheme="peach"] { --scheme-tint: #fbdcc8; --scheme-ink: #c4561a; --scheme-glow: #f59c66; }
+:root[data-scheme="rose"] { --scheme-tint: #f8d3dd; --scheme-ink: #c42d5a; --scheme-glow: #f28aa6; }
+:root[data-scheme="sand"] { --scheme-tint: #efe3c4; --scheme-ink: #946a12; --scheme-glow: #d9b45a; }
+:root[data-scheme="aqua"] { --scheme-tint: #c9ecee; --scheme-ink: #13808a; --scheme-glow: #5ccdd6; }
+html:root[data-scheme]:not([data-scheme="white"]):not([data-theme="dark"]) {
+  --bg: color-mix(in srgb, var(--scheme-tint) 90%, #ffffff);
+  --surface: color-mix(in srgb, var(--scheme-tint) 48%, #ffffff);
+  --surface-solid: color-mix(in srgb, var(--scheme-tint) 48%, #ffffff);
+  --surface-raised: color-mix(in srgb, var(--scheme-tint) 22%, #ffffff);
+  --surface-2: color-mix(in srgb, var(--scheme-tint) 82%, #ffffff);
+  --surface-hover: color-mix(in srgb, var(--scheme-ink) 7%, transparent);
+  --surface-active: color-mix(in srgb, var(--scheme-ink) 13%, transparent);
+  --border: color-mix(in srgb, var(--scheme-ink) 15%, transparent);
+  --border-strong: color-mix(in srgb, var(--scheme-ink) 27%, transparent);
+  --fg: color-mix(in srgb, var(--scheme-ink) 22%, #15171c);
+  --fg-muted: color-mix(in srgb, var(--scheme-ink) 28%, #4f5561);
+  --fg-subtle: color-mix(in srgb, var(--scheme-ink) 28%, #59606c);
+  --accent: var(--scheme-ink);
+  --accent-hover: color-mix(in srgb, var(--scheme-ink) 84%, #000000);
+  --accent-solid: var(--scheme-ink);
+  --accent-solid-hover: color-mix(in srgb, var(--scheme-ink) 84%, #000000);
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--scheme-ink) 13%, transparent);
+  --ring-color: color-mix(in srgb, var(--scheme-ink) 45%, transparent);
+  --route-car: var(--scheme-ink);
+  --map-me: var(--scheme-ink);
+}
+html:root[data-scheme]:not([data-scheme="white"])[data-theme="dark"] {
+  --bg: color-mix(in srgb, var(--scheme-glow) 6%, #111214);
+  --surface: color-mix(in srgb, var(--scheme-glow) 8%, #1b1d21);
+  --surface-solid: color-mix(in srgb, var(--scheme-glow) 8%, #1b1d21);
+  --surface-raised: color-mix(in srgb, var(--scheme-glow) 9%, #24272c);
+  --surface-2: color-mix(in srgb, var(--scheme-glow) 10%, #232529);
+  --border: color-mix(in srgb, var(--scheme-glow) 14%, rgba(255, 255, 255, 0.06));
+  --border-strong: color-mix(in srgb, var(--scheme-glow) 22%, rgba(255, 255, 255, 0.1));
+  --accent: var(--scheme-glow);
+  --accent-hover: color-mix(in srgb, var(--scheme-glow) 80%, #ffffff);
+  --accent-solid: color-mix(in srgb, var(--scheme-glow) 70%, #000000);
+  --accent-solid-hover: color-mix(in srgb, var(--scheme-glow) 78%, #000000);
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--scheme-glow) 16%, transparent);
+  --ring-color: color-mix(in srgb, var(--scheme-glow) 55%, transparent);
+  --route-car: var(--scheme-glow);
+  --map-me: var(--scheme-glow);
+}
+
 /* ---------- maplibre ---------- */
 .maplibregl-ctrl-top-left,
 .maplibregl-ctrl-top-right {

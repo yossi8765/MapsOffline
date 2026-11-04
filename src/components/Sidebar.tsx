@@ -137,7 +137,7 @@ export function Sidebar() {
           )}
           aria-hidden={collapsed || undefined}
         >
-          <div className="flex items-center gap-3 px-4 h-14 shrink-0">
+          <div className="flex items-center gap-3 px-4 h-14 shrink-0 overflow-hidden [scrollbar-gutter:stable]">
             {group.panels.length > 1 ? (
               <div className="seg seg-sm flex-1" role="tablist" aria-label={t(group.label)} onKeyDown={onTabKeys}>
                 {group.panels.map((p) => (

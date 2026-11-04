@@ -9,12 +9,12 @@ import { useT, type I18nKey } from "../lib/i18n";
 import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
 import { ShortcutList } from "./ShortcutsDialog";
-import { apiX, DATA_COMPONENTS, type CoordFormat, type Settings } from "../lib/api";
+import { apiX, COLOR_SCHEMES, DATA_COMPONENTS, type ColorScheme, type CoordFormat, type Settings } from "../lib/api";
 import { askConfirm, fmtDate } from "../lib/format";
 import { CREDITS } from "../lib/credits";
 import { formatCoord } from "../lib/coords";
 
-const ACCENTS = ["system", "blue", "green", "purple", "orange", "teal", "rose", "slate", "pastel"] as const;
+const ACCENTS = ["system", "blue", "green", "purple", "orange", "teal", "rose", "slate"] as const;
 
 /** Every `mapsoffline.*` key in localStorage (layers, view, nearby, scroll mode…). */
 function clearLocalPrefs() {
@@ -107,6 +107,33 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
+        <Row label={t("colorScheme")} hint={t("colorSchemeHint")}>
+          <div className="flex gap-2 flex-wrap" role="radiogroup" aria-label={t("colorScheme")}>
+            {COLOR_SCHEMES.map((c) => {
+              const on = (settings.colorScheme ?? "white") === c;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  title={t(`scheme_${c}` as I18nKey)}
+                  aria-label={t(`scheme_${c}` as I18nKey)}
+                  className={clsx(
+                    "relative w-8 h-8 rounded-full border transition-transform duration-150 hover:scale-110 flex items-center justify-center",
+                    on ? "border-fg border-2 scale-110" : "border-line-strong",
+                  )}
+                  style={{ background: SCHEME_SWATCH[c][0] }}
+                  onClick={() => void update({ colorScheme: c })}
+                >
+                  {/* the scheme's accent as a dot: what buttons and highlights will look like */}
+                  <span aria-hidden className="w-2.5 h-2.5 rounded-full" style={{ background: SCHEME_SWATCH[c][1] }} />
+                </button>
+              );
+            })}
+          </div>
+        </Row>
+        {(settings.colorScheme ?? "white") === "white" && (
         <Row label={t("accentColor")} hint={t("accentColorHint")}>
           <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label={t("accentColor")}>
             {ACCENTS.map((a) => (
@@ -124,6 +151,7 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
+        )}
         <Row label={t("textSize")} hint={t("textSizeHint")}>
           <div className="seg seg-sm seg-fit">
             {(["system", 1, 1.12, 1.25] as const).map((v) => (
@@ -337,6 +365,18 @@ export function SettingsPanel() {
     </div>
   );
 }
+
+/** [surface tint, accent] of each colour scheme, as drawn on its swatch. */
+const SCHEME_SWATCH: Record<ColorScheme, [string, string]> = {
+  white: ["#ffffff", "var(--accent)"],
+  sky: ["#cfe3fb", "#1f6fd1"],
+  mint: ["#cdeedd", "#1d8352"],
+  lavender: ["#ded6f7", "#6b4fd8"],
+  peach: ["#fbdcc8", "#c4561a"],
+  rose: ["#f8d3dd", "#c42d5a"],
+  sand: ["#efe3c4", "#946a12"],
+  aqua: ["#c9ecee", "#13808a"],
+};
 
 const ACCENT_SWATCH: Record<string, string> = {
   // the Windows accent: the swatch shows a Windows-blue / system gradient

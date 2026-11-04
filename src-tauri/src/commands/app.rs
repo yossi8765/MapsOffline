@@ -184,6 +184,9 @@ pub fn settings_set(app: AppHandle, state: State<'_, Arc<AppState>>, settings: S
 
 /// Clamp values the webview sends to what the program understands.
 fn sanitize_settings(mut s: Settings) -> Settings {
+    if !matches!(s.color_scheme.as_str(), "white" | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua") {
+        s.color_scheme = crate::types::default_color_scheme();
+    }
     if !matches!(s.coord_format.as_str(), "dd" | "dms" | "itm" | "utm") {
         s.coord_format = crate::types::default_coord_format();
     }
