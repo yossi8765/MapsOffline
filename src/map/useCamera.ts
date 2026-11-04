@@ -81,37 +81,58 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manualStep, mapReady]);
   const wasNavigating = useRef(false);
+  // Smooth motion: fixes arrive about once a second (GPS or the simulator); between two of them
+  // the vehicle and the camera glide on every animation frame instead of jumping.
+  const shown = useRef<{ at: LonLat; bearing: number } | null>(null);
+  const lastFixAt = useRef(0);
+  const frame = useRef(0);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
     if (!navigating) {
+      cancelAnimationFrame(frame.current);
+      shown.current = null;
       if (wasNavigating.current) {
         wasNavigating.current = false;
-        map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
+        map.easeTo({ bearing: 0, pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
       }
       return;
     }
     wasNavigating.current = true;
     if (!navUpdate) return;
-    // browsing steps by hand: the GPS marker still moves, the camera stays on the shown step
-    const browsing = useStore.getState().navigation?.manualStep != null;
-    const at: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
+    const target: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
     // car / truck navigation draws the chosen vehicle (Settings); walking and cycling keep the dot
     const st = useStore.getState();
     const mode = st.navigation?.route.mode;
     const vehicle = mode === "car" || mode === "truck" ? (st.settings.navVehicle ?? "arrow") : null;
-    meOverlay.showSnapped(map, at, vehicle, navUpdate.bearing);
-    if (browsing) return;
-    // keep the vehicle in the lower third of the view, as navigation apps do
-    map.easeTo({
-      center: at,
-      bearing: navUpdate.bearing,
-      pitch: 50,
-      zoom: 17,
-      offset: [0, Math.round(map.getContainer().clientHeight * 0.2)],
-      duration: 900,
-      easing: (x) => x,
-    });
+    const now = performance.now();
+    // glide over about the time between fixes (the next one arrives as this glide ends)
+    const duration = Math.min(1500, Math.max(250, lastFixAt.current ? now - lastFixAt.current : 900));
+    lastFixAt.current = now;
+    const from = shown.current ?? { at: target, bearing: navUpdate.bearing };
+    // a big jump (first fix, a new route, a lost signal) is not animated
+    const far = Math.abs(from.at[0] - target[0]) > 0.004 || Math.abs(from.at[1] - target[1]) > 0.004;
+    const start = far ? { at: target, bearing: navUpdate.bearing } : from;
+    // turn the short way round
+    let dB = navUpdate.bearing - start.bearing;
+    dB = ((dB + 540) % 360) - 180;
+    cancelAnimationFrame(frame.current);
+    const t0 = now;
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / duration);
+      const at: LonLat = [start.at[0] + (target[0] - start.at[0]) * k, start.at[1] + (target[1] - start.at[1]) * k];
+      const bearing = (start.bearing + dB * k + 360) % 360;
+      shown.current = { at, bearing };
+      meOverlay.showSnapped(map, at, vehicle, bearing);
+      // browsing steps by hand: the vehicle still moves, the camera stays on the shown step
+      if (useStore.getState().navigation?.manualStep == null) {
+        // keep the vehicle in the lower part of the view, as navigation apps do
+        map.jumpTo({ center: at, bearing, pitch: 50, zoom: 17, padding: { top: Math.round(map.getContainer().clientHeight * 0.4), bottom: 0, left: 0, right: 0 } });
+      }
+      if (k < 1) frame.current = requestAnimationFrame(step);
+    };
+    frame.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navUpdate, navigating, mapReady, manualStep]);
 }
