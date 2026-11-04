@@ -151,14 +151,6 @@ function PlaceCard({ picked }: { picked: Pick }) {
       {kind === "place" && <CityCategories name={r?.name ?? picked.label} />}
       {r && (r.wikipedia || r.wikidata) && <WikiCard tag={(r.wikipedia ?? r.wikidata)!} online={online} />}
 
-      {(kind === "place" || kind === "poi") && online && !(r?.wikipedia || r?.wikidata) && (
-        <button
-          className="self-start text-accent hover:underline underline-offset-2 inline-flex items-center gap-1.5"
-          onClick={() => void openUrl(`https://www.hamichlol.org.il/${encodeURIComponent((r?.name ?? picked.label).replace(/ /g, "_"))}`).catch(() => {})}
-        >
-          <Icon as={BookOpen} size={14} /> {t("michlolInfo")}
-        </button>
-      )}
     </div>
   );
 }
