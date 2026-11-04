@@ -126,6 +126,8 @@ $assets = @(
     "$dist\SHA256SUMS#SHA256SUMS#other",
     "$dist\SHA256SUMS.sig#SHA256SUMS.sig#other"
 )
+# glab prints "update available" on stderr, which $ErrorActionPreference = "Stop" turns into a failure
+$env:GLAB_CHECK_UPDATE = "false"
 & glab release create $tag --name "MapsOffline $version" --notes-file $notesOut -R $project @assets
 if ($LASTEXITCODE -ne 0) { Fail "glab release create failed" }
 Write-Host "published https://gitlab.com/$project/-/releases/$tag" -ForegroundColor Green
