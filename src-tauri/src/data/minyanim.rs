@@ -429,9 +429,24 @@ fn words(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// 0..1 overlap of the distinctive words of two names.
+/// Words of a name without only "synagogue" itself (בית, כנסת …): for names that consist of
+/// generic words alone, such as 'בית כנסת "המרכזי"'.
+const SYNAGOGUE_WORDS: &[&str] = &["בית", "כנסת", "הכנסת", "ביהכנ", "ביכנ", "בית-כנסת", "synagogue", "beit", "knesset"];
+
+fn soft_words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '"')
+        .map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_lowercase())
+        .filter(|w| w.chars().count() >= 2 && !SYNAGOGUE_WORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// 0..1 overlap of the distinctive words of two names (when one name has none, of its words
+/// other than "synagogue": 'בית כנסת "המרכזי"' vs "בית הכנסת המרכזי אחיסמך").
 fn name_score(a: &str, b: &str) -> f64 {
-    let (wa, wb) = (words(a), words(b));
+    let (mut wa, mut wb) = (words(a), words(b));
+    if wa.is_empty() || wb.is_empty() {
+        (wa, wb) = (soft_words(a), soft_words(b));
+    }
     if wa.is_empty() || wb.is_empty() {
         return 0.0;
     }
@@ -443,8 +458,13 @@ fn nearest_location(m: &Mosad, at: [f64; 2]) -> ([f64; 2], f64) {
     m.locations.iter().map(|&l| (l, dist_m(l, at))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or(([0.0, 0.0], f64::MAX))
 }
 
-/// The timetable of the synagogue at this point: within 60 m when the names agree, else the
-/// nearest within 25 m. `poi_name` = the OSM name of the place the user clicked.
+/// Within this distance a synagogue whose name agrees is taken (the Nedarim Plus point is often a
+/// building or two away from the OSM one); without a name agreement only [`NEAR_M`].
+const NAMED_M: f64 = 120.0;
+const NEAR_M: f64 = 25.0;
+
+/// The timetable of the synagogue at this point: within [`NAMED_M`] when the names agree, else
+/// the nearest within [`NEAR_M`]. `poi_name` = the OSM name of the place the user clicked.
 pub fn table_for(paths: &DataPaths, lon: f64, lat: f64, poi_name: Option<&str>) -> anyhow::Result<Option<MinyanTable>> {
     let snap = cached(&paths.minyanim_file())?;
     let at = [lon, lat];
@@ -454,14 +474,14 @@ pub fn table_for(paths: &DataPaths, lon: f64, lat: f64, poi_name: Option<&str>) 
             continue;
         }
         let (loc, d) = nearest_location(m, at);
-        if d > 60.0 {
+        if d > NAMED_M {
             continue;
         }
         let ns = match (poi_name, m.name.as_deref()) {
             (Some(p), Some(n)) => name_score(p, n),
             _ => 0.0,
         };
-        if ns < 0.5 && d > 25.0 {
+        if ns < 0.5 && d > NEAR_M {
             continue;
         }
         // name agreement outweighs a few metres
@@ -596,13 +616,13 @@ pub fn table_live(paths: &DataPaths, lon: f64, lat: f64, poi_name: Option<&str>)
         Some(t) => (t.mosad_id, t.name, t.address, [t.lon, t.lat], t.distance_m),
         None => {
             let mut best: Option<(f64, NearRow, f64)> = None;
-            for r in live_nearest(lon, lat, 0.1)? {
+            for r in live_nearest(lon, lat, NAMED_M / 1000.0)? {
                 let d = dist_m(r.loc, at);
                 let ns = match (poi_name, r.name.as_deref()) {
                     (Some(p), Some(n)) => name_score(p, n),
                     _ => 0.0,
                 };
-                if d > 60.0 || (ns < 0.5 && d > 25.0) {
+                if d > NAMED_M || (ns < 0.5 && d > NEAR_M) {
                     continue;
                 }
                 let rank = d - ns * 40.0;
@@ -699,6 +719,13 @@ mod tests {
         let n = next_live(34.89827, 31.93375, 600.0, Some(1440)).unwrap();
         eprintln!("next: {:?}", n.iter().take(3).map(|m| (&m.time, &m.prayer, &m.name)).collect::<Vec<_>>());
         assert!(!n.is_empty());
+    }
+
+    #[test]
+    fn generic_names_still_match() {
+        assert!(name_score("בית כנסת \"המרכזי\"", "בית הכנסת המרכזי אחיסמך") >= 0.5);
+        assert!(name_score("בית כנסת דרכי שמואל (עץ)", "בית הכנסת דרכי שמואל גני איילון לוד") >= 0.5);
+        assert!(name_score("בית כנסת \"המרכזי\"", "אוהל ראובן אחיסמך") < 0.5);
     }
 
     #[test]

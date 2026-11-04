@@ -1471,6 +1471,41 @@ impl Geocoder {
         let dlat = |m: f64| m / 111_000.0;
         let dlon = |m: f64| m / (111_320.0 * lat.to_radians().cos().max(0.2));
 
+        // a named place (synagogue, shop …) right at the point: that place, not its address
+        {
+            let r = 15.0;
+            let mut st = self.conn.prepare_cached(&format!(
+                "SELECT p.id,p.name,p.category,p.city,p.lon,p.lat,{} FROM pois_rt t JOIN pois p ON p.id = t.id
+                 WHERE t.minlon <= ?2 AND t.maxlon >= ?1 AND t.minlat <= ?4 AND t.maxlat >= ?3 AND p.name <> ''",
+                self.poi_cols("p")
+            ))?;
+            let rows = st.query_map(params![lon - dlon(r), lon + dlon(r), lat - dlat(r), lat + dlat(r)], poi_row)?;
+            let mut best: Option<(f64, PoiRow)> = None;
+            for row in rows {
+                let p = row?;
+                let d = haversine_m(here, [p.lon, p.lat]);
+                if d <= r && best.as_ref().is_none_or(|b| d < b.0) {
+                    best = Some((d, p));
+                }
+            }
+            if let Some((_, p)) = best {
+                return Ok(Some(GeoResult {
+                    id: format!("poi:{}", p.id),
+                    name: p.name,
+                    kind: GeoKind::Poi,
+                    precision: GeoPrecision::Exact,
+                    lon: p.lon,
+                    lat: p.lat,
+                    city: if p.city.is_empty() { None } else { Some(p.city) },
+                    street: None,
+                    house_number: None,
+                    score: 0.0,
+                    extra: poi_extra(p.hours.as_deref(), p.kosher, hours::now_il()),
+                    category: Some(category_he(&p.cat)),
+                }));
+            }
+        }
+
         // nearest address within 150 m
         {
             let (r, mut best) = (150.0, None::<(f64, GeoResult)>);
