@@ -803,8 +803,8 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   padding: 0 6px !important;
-  /* MapLibre writes "30 m"; under the RTL root it would read "m 30" */
-  direction: ltr;
+  /* the units follow the UI language (MapView passes Hebrew units to MapLibre), so the scale
+     takes the page direction: "30 מ׳" in Hebrew, "30 m" in English */
   unicode-bidi: isolate;
 }
 .maplibregl-popup-content {
