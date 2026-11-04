@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { InfoTip } from "./InfoTip";
 import { ArrowDown, ArrowUp, ArrowUpDown, Bike, Bus, CalendarClock, Car, ChevronDown, Circle, Footprints, GripVertical, MapPin, Plus, Route, SlidersHorizontal, Trash2, X } from "lucide-react";
 import clsx from "clsx";
 import { Icon } from "./Icon";
@@ -380,7 +381,6 @@ export function RoutePanel() {
 
       {/* Every change recomputes the route by itself, so there is no "compute" button: only a
           thin progress line while it runs, and "try again" when it failed. */}
-      {!canCompute && routes.length === 0 && !error && <p className="m-0 text-muted">{t("pickPointsHint")}</p>}
 
       {loading && (
         <div className="flex flex-col gap-1.5" aria-live="polite">
@@ -474,11 +474,14 @@ function TripPlanner() {
   );
 }
 
-export function Toggle({ label, hint, checked, onChange, bare }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; bare?: boolean }) {
+export function Toggle({ label, hint, info, checked, onChange, bare }: { label: string; hint?: string; info?: string; checked: boolean; onChange: (v: boolean) => void; bare?: boolean }) {
   return (
     <label className={clsx(bare ? "flex items-center gap-3 justify-between py-1 cursor-pointer" : "row justify-between cursor-pointer")}>
       <span className="flex flex-col min-w-0">
-        <span>{label}</span>
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {info && <InfoTip text={info} />}
+        </span>
         {hint && <span className="text-xs text-muted">{hint}</span>}
       </span>
       <button type="button" role="switch" aria-checked={checked} aria-label={label} className="switch" onClick={() => onChange(!checked)} />

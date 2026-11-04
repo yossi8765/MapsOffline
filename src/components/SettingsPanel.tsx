@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { useState } from "react";
-import { ChevronDown, Download, ExternalLink, FileText, FolderOpen, RefreshCw, RotateCcw, Volume2 } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, FileText, FolderOpen, RefreshCw, RotateCcw } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "./Icon";
@@ -10,7 +10,7 @@ import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
 import { ShortcutList } from "./ShortcutsDialog";
 import { VehiclePicker } from "./VehiclePicker";
-import { api, apiX, COLOR_SCHEMES, DATA_COMPONENTS, type ColorScheme, type CoordFormat, type Settings } from "../lib/api";
+import { apiX, COLOR_SCHEMES, DATA_COMPONENTS, type ColorScheme, type CoordFormat, type Settings } from "../lib/api";
 import { askConfirm, fmtDate } from "../lib/format";
 import { CREDITS } from "../lib/credits";
 import { formatCoord } from "../lib/coords";
@@ -199,16 +199,6 @@ export function SettingsPanel() {
         <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
         <Toggle label={t("navVoiceSetting")} checked={settings.navVoice ?? true} onChange={(v) => void update({ navVoice: v })} />
         <Toggle label={t("navVoiceNiqqud")} checked={settings.navVoiceNiqqud ?? true} onChange={(v) => void update({ navVoiceNiqqud: v })} />
-        <Row label={t("voiceTest")} hint={t("voiceTestHint")}>
-          <div className="flex flex-wrap gap-1.5">
-            <button className="btn btn-sm" onClick={() => void api.voiceTest(false).catch((e) => useStore.getState().toastError(e))}>
-              <Icon as={Volume2} size={14} /> {t("voiceTestPlain")}
-            </button>
-            <button className="btn btn-sm" onClick={() => void api.voiceTest(true).catch((e) => useStore.getState().toastError(e))}>
-              <Icon as={Volume2} size={14} /> {t("voiceTestNiqqud")}
-            </button>
-          </div>
-        </Row>
         <Row label={t("navVehicle")} hint={t("navVehicleHint")}>
           <VehiclePicker />
         </Row>

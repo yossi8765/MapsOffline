@@ -641,7 +641,6 @@ export function FavoritesPanel() {
       {favorites.length === 0 && !adding && (
         <div className="flex flex-col gap-1 px-1 py-2">
           <p className="m-0 text-muted">{t("favoritesEmpty")}</p>
-          <p className="m-0 text-xs text-subtle">{t("favoritesHint")}</p>
         </div>
       )}
       {SECTIONS.map(({ kind, label }) => {

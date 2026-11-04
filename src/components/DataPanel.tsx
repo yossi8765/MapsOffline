@@ -319,9 +319,8 @@ export function DataPanel() {
           ) : null}
           <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
           <div className="group-list">
-            <Toggle label={t("prebuiltData")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
+            <Toggle label={t("prebuiltData")} info={t("prebuiltDataHint")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
           </div>
-          <MoreText text={t("prebuiltDataHint")} className="px-0.5" />
         </div>
         <div className="group-list">
           {DATA_COMPONENTS.map((c) => (
@@ -568,7 +567,11 @@ function ComponentCard({
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold">{t(m.label)}</span>
+            <Tip text={t(m.desc)}>
+              <span className="font-semibold cursor-help" tabIndex={0}>
+                {t(m.label)}
+              </span>
+            </Tip>
             {active ? (
               <span className={clsx("pill", showPaused ? "" : "pill-accent")}>{showPaused ? t("phasePaused") : waiting ? t("phaseWaitingShared") : t(PHASE_KEY[prog!.phase])}</span>
             ) : worksOnline ? (
@@ -583,7 +586,6 @@ function ComponentCard({
               <span className="pill pill-success">{st?.loaded && id !== "tiles" ? t("loaded") : t("present")}</span>
             )}
           </div>
-          <div className="text-xs text-muted mt-0.5">{t(m.desc)}</div>
           {worksOnline && !active && <div className="text-xs text-subtle mt-0.5">{t("worksOnlineHint")}</div>}
           {extra && (
             <button className="text-xs text-accent hover:underline underline-offset-2 mt-1" aria-expanded={showExtra} onClick={() => setShowExtra((v) => !v)}>
