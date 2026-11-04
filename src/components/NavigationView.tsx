@@ -271,6 +271,13 @@ export function NavigationView() {
           </div>
           {steps.length > 1 && !nav.arrived && (
             <div className="flex items-center shrink-0" role="group" aria-label={t("navStepsGroup")}>
+              {nav.manualStep != null && (
+                <Tip text={t("navBackToGps")}>
+                  <button className="btn btn-ghost btn-icon text-accent" aria-label={t("navBackToGps")} onClick={resumeGps}>
+                    <Icon as={LocateFixed} size={18} />
+                  </button>
+                </Tip>
+              )}
               <Tip text={t("navPrevStep")}>
                 <button className="btn btn-ghost btn-icon" aria-label={t("navPrevStep")} disabled={shownIndex <= 0} onClick={() => previewStep(-1)}>
                   <Icon as={rtl ? ChevronRight : ChevronLeft} size={20} />
@@ -281,13 +288,6 @@ export function NavigationView() {
                   <Icon as={rtl ? ChevronLeft : ChevronRight} size={20} />
                 </button>
               </Tip>
-              {nav.manualStep != null && (
-                <Tip text={t("navBackToGps")}>
-                  <button className="btn btn-ghost btn-icon text-accent" aria-label={t("navBackToGps")} onClick={resumeGps}>
-                    <Icon as={LocateFixed} size={18} />
-                  </button>
-                </Tip>
-              )}
             </div>
           )}
           <Tip text={nav.voice ? t("navMute") : t("navUnmute")}>
