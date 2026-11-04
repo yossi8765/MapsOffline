@@ -701,7 +701,10 @@ export const useStore = create<State & Actions>((set, get) => ({
     try {
       const resp = await api.route(req);
       if (seq !== routeSeq) return;
-      const routes = req.mode === "transit" ? sortTransit(resp.routes, get().settings.transitPreference ?? "fastest", req.time.kind) : resp.routes;
+      // transit asks for at least 3 so the preference has something to choose from; show only as
+      // many as the user picked in "מספר מסלולים"
+      const sorted = req.mode === "transit" ? sortTransit(resp.routes, get().settings.transitPreference ?? "fastest", req.time.kind) : resp.routes;
+      const routes = sorted.slice(0, Math.max(1, get().alternativesCount));
       set({
         routes,
         routeSource: resp.source ?? "offline",
