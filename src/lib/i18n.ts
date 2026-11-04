@@ -606,6 +606,9 @@ const he = {
   err_CHECKSUM_MISMATCH: "הקובץ שהורד פגום (טביעת האצבע אינה תואמת). יש לנסות שוב.",
 
   // ===== [F1] =====
+  searchNoIndex: "אינדקס הכתובות לא מותקן",
+  searchOnlineNote: "התוצאות מהרשת (OpenStreetMap). לחיפוש בלי אינטרנט יש להוריד את רכיב \"כתובות\" במסך הנתונים.",
+  searchNoIndexHint: "כדי לחפש כתובות ומקומות יש להוריד את רכיב \"כתובות\" במסך הנתונים.",
   updateAlsoRest: "עדכן גם את שאר הרכיבים",
   phaseWaitingShared: "בתור",
   phaseWaitingSharedHint: "ממתין לסיום רכיב אחר שמשתמש באותו קובץ מקור (מפת OSM)",
@@ -1563,6 +1566,9 @@ const en: Record<I18nKey, string> = {
   err_CHECKSUM_MISMATCH: "The downloaded file is damaged (checksum mismatch). Try again.",
 
   // ===== [F1] =====
+  searchNoIndex: "The address index is not installed",
+  searchOnlineNote: "Results from the internet (OpenStreetMap). To search offline, download the \"Addresses\" component in the Data panel.",
+  searchNoIndexHint: "To search addresses and places, download the \"Addresses\" component in the Data panel.",
   updateAlsoRest: "Update the other components too",
   phaseWaitingShared: "Queued",
   phaseWaitingSharedHint: "Waits for another component that uses the same source file (the OSM extract)",

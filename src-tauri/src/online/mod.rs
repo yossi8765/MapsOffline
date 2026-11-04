@@ -7,6 +7,7 @@
 
 pub mod motis;
 pub mod osrm;
+pub mod photon;
 pub mod polyline;
 pub mod stride;
 

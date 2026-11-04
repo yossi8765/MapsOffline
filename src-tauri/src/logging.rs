@@ -45,6 +45,11 @@ impl FileLogger {
             eprint!("{line}");
         }
         let mut g = self.out.lock();
+        // the data folder (and the logs in it) can be deleted while the app runs: Windows lets
+        // Rust delete an open file, and the log would go on into a file nobody can see
+        if g.is_none() || !self.dir.join(FILE).exists() {
+            *g = Self::open(&self.dir);
+        }
         if let Some((_, len)) = g.as_ref() {
             if *len + line.len() as u64 > MAX_BYTES {
                 *g = None; // close before renaming (Windows)

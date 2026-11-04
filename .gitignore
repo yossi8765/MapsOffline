@@ -37,3 +37,6 @@ src-tauri/target/
 ci-data/
 ci-out/
 /.cargo/
+
+# extra build folder (parallel release builds)
+src-tauri/target-*/

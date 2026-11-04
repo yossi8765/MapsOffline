@@ -164,6 +164,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
   // box is empty, so coming back to a picked place does not throw its results over the card
   const [dirty, setDirty] = useState(false);
   const [results, setResults] = useState<GeoResult[]>([]);
+  const [noIndex, setNoIndex] = useState(false);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -202,11 +203,14 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
         if (id === seq.current) {
           setResults(res);
           setActive(0);
+          setNoIndex(false);
         }
       } catch (e) {
         if (id === seq.current) {
           setResults([]);
           const code = errorCode(e);
+          // no address index installed: say so instead of an unexplained empty list
+          setNoIndex(code === "NO_GEOCODE_DATA");
           if (code !== "NO_GEOCODE_DATA" && code !== "NOT_IMPLEMENTED") console.warn(e);
         }
       } finally {
@@ -357,7 +361,26 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
                 </div>
               )
             )}
-            {!loading && text.trim() && rows.length === 0 && (
+            {!loading && text.trim() && noIndex && (
+              <div className="px-3 py-3 flex flex-col gap-2 items-start">
+                <div className="font-medium">{t("searchNoIndex")}</div>
+                <div className="text-muted text-xs">{t("searchNoIndexHint")}</div>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    setOpen(false);
+                    useStore.getState().setPanel("data");
+                  }}
+                >
+                  {t("goToData")}
+                </button>
+              </div>
+            )}
+            {!loading && text.trim() && !noIndex && results.length > 0 && results.every((r) => r.id.startsWith("photon:")) && (
+              <div className="px-3 pt-1.5 pb-2 text-xs text-muted border-b border-line">{t("searchOnlineNote")}</div>
+            )}
+            {!loading && text.trim() && rows.length === 0 && !noIndex && (
               <div className="px-3 py-3">
                 <div className="font-medium">{t("searchNoResults")}</div>
                 <div className="text-muted text-xs mt-1">{t("searchHint")}</div>

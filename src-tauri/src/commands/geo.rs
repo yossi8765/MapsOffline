@@ -31,9 +31,23 @@ fn search_all(st: &Arc<AppState>, query: &str, near: Option<LonLat>, limit: usiz
     let regions = st.region_geocoders();
     let in_box = |b: &[f64; 4], p: &LonLat| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
     let mut groups: Vec<(bool, Vec<GeoResult>)> = Vec::new();
+    let mut no_index = false;
     match st.with_geocoder(|g| g.search(&q, near, limit)) {
         Ok(v) => groups.push((near.is_none_or(|p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
-        Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
+        Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {
+            no_index = true;
+            // no local address index: search online (Photon / OSM) unless the user chose
+            // offline-only; a failure just leaves the online results out
+            if st.settings.read().routing_mode != "offline" {
+                match crate::online::photon::search(&q, near, limit) {
+                    Ok(v) => {
+                        no_index = v.is_empty();
+                        groups.push((true, v));
+                    }
+                    Err(e) => log::info!("online search (no local index): {e:#}"),
+                }
+            }
+        }
         Err(e) if regions.is_empty() => return Err(err(e)),
         Err(e) => log::warn!("geocode (Israel): {e:#}"),
     }
@@ -70,7 +84,12 @@ fn search_all(st: &Arc<AppState>, query: &str, near: Option<LonLat>, limit: usiz
             Vec::new()
         }
     };
-    Ok(crate::geocode::merge_with_stops(out, stops, limit))
+    let merged = crate::geocode::merge_with_stops(out, stops, limit);
+    // nothing to search in at all: tell the UI so it can point at the Data panel
+    if merged.is_empty() && no_index && regions.is_empty() {
+        return Err(AppError::from("NO_GEOCODE_DATA"));
+    }
+    Ok(merged)
 }
 
 #[tauri::command]
@@ -135,7 +154,14 @@ pub async fn geocode_reverse(state: State<'_, Arc<AppState>>, lon: f64, lat: f64
             match st.with_geocoder(|g| g.reverse(lon, lat)) {
                 Ok(Some(r)) => return Ok(Some(r)),
                 Ok(None) => {}
-                Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
+                Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {
+                    // no local index: the nearest address from Photon (OSM) when online is allowed
+                    if st.settings.read().routing_mode != "offline" {
+                        if let Ok(Some(r)) = crate::online::photon::reverse(lon, lat) {
+                            return Ok(Some(r));
+                        }
+                    }
+                }
                 Err(e) => return Err(err(e)),
             }
         }
