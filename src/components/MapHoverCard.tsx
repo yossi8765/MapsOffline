@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Flag, Navigation } from "lucide-react";
-import { api, type LonLat } from "../lib/api";
+import { api, type GeoResult, type LonLat, type Minyan } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 
@@ -13,6 +13,8 @@ export interface HoverTarget {
   /** stop code */
   code?: string;
   color?: string;
+  /** a POI's full search result (category, opening hours) for the place card */
+  result?: GeoResult;
   lonlat: LonLat;
   /** screen position of the feature inside the map container */
   x: number;
@@ -33,6 +35,28 @@ interface Props {
 export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
   const t = useT();
   const [next, setNext] = useState<{ line: string; color?: string; min: number; headsign: string }[] | null>(null);
+  const synagogue = target.kind === "poi" && isSynagogue(target.result?.category, target.sub);
+  // a synagogue: its next prayers today (Nedarim Plus), when the minyanim data is installed
+  const [prayers, setPrayers] = useState<Minyan[] | null>(null);
+  useEffect(() => {
+    setPrayers(null);
+    if (!synagogue) return;
+    let dead = false;
+    api
+      .minyanimFor(target.lonlat[0], target.lonlat[1], target.name || undefined)
+      .then((tb) => {
+        if (dead) return;
+        const d = new Date();
+        const today = "אבגדהוש"[d.getDay()];
+        const now = d.getHours() * 60 + d.getMinutes();
+        const mins = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+        setPrayers((tb?.minyanim ?? []).filter((m) => m.days.includes(today) && mins(m.time) >= now).sort((a, b) => mins(a.time) - mins(b.time)).slice(0, 3));
+      })
+      .catch(() => !dead && setPrayers([]));
+    return () => {
+      dead = true;
+    };
+  }, [synagogue, target.lonlat, target.name]);
 
   useEffect(() => {
     setNext(null);
@@ -54,7 +78,7 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
     };
   }, [target.kind, target.code, target.lonlat]);
 
-  const point = { lon: target.lonlat[0], lat: target.lonlat[1], label: target.name };
+  const point = { lon: target.lonlat[0], lat: target.lonlat[1], label: target.name, result: target.result };
   const go = (to: boolean) => {
     const s = useStore.getState();
     if (to) s.setTo(point);
@@ -111,6 +135,19 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
           ))}
         </div>
       )}
+      {synagogue && prayers && prayers.length > 0 && (
+        <div className="flex flex-col gap-0.5 text-sm">
+          <div className="text-xs text-muted">{t("minyanimToday")}</div>
+          {prayers.map((m, i) => (
+            <div key={i} className="flex items-baseline gap-2">
+              <span className="num w-11 shrink-0" dir="ltr">
+                {m.time}
+              </span>
+              <span className="flex-1 min-w-0 truncate">{m.prayer}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex gap-1.5">
         <button className="btn btn-sm btn-primary flex-1" onClick={() => go(true)}>
           <Flag size={13} /> {t("ctxToHere")}
@@ -120,8 +157,13 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
         </button>
       </div>
       <button className="btn btn-ghost btn-sm text-muted self-start -ms-1.5" onClick={details}>
-        {t("hoverDetails")}
+        {synagogue ? t("minyanimAllTimes") : t("hoverDetails")}
       </button>
     </div>
   );
+}
+
+/** A synagogue by its category (search label, picker label or raw OSM id). */
+export function isSynagogue(...cats: (string | undefined)[]): boolean {
+  return cats.some((c) => !!c && /בית כנסת|בתי כנסת|synagogue|place_of_worship:jewish/i.test(c));
 }

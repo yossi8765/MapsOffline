@@ -13,7 +13,7 @@ import { buildStyle, DEFAULT_CENTER, DEFAULT_ZOOM, MAX_BOUNDS, firstSymbolLayer,
 import { categoryOf, POI_CATEGORIES } from "../lib/poiCategories";
 import { CategoryPicker, LayersButton, LocateButton } from "./CategoryPicker";
 import { fmtCoords, fmtDistance } from "../lib/format";
-import { api, errorCode, type LonLat, type Route } from "../lib/api";
+import { api, errorCode, type GeoResult, type LonLat, type Route } from "../lib/api";
 import type { Feature, FeatureCollection, Point } from "geojson";
 import { ContextMenu } from "./ContextMenu";
 import { MapHoverCard, type HoverTarget } from "./MapHoverCard";
@@ -353,6 +353,17 @@ function addMyLocationLayers(map: maplibregl.Map) {
   }
 }
 
+/** A POI marker's GeoResult (kept as JSON in the feature), its category as the picker's label. */
+function parseResult(json: unknown, label: string): GeoResult | undefined {
+  if (typeof json !== "string") return undefined;
+  try {
+    const r = JSON.parse(json) as GeoResult;
+    return { ...r, category: label || r.category };
+  } catch {
+    return undefined;
+  }
+}
+
 function addPoiLayers(map: maplibregl.Map, beforeId: string | undefined, dark: boolean) {
   const empty = { type: "FeatureCollection", features: [] } as FeatureCollection;
   if (!map.getSource(SRC_POIS)) map.addSource(SRC_POIS, { type: "geojson", data: empty });
@@ -644,6 +655,9 @@ export function MapView() {
         sub: stop ? undefined : String(f.properties?.label ?? ""),
         code: stop && f.properties?.code ? String(f.properties.code) : undefined,
         color: stop ? undefined : (f.properties?.color as string | undefined),
+        // the full search result of a POI marker: the place card needs its category (synagogue →
+        // prayer times), opening hours and kosher flag
+        result: stop ? undefined : parseResult(f.properties?.json, String(f.properties?.label ?? "")),
         lonlat: [lon, lat],
         x: pt.x,
         y: pt.y,
@@ -733,7 +747,9 @@ export function MapView() {
       addMyLocationLayers(map);
       void loadPoiIcons(map, flavorRef.current === "dark").then(() => {
         if (!map.getStyle()) return;
-        addPoiLayers(map, firstSymbol, flavorRef.current === "dark");
+        // above the base map's labels (under the location dot): the markers the user asked for
+        // are placed first, so a house number or street name never hides one of them
+        addPoiLayers(map, "my-location-accuracy", flavorRef.current === "dark");
         setPoiLayerTick((n) => n + 1);
       });
       setMapReady(true);
@@ -926,7 +942,7 @@ export function MapView() {
         const feats = pois.flatMap((p) => {
           const c = categoryOf(p.category ?? "", p.name, selectedCats);
           if (!c) return [];
-          return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label), color: c.color, rank: -(p.score ?? 0) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
+          return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label), color: c.color, rank: -(p.score ?? 0), json: JSON.stringify(p) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
         });
         src()?.setData({ type: "FeatureCollection", features: feats });
       } catch (e) {

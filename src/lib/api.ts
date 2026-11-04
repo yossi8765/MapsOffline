@@ -401,7 +401,7 @@ export interface Settings {
   routingMode: "auto" | "online" | "offline";
   osrmUrl: string;
   transitApiUrl: string;
-  /** Look for a newer program version at startup (once a day). */
+  /** Look for a newer program version at every start. */
   autoCheckAppUpdates: boolean;
   /** Satellite imagery detail: low (zoom 12), medium (13), high (14 = native 10 m). */
   satelliteQuality: "low" | "medium" | "high" | "max";

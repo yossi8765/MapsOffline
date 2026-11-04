@@ -794,18 +794,35 @@
 :root[data-theme="dark"] .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
   filter: invert(1);
 }
+/* Scale: a small card with the distance above a ruler (end ticks). MapLibre sets the element's
+   width to the length of that round distance on screen, so the ruler spans exactly the content
+   box (content-box sizing; the padding is outside it) and grows / shrinks with the zoom. */
 .maplibregl-ctrl-scale {
-  background: color-mix(in srgb, var(--surface-raised) 80%, transparent) !important;
+  position: relative;
+  box-sizing: content-box !important;
+  background: var(--surface-raised) !important;
   color: var(--fg-muted) !important;
-  border-color: var(--fg-subtle) !important;
-  border-width: 0 1.5px 1.5px !important;
-  border-radius: 0 0 4px 4px;
+  border: 0 !important;
+  border-radius: 6px;
+  box-shadow: var(--shadow-panel);
   font-size: 11px;
+  line-height: 14px;
   font-variant-numeric: tabular-nums;
-  padding: 0 6px !important;
+  text-align: center;
+  padding: 3px 8px 9px !important;
   /* the units follow the UI language (MapView passes Hebrew units to MapLibre), so the scale
      takes the page direction: "30 מ׳" in Hebrew, "30 m" in English */
   unicode-bidi: isolate;
+}
+.maplibregl-ctrl-scale::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 5px;
+  border: 1.5px solid var(--fg-muted);
+  border-top: 0;
 }
 .maplibregl-popup-content {
   background: var(--surface-raised) !important;

@@ -25,6 +25,7 @@ function minutesOf(hhmm: string): number {
 export function MinyanimCard({ lon, lat, name }: { lon: number; lat: number; name?: string }) {
   const t = useT();
   const units = useStore((s) => s.settings.units);
+  const installed = useStore((s) => s.dataStatus?.minyanim?.present);
   const [table, setTable] = useState<MinyanTable | null>(null);
   const [next, setNext] = useState<NextMinyan[]>([]);
   const today = DAY_LETTERS[new Date().getDay()];
@@ -41,6 +42,16 @@ export function MinyanimCard({ lon, lat, name }: { lon: number; lat: number; nam
     };
   }, [lon, lat, name]);
 
+  if (installed === false)
+    return (
+      <div className="card p-3 flex flex-col gap-2">
+        <div className="text-sm font-semibold">{t("minyanimTitle")}</div>
+        <p className="m-0 text-sm text-muted">{t("minyanimNotInstalled")}</p>
+        <button className="btn btn-sm self-start" onClick={() => useStore.getState().setPanel("data")}>
+          {t("openDataPanel")}
+        </button>
+      </div>
+    );
   if (!table && next.length === 0) return null;
 
   const days = TABS[tab].days;

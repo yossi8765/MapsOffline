@@ -1086,25 +1086,50 @@ impl Geocoder {
     /// the thinning return everything, as before).
     pub fn pois_in_bbox(&self, cats: &[&str], bbox: [f64; 4], limit: usize, zoom: Option<f64>) -> Result<Vec<GeoResult>> {
         let thin = self.caps.poi_cols && zoom.is_some();
+        // The stored minzoom thins ALL categories together; the layer shows only the selected ones,
+        // so a synagogue could lose its place to a café that is not even drawn. Thin the matching
+        // POIs among themselves instead (stored minzoom = importance order), over a margin around
+        // the view so the markers near its edge do not change as it moves.
+        let q = if thin {
+            let (w, h) = ((bbox[2] - bbox[0]) * 0.25, (bbox[3] - bbox[1]) * 0.25);
+            [bbox[0] - w, bbox[1] - h, bbox[2] + w, bbox[3] + h]
+        } else {
+            bbox
+        };
+        // category prefilter in SQL (same rule as categories::matches) so wide views stay fast
+        let esc = |c: &str| c.replace('\'', "''");
+        let cat_sql = cats
+            .iter()
+            .map(|c| if c.contains(':') { format!("p.category = '{}'", esc(c)) } else { format!("p.category = '{0}' OR p.category LIKE '{0}:%'", esc(c)) })
+            .collect::<Vec<_>>()
+            .join(" OR ");
         let mut st = self.conn.prepare_cached(&format!(
             "SELECT p.id,p.name,p.category,p.city,p.lon,p.lat,{} FROM pois_rt r JOIN pois p ON p.id = r.id
              WHERE r.minlon <= ?2 AND r.maxlon >= ?1 AND r.minlat <= ?4 AND r.maxlat >= ?3{}",
             self.poi_cols("p"),
-            if thin { " AND p.minzoom <= ?5" } else { "" }
+            if cat_sql.is_empty() { String::new() } else { format!(" AND ({cat_sql})") }
         ))?;
         let centre = [(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0];
-        let z = zoom.unwrap_or(99.0);
-        let rows = if thin {
-            st.query_map(params![bbox[0], bbox[2], bbox[1], bbox[3], z], poi_row)?.collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            st.query_map(params![bbox[0], bbox[2], bbox[1], bbox[3]], poi_row)?.collect::<std::result::Result<Vec<_>, _>>()?
-        };
+        let mut rows: Vec<PoiRow> = st
+            .query_map(params![q[0], q[2], q[1], q[3]], poi_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|r| categories::matches(&r.cat, cats))
+            .collect();
+        if thin {
+            let z = zoom.unwrap_or(99.0);
+            rows.sort_by_key(|r| (r.minzoom, r.id));
+            let pts: Vec<thin::ThinPt> = rows.iter().map(|r| thin::ThinPt { lon: r.lon, lat: r.lat, importance: -(r.minzoom as f64) }).collect();
+            let mz = thin::minzooms(&pts);
+            let inside = |r: &PoiRow| r.lon >= bbox[0] && r.lon <= bbox[2] && r.lat >= bbox[1] && r.lat <= bbox[3];
+            rows = rows.into_iter().zip(mz).filter(|(r, m)| f64::from(*m) <= z && inside(r)).map(|(mut r, m)| {
+                r.minzoom = i64::from(m);
+                r
+            }).collect();
+        }
         let now = hours::now_il();
         let mut found: Vec<(f64, GeoResult)> = Vec::new();
         for r in rows {
-            if !categories::matches(&r.cat, cats) {
-                continue;
-            }
             found.push((
                 haversine_m(centre, [r.lon, r.lat]),
                 GeoResult {

@@ -9,6 +9,7 @@ import { api, type GeoResult, type StopBoard } from "../lib/api";
 import { POI_CATEGORIES } from "../lib/poiCategories";
 import { SearchBox, kindIcon, stopCode, type Pick } from "./SearchBox";
 import { countdown } from "./FavoritesPanel";
+import { isSynagogue } from "./MapHoverCard";
 import { MinyanimCard } from "./MinyanimCard";
 
 /** Optional fields the geocoder may attach to POIs (opening hours). */
@@ -141,7 +142,7 @@ function PlaceCard({ picked }: { picked: Pick }) {
 
       {kind === "poi" && r && <OpeningHours r={r} />}
       {kind === "stop" && r && <NextDepartures r={r} />}
-      {kind === "poi" && r && /בית כנסת|synagogue/i.test(r.category ?? "") && <MinyanimCard lon={picked.lon} lat={picked.lat} name={r.name} />}
+      {kind === "poi" && r && isSynagogue(r.category) && <MinyanimCard lon={picked.lon} lat={picked.lat} name={r.name} />}
       {kind === "place" && <CityCategories name={r?.name ?? picked.label} />}
 
       {(kind === "place" || kind === "poi") && online && (
