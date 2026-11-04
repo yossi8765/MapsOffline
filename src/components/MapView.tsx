@@ -180,6 +180,7 @@ export function MapView() {
   // ---- colour scheme / theme / map flavour: the overlays take their colours from the CSS tokens,
   // which change without a style rebuild. Re-read them after App has set data-accent / data-theme.
   const accentSetting = useStore((s) => s.settings.accent);
+  const vehicleColorSetting = useStore((s) => s.settings.navVehicleColor);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -193,7 +194,8 @@ export function MapView() {
       paint("my-location-accuracy", "circle-color", mc.me);
       paint("my-location-accuracy", "circle-stroke-color", mc.me);
       paint("my-location-dot", "circle-color", mc.me);
-      // the vehicle markers are drawn in the accent colour: redraw them
+      // the vehicle markers are drawn in the chosen body colour (or the accent): redraw them
+      meOverlay.setVehicleColor(useStore.getState().settings.navVehicleColor);
       meOverlay.addVehicleImages(map);
       paint("route-alts", "line-color", mc.alt);
       paint("route-hl", "line-color", mc.highlight);
@@ -213,7 +215,7 @@ export function MapView() {
     });
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accentSetting, theme, flavor, mapReady]);
+  }, [accentSetting, theme, flavor, mapReady, vehicleColorSetting]);
 
   // ---- routes
   useEffect(() => {

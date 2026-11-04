@@ -619,14 +619,14 @@ function ComponentCard({
               </button>
             </Tip>
           </div>
-        ) : (
+        ) : st?.present && chk && !chk.available && !chk.error ? null /* up to date: the pill says so, no button */ : (
           <button
-            className={clsx("btn btn-sm shrink-0", chk?.available && wanted && "btn-primary")}
-            disabled={updating || (!!st?.present && !!chk && !chk.available && !chk.error)}
+            className={clsx("btn btn-sm shrink-0", ((chk?.available && wanted) || (!st?.present && !worksOnline)) && "btn-primary")}
+            disabled={updating}
             onClick={onUpdate}
-            aria-label={`${t("update")}: ${t(m.label)}`}
+            aria-label={`${st?.present ? t("update") : t("downloadComponent")}: ${t(m.label)}`}
           >
-            {t("update")}
+            {st?.present ? t("update") : t("downloadComponent")}
           </button>
         )}
       </div>

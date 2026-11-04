@@ -6,6 +6,40 @@
 export type VehicleKind = "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus";
 export const VEHICLE_KINDS: VehicleKind[] = ["arrow", "car", "suv", "van", "truck", "motorbike", "bus"];
 
+/** Body colour choice (Settings → navigation); "accent" = the colour scheme's accent. */
+export type VehicleColor = "accent" | "white" | "silver" | "black" | "gray" | "blue" | "red" | "yellow";
+export const VEHICLE_COLORS: VehicleColor[] = ["accent", "white", "silver", "black", "gray", "blue", "red", "yellow"];
+
+/** Paint of a body colour: fill, outline (dark for light bodies, light for dark ones, so the
+ *  vehicle stays visible on light and dark maps), roof and glass. */
+export interface VehiclePaint {
+  fill: string;
+  outline: string;
+  roof: string;
+  glass: string;
+}
+
+const BODY: Record<Exclude<VehicleColor, "accent">, VehiclePaint> = {
+  white: { fill: "#f5f6f8", outline: "#3a4250", roof: "#e3e6ea", glass: "rgba(20, 28, 40, 0.85)" },
+  silver: { fill: "#c4c9d0", outline: "#2f3540", roof: "#dde1e6", glass: "rgba(20, 28, 40, 0.85)" },
+  black: { fill: "#202329", outline: "#eef1f5", roof: "#3a3f48", glass: "rgba(120, 140, 165, 0.75)" },
+  gray: { fill: "#6b7280", outline: "#ffffff", roof: "#8b929e", glass: "rgba(20, 28, 40, 0.85)" },
+  blue: { fill: "#1f5fd1", outline: "#ffffff", roof: "#4a83e6", glass: "rgba(20, 28, 40, 0.85)" },
+  red: { fill: "#d42d2d", outline: "#ffffff", roof: "#e5605f", glass: "rgba(20, 28, 40, 0.85)" },
+  yellow: { fill: "#f5c518", outline: "#3d3a2a", roof: "#f8d95e", glass: "rgba(20, 28, 40, 0.85)" },
+};
+
+/** The paint of a colour choice; `accent` is the current accent colour ("#rrggbb"). */
+export function vehiclePaint(choice: VehicleColor | undefined, accent: string): VehiclePaint {
+  if (choice && choice !== "accent") return BODY[choice];
+  return { fill: accent, outline: "#ffffff", roof: shade(accent, 0.35), glass: "rgba(20, 28, 40, 0.82)" };
+}
+
+/** Swatch colour of a choice (Settings / picker). */
+export function vehicleSwatch(choice: VehicleColor, accent: string): string {
+  return vehiclePaint(choice, accent).fill;
+}
+
 /** Logical size of the square canvas (css px). */
 export const VEHICLE_PX = 56;
 
@@ -25,8 +59,10 @@ function shade(hex: string, k: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-/** Draw `kind` on a new canvas (north up). `color`: the body colour (accent). */
-export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HTMLCanvasElement {
+/** Draw `kind` on a new canvas (north up) in `paint` (or a plain body colour string). */
+export function drawVehicle(kind: VehicleKind, paint: VehiclePaint | string, ratio = dpr()): HTMLCanvasElement {
+  const p: VehiclePaint = typeof paint === "string" ? vehiclePaint("accent", paint) : paint;
+  const color = p.fill;
   const S = VEHICLE_PX;
   const canvas = document.createElement("canvas");
   canvas.width = S * ratio;
@@ -35,9 +71,9 @@ export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HT
   c.scale(ratio, ratio);
   c.translate(S / 2, S / 2);
   c.lineJoin = "round";
-  const glass = "rgba(20, 28, 40, 0.82)";
+  const glass = p.glass;
   const dark = shade(color, -0.35);
-  const light = shade(color, 0.35);
+  const light = p.roof;
 
   // shared: a body with outline + shadow
   const body = (path: () => void) => {
@@ -51,7 +87,7 @@ export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HT
     c.restore();
     path();
     c.lineWidth = 2;
-    c.strokeStyle = "#ffffff";
+    c.strokeStyle = p.outline;
     c.stroke();
   };
   const rr = (x: number, y: number, w: number, h: number, r: number | number[]) => () => {
@@ -122,7 +158,7 @@ export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HT
     case "motorbike": {
       body(rr(-4.5, -20, 9, 40, 4.5));
       // handlebar
-      c.strokeStyle = "#ffffff";
+      c.strokeStyle = p.outline;
       c.lineWidth = 3.5;
       c.lineCap = "round";
       c.beginPath();
@@ -138,7 +174,7 @@ export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HT
       c.fillStyle = glass;
       c.fill();
       c.lineWidth = 1.5;
-      c.strokeStyle = "#ffffff";
+      c.strokeStyle = p.outline;
       c.stroke();
       break;
     }
@@ -158,13 +194,13 @@ export function drawVehicle(kind: VehicleKind, color: string, ratio = dpr()): HT
 }
 
 /** Image data of `kind` for map.addImage (with its pixel ratio). */
-export function vehicleImage(kind: VehicleKind, color: string): { data: ImageData; pixelRatio: number } {
+export function vehicleImage(kind: VehicleKind, paint: VehiclePaint | string): { data: ImageData; pixelRatio: number } {
   const r = dpr();
-  const cv = drawVehicle(kind, color, r);
+  const cv = drawVehicle(kind, paint, r);
   return { data: cv.getContext("2d")!.getImageData(0, 0, cv.width, cv.height), pixelRatio: r };
 }
 
 /** A data URL of `kind` for previews in Settings / the navigation picker. */
-export function vehiclePreview(kind: VehicleKind, color: string): string {
-  return drawVehicle(kind, color, 2).toDataURL("image/png");
+export function vehiclePreview(kind: VehicleKind, paint: VehiclePaint | string): string {
+  return drawVehicle(kind, paint, 2).toDataURL("image/png");
 }

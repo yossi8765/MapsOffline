@@ -864,6 +864,10 @@ pub struct Settings {
     /// "truck" | "motorbike" | "bus".
     #[serde(default = "default_nav_vehicle")]
     pub nav_vehicle: String,
+    /// Body colour of the navigation vehicle: "accent" (the colour scheme's) | "white" | "silver" |
+    /// "black" | "gray" | "blue" | "red" | "yellow".
+    #[serde(default = "default_nav_vehicle_color")]
+    pub nav_vehicle_color: String,
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
@@ -890,6 +894,10 @@ pub struct Settings {
 
 pub fn default_nav_vehicle() -> String {
     "arrow".into()
+}
+
+pub fn default_nav_vehicle_color() -> String {
+    "accent".into()
 }
 
 pub fn default_color_scheme() -> String {
@@ -978,6 +986,7 @@ impl Default for Settings {
             nav_voice_niqqud: true,
             nav_sim_speed_kmh: None,
             nav_vehicle: default_nav_vehicle(),
+            nav_vehicle_color: default_nav_vehicle_color(),
             transit_reliability: true,
             coord_format: default_coord_format(),
             color_scheme: default_color_scheme(),

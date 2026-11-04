@@ -4,6 +4,7 @@
 
 pub mod machine;
 pub mod speech;
+pub mod speech_names;
 pub mod track;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

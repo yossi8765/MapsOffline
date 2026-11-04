@@ -287,9 +287,6 @@ export function SettingsPanel() {
                 <button className="btn btn-sm" onClick={() => void openLogs()}>
                   <Icon as={FileText} size={14} /> {t("openLogs")}
                 </button>
-                <button className="btn btn-sm btn-danger" onClick={() => void resetAll()}>
-                  <Icon as={RotateCcw} size={14} /> {t("resetSettings")}
-                </button>
               </div>
             </Section>
           </div>
@@ -377,6 +374,11 @@ export function SettingsPanel() {
           )}
         </div>
       </div>
+
+      {/* last in the panel, outside every collapsible: easy to find, with a confirmation */}
+      <button className="btn btn-danger w-full" onClick={() => void resetAll()}>
+        <Icon as={RotateCcw} size={14} /> {t("resetSettings")}
+      </button>
     </div>
   );
 }

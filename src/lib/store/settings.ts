@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS: Settings = {
   navVoiceNiqqud: true,
   navSimSpeedKmh: null,
   navVehicle: "arrow",
+  navVehicleColor: "accent",
   coordFormat: "dd",
   colorScheme: "white",
   uiScale: "system",

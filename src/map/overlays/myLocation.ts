@@ -2,7 +2,7 @@ import type * as maplibregl from "maplibre-gl";
 import type { LonLat, MyLocation } from "../../lib/api";
 import { mapColors } from "../colors";
 import { ensureSource, setFeatures } from "../geojson";
-import { VEHICLE_KINDS, vehicleImage, type VehicleKind } from "../vehicles";
+import { VEHICLE_KINDS, vehicleImage, vehiclePaint, type VehicleColor, type VehicleKind } from "../vehicles";
 
 export const SRC_ME = "my-location";
 
@@ -11,12 +11,18 @@ function mpp0(lat: number): number {
   return 156543.03392 * Math.cos((lat * Math.PI) / 180);
 }
 
-/** (Re)draw the vehicle markers in the current accent colour. */
+/** Body colour of the vehicle markers (Settings → navigation); MapView keeps it current. */
+let bodyColor: VehicleColor = "accent";
+export function setVehicleColor(c: VehicleColor | undefined): void {
+  bodyColor = c ?? "accent";
+}
+
+/** (Re)draw the vehicle markers in the chosen body colour (the accent by default). */
 export function addVehicleImages(map: maplibregl.Map): void {
-  const color = mapColors(false).me;
+  const paint = vehiclePaint(bodyColor, mapColors(false).me);
   for (const k of VEHICLE_KINDS) {
     const name = `vehicle-${k}`;
-    const img = vehicleImage(k, color);
+    const img = vehicleImage(k, paint);
     if (map.hasImage(name)) map.updateImage(name, img.data);
     else map.addImage(name, img.data, { pixelRatio: img.pixelRatio });
   }

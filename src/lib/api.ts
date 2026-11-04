@@ -498,6 +498,8 @@ export interface Settings {
   navSimSpeedKmh: number | null;
   /** how the vehicle is drawn while navigating by car */
   navVehicle: "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus";
+  /** body colour of that vehicle; "accent" = the colour scheme's */
+  navVehicleColor: "accent" | "white" | "silver" | "black" | "gray" | "blue" | "red" | "yellow";
   // ---- IMPROVEMENTS contract (R1); Rust fills defaults
   coordFormat: CoordFormat;
   /** Colour scheme of the whole interface; "white" = plain surfaces with the accent colour. */

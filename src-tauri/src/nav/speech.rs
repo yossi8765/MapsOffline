@@ -87,8 +87,78 @@ const WORDS: &[(&str, &str)] = &[
     ("מהירות", "מְהִירוּת"),
 ];
 
-/// Number of vocalised entries (phrases + words), for the report / tests.
-pub const TABLE_SIZE: usize = PHRASES.len() + WORDS.len();
+use super::speech_names::{NAME_PHRASES, NAME_WORDS};
+
+/// Number of vocalised entries (phrases + words, templates and names), for the report / tests.
+pub const TABLE_SIZE: usize = PHRASES.len() + WORDS.len() + NAME_PHRASES.len() + NAME_WORDS.len();
+
+const SHVA: char = '\u{05B0}';
+const DAGESH: char = '\u{05BC}';
+
+fn is_mark(c: char) -> bool {
+    ('\u{0591}'..='\u{05C7}').contains(&c) && !matches!(c, '\u{05BE}' | '\u{05C0}' | '\u{05C3}' | '\u{05C6}')
+}
+
+/// `prefix` (ו / ל / ב / כ) glued to a vocalised word, with the vowel the grammar gives it:
+/// before a shva the prefix takes a hiriq (לִרְחוֹב; before יְ the shva goes: לִירוּשָׁלַיִם, and
+/// ו becomes וּ), before a hataf the matching short vowel, otherwise a shva (ו before ב/מ/פ: וּ);
+/// a בגדכפ״ת letter after the prefix loses its dagesh kal.
+pub fn with_prefix(prefix: char, word: &str) -> Option<String> {
+    let mut chars = word.chars();
+    let first = chars.next()?;
+    let mut marks: Vec<char> = Vec::new();
+    let mut rest = String::new();
+    let mut in_marks = true;
+    for c in chars {
+        if in_marks && is_mark(c) {
+            marks.push(c);
+        } else {
+            in_marks = false;
+            rest.push(c);
+        }
+    }
+    let vowel = marks.iter().copied().find(|c| matches!(*c, '\u{05B0}'..='\u{05BB}' | '\u{05C7}'));
+    if "בגדכפת".contains(first) {
+        marks.retain(|&c| c != DAGESH);
+    }
+    let mut out = String::new();
+    out.push(prefix);
+    match vowel {
+        Some(SHVA) if first == 'י' => {
+            // לִירוּשָׁלַיִם / וִירוּשָׁלַיִם: the prefix takes the hiriq, the yod loses its shva
+            out.push('\u{05B4}');
+            marks.retain(|&c| c != SHVA);
+        }
+        Some(SHVA) => out.push(if prefix == 'ו' { DAGESH } else { '\u{05B4}' }),
+        Some('\u{05B1}') => out.push('\u{05B6}'), // hataf segol -> segol
+        Some('\u{05B2}') => out.push('\u{05B7}'), // hataf patah -> patah
+        Some('\u{05B3}') => out.push('\u{05B8}'), // hataf qamats -> qamats
+        _ => out.push(if prefix == 'ו' && "במפ".contains(first) { DAGESH } else { SHVA }),
+    }
+    out.push(first);
+    out.extend(marks);
+    out.push_str(&rest);
+    Some(out)
+}
+
+/// A name word with niqqud: itself, or after one of the prefixes ו / ל / ב / כ (not for words
+/// starting with ה after ל / ב / כ: that may be the article, which the prefix would swallow).
+fn name_word(token: &str) -> Option<String> {
+    if let Some((_, v)) = NAME_WORDS.iter().find(|(w, _)| *w == token) {
+        return Some(v.to_string());
+    }
+    let mut it = token.chars();
+    let p = it.next()?;
+    let base = it.as_str();
+    if !"ולבכ".contains(p) || base.chars().count() < 2 {
+        return None;
+    }
+    let (_, v) = NAME_WORDS.iter().find(|(w, _)| *w == base)?;
+    if base.starts_with('ה') && p != 'ו' {
+        return None;
+    }
+    with_prefix(p, v)
+}
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '\'' || c == '׳' || c == '"' || c == '״' || ('\u{0591}'..='\u{05C7}').contains(&c)
@@ -121,6 +191,15 @@ pub fn voice_text(display: &str) -> String {
     for (from, to) in PHRASES {
         s = replace_whole(&s, from, to);
     }
+    // multi-word names, after ו / ל / ב / כ and bare
+    for (from, to) in NAME_PHRASES {
+        for p in ['ו', 'ל', 'ב', 'כ'] {
+            if let Some(pv) = with_prefix(p, to) {
+                s = replace_whole(&s, &format!("{p}{from}"), &pv);
+            }
+        }
+        s = replace_whole(&s, from, to);
+    }
     // word by word: a token is replaced only when it is exactly a table word (a vocalised phrase
     // word is no longer equal to the plain one, so it is not touched twice)
     let mut out = String::with_capacity(s.len() + 16);
@@ -129,7 +208,10 @@ pub fn voice_text(display: &str) -> String {
         if !word.is_empty() {
             match WORDS.iter().find(|(w, _)| *w == word.as_str()) {
                 Some((_, v)) => out.push_str(v),
-                None => out.push_str(word),
+                None => match name_word(word) {
+                    Some(v) => out.push_str(&v),
+                    None => out.push_str(word),
+                },
             }
             word.clear();
         }
@@ -147,7 +229,7 @@ pub fn voice_text(display: &str) -> String {
 }
 
 /// Sample sentences for the "test the voice" buttons in Settings.
-pub const SAMPLES: [&str; 3] = ["בעוד 300 מטר פנה ימינה לרחוב הרצל", "היכנס לכיכר וצא ביציאה השנייה לכביש 1", "מצלמת מהירות בעוד 400 מטר"];
+pub const SAMPLES: [&str; 4] = ["בעוד 300 מטר פנה ימינה לרחוב ז׳בוטינסקי", "היכנס לכיכר וצא ביציאה השנייה לשדרות בן גוריון", "המשך ישר לכיוון ירושלים", "מצלמת מהירות בעוד 400 מטר"];
 
 #[cfg(test)]
 mod tests {
@@ -155,7 +237,7 @@ mod tests {
 
     #[test]
     fn templates_get_niqqud() {
-        assert_eq!(voice_text("בעוד 300 מטר פנה ימינה לרחוב הרצל"), "בְּעוֹד 300 מֶטֶר פְּנֵה יָמִינָה לִרְחוֹב הרצל");
+        assert_eq!(voice_text("בעוד 300 מטר פנה ימינה לרחוב הרצל"), "בְּעוֹד 300 מֶטֶר פְּנֵה יָמִינָה לִרְחוֹב הֶרְצְל");
         assert_eq!(voice_text("היכנס לכיכר וצא ביציאה השנייה לכביש 1"), "הִכָּנֵס לַכִּכָּר וְצֵא בַּיְּצִיאָה הַשְּׁנִיָּה לִכְבִישׁ 1");
         assert_eq!(voice_text("הגעת ליעד"), "הִגַּעְתָּ לַיַּעַד");
         assert_eq!(voice_text("צא לדרך"), "צֵא לַדֶּרֶךְ");
@@ -167,8 +249,8 @@ mod tests {
     #[test]
     fn names_are_untouched() {
         // street names that merely contain a table word inside them stay as they are
-        assert_eq!(voice_text("פנה ימינה לרחוב הרב בצלאל ז'ולטי"), "פְּנֵה יָמִינָה לִרְחוֹב הרב בצלאל ז'ולטי");
-        assert_eq!(voice_text("צא ביציאה 5 לכיוון ירושלים, תל אביב"), "צֵא בַּיְּצִיאָה 5 לְכִוּוּן ירושלים, תל אביב");
+        assert_eq!(voice_text("פנה ימינה לרחוב הרב בצלאל ז'ולטי"), "פְּנֵה יָמִינָה לִרְחוֹב הָרַב בצלאל ז'ולטי");
+        assert_eq!(voice_text("צא ביציאה 5 לכיוון ירושלים, תל אביב"), "צֵא בַּיְּצִיאָה 5 לְכִוּוּן יְרוּשָׁלַיִם, תֵּל אָבִיב");
         assert_eq!(voice_text("פנה ימינה לרחוב ישראלי"), "פְּנֵה יָמִינָה לִרְחוֹב ישראלי");
         assert_eq!(voice_text("Main Street"), "Main Street");
     }
@@ -178,6 +260,40 @@ mod tests {
         let display = "בעוד 150 מטר פנה שמאלה לרחוב הרצל".to_string();
         let _ = voice_text(&display);
         assert_eq!(display, "בעוד 150 מטר פנה שמאלה לרחוב הרצל");
-        const { assert!(TABLE_SIZE > 60) };
+        const { assert!(TABLE_SIZE > 300) };
+    }
+
+    #[test]
+    fn street_names_get_niqqud() {
+        let cases = [
+            ("פנה ימינה לרחוב ז׳בוטינסקי", "פְּנֵה יָמִינָה לִרְחוֹב זַ'בּוֹטִינְסְקִי"),
+            ("פנה שמאלה לשדרות רוטשילד", "פְּנֵה שְׂמֹאלָה לִשְׂדֵרוֹת רוֹטְשִׁילְד"),
+            ("המשך ישר לרחוב בן גוריון", "הַמְשֵׁךְ יָשָׁר לִרְחוֹב בֶּן גּוּרְיוֹן"),
+            ("צא לכיוון ירושלים", "צֵא לְכִוּוּן יְרוּשָׁלַיִם"),
+            ("נסיעה לירושלים", "נסיעה לִירוּשָׁלַיִם"),
+            ("לתל אביב", "לְתֵל אָבִיב"),
+            ("פנה ימינה לרחוב אחד העם", "פְּנֵה יָמִינָה לִרְחוֹב אַחַד הָעָם"),
+            ("לרחוב הנביאים", "לִרְחוֹב הַנְּבִיאִים"),
+            ("שד׳ ירושלים", "שְׂדֵרוֹת יְרוּשָׁלַיִם"),
+            ("לרחוב המלך דוד", "לִרְחוֹב הַמֶּלֶךְ דָּוִד"),
+            ("ליפו", "לְיָפוֹ"),
+            ("ודוד", "וְדָוִד"),
+            ("ומשה", "וּמֹשֶׁה"),
+            ("לבאר שבע", "לִבְאֵר שֶׁבַע"),
+            ("ליהודה", "לִיהוּדָה"),
+            ("לגבעת שמואל", "לְגִבְעַת שְׁמוּאֵל"),
+            ("לאפרים", "לְאֶפְרַיִם"),
+            ("לאליעזר", "לֶאֱלִיעֶזֶר"),
+        ];
+        for (display, voice) in cases {
+            assert_eq!(voice_text(display), voice, "{display}");
+        }
+    }
+
+    #[test]
+    fn unknown_names_stay() {
+        assert_eq!(voice_text("פנה ימינה לרחוב קלישר"), "פְּנֵה יָמִינָה לִרְחוֹב קלישר");
+        // ה words are not glued to ל / ב (the article would be swallowed)
+        assert_eq!(voice_text("להרצל"), "להרצל");
     }
 }

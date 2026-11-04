@@ -191,6 +191,9 @@ fn sanitize_settings(mut s: Settings) -> Settings {
     if !matches!(s.nav_vehicle.as_str(), "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus") {
         s.nav_vehicle = crate::types::default_nav_vehicle();
     }
+    if !matches!(s.nav_vehicle_color.as_str(), "accent" | "white" | "silver" | "black" | "gray" | "blue" | "red" | "yellow") {
+        s.nav_vehicle_color = crate::types::default_nav_vehicle_color();
+    }
     s.nav_sim_speed_kmh = s.nav_sim_speed_kmh.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 300.0));
     if !matches!(s.coord_format.as_str(), "dd" | "dms" | "itm" | "utm") {
         s.coord_format = crate::types::default_coord_format();
