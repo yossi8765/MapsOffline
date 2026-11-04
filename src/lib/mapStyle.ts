@@ -139,14 +139,41 @@ function trailLayers(): LayerSpecification[] {
 const CYCLE_COLOR = "#16a34a";
 const RAIL_COLOR = "#334155";
 
+/** `c` blended toward `bg` (t = share of `c`); hex / rgb() colours, anything else unchanged. */
+function blend(c: string, bg: string, t: number): string {
+  const parse = (x: string): number[] | null => {
+    const h = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(x.trim());
+    if (h) {
+      const v = h[1].length === 3 ? [...h[1]].map((d) => d + d).join("") : h[1];
+      return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
+    }
+    const r = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(x.trim());
+    return r ? [Number(r[1]), Number(r[2]), Number(r[3])] : null;
+  };
+  const a = parse(c);
+  const b = parse(bg);
+  if (!a || !b) return c;
+  return "#" + a.map((v, i) => Math.round(v * t + b[i] * (1 - t)).toString(16).padStart(2, "0")).join("");
+}
+
+/** Every colour literal inside a paint value (plain or a zoom expression) blended toward `bg`. */
+function blendPaint(v: unknown, bg: string, t: number): unknown {
+  if (typeof v === "string") return blend(v, bg, t);
+  if (Array.isArray(v)) return v.map((x) => blendPaint(x, bg, t));
+  return v;
+}
+
 /** Restyle the Protomaps layer list for the cycling / public-transport map. */
-function applyTheme(ls: LayerSpecification[], theme: MapTheme, dark: boolean): LayerSpecification[] {
+function applyTheme(ls: LayerSpecification[], theme: MapTheme, dark: boolean, earth: string): LayerSpecification[] {
   if (theme === "standard") return ls;
   const muted = new Set(["roads_minor", "roads_minor_service", "roads_major", "roads_highway", "roads_link", "roads_bridges_minor", "roads_bridges_major", "roads_bridges_highway", "roads_bridges_link", "roads_tunnels_minor", "roads_tunnels_major", "roads_tunnels_highway", "roads_tunnels_link"]);
   const out: LayerSpecification[] = [];
   for (const l of ls) {
     if (l.type === "line" && muted.has(l.id)) {
-      out.push({ ...l, paint: { ...l.paint, "line-opacity": 0.55 } } as LayerSpecification);
+      // quieter roads as a solid colour nearer the land: a translucent line shows every
+      // segment overlap at junctions and ramps as a brighter seam
+      const paint = l.paint as Record<string, unknown> | undefined;
+      out.push({ ...l, paint: { ...paint, "line-color": blendPaint(paint?.["line-color"], earth, 0.55) } } as LayerSpecification);
       continue;
     }
     if (theme === "cycle" && l.type === "line" && (l.id === "roads_other" || l.id === "roads_bridges_other" || l.id === "roads_tunnels_other")) {
@@ -301,7 +328,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     ...(merged ? { tiles: [tilesUrl], minzoom: 0, maxzoom: 15 } : { url: `pmtiles://${tilesUrl}` }),
     attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
   };
-  let ls: LayerSpecification[] = applyTheme(withoutItalic(layers("protomaps", flavor, { lang: o.lang })), o.theme ?? "standard", o.flavor === "dark");
+  let ls: LayerSpecification[] = applyTheme(withoutItalic(layers("protomaps", flavor, { lang: o.lang })), o.theme ?? "standard", o.flavor === "dark", flavor.earth);
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
   // Road numbers as Israeli signs (as in hebrew-maps): freeways blue, 1-2 digit roads red,
   // 3 digit green, 4 digit white with a black frame; a rounded badge with the inner white frame
