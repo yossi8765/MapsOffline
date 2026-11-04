@@ -104,6 +104,11 @@ pub fn usable(paths: &DataPaths, l: &Latest, comps: &[DataComponent]) -> Vec<(Da
             if format_suffix(c).is_some_and(|s| !v.ends_with(&s)) {
                 return None;
             }
+            // packages built by older versions carry the 2017 AWS terrarium DEM; this program
+            // builds Mapterhorn (512 px WebP) and must not replace it with the old data
+            if c == DataComponent::Terrain && !v.starts_with("mapterhorn ") {
+                return None;
+            }
             if c == DataComponent::Satellite && !sat_ok(&v) {
                 return None;
             }
@@ -196,8 +201,9 @@ mod tests {
         remote.set(DataComponent::Geocode, Some("pbf-2 s0.0".into())); // other format: not usable
         remote.set(DataComponent::Tiles, Some("20261101.pmtiles".into()));
         remote.set(DataComponent::Satellite, Some("s2cloudless-2025 z12".into()));
+        remote.set(DataComponent::Terrain, Some("terrarium Sat, 02 Dec 2017 02:55:39 GMT".into())); // old DEM: not usable
         let l = Latest { version: "2026-11-01".into(), age_days: 2, manifest: remote };
-        let all = [DataComponent::Routing, DataComponent::Transit, DataComponent::Geocode, DataComponent::Tiles, DataComponent::Satellite];
+        let all = [DataComponent::Routing, DataComponent::Transit, DataComponent::Geocode, DataComponent::Tiles, DataComponent::Satellite, DataComponent::Terrain];
         let got: Vec<DataComponent> = usable(&paths, &l, &all).into_iter().map(|x| x.0).collect();
         // satellite: the default settings ask for govmap, so the package's Sentinel-2 is skipped
         assert_eq!(got, vec![DataComponent::Transit, DataComponent::Tiles]);
