@@ -49,6 +49,10 @@ export type ShareTarget = { kind: "place"; lon: number; lat: number; label: stri
 
 export interface MapLayers {
   satellite: boolean;
+  /** Over the satellite imagery: the base map's roads, paths, rail and road numbers (default on). */
+  satelliteRoads: boolean;
+  /** Over the satellite imagery: the base map's names and labels (default on). */
+  satelliteLabels: boolean;
   /** Hillshading from the elevation data. */
   hillshade: boolean;
   /** Road-number shields. */

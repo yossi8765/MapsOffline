@@ -14,6 +14,7 @@ import { apiX, COLOR_SCHEMES, DATA_COMPONENTS, type ColorScheme, type CoordForma
 import { askConfirm, fmtDate } from "../lib/format";
 import { CREDITS } from "../lib/credits";
 import { formatCoord } from "../lib/coords";
+import { InfoTip } from "./InfoTip";
 
 const ACCENTS = ["system", "blue", "green", "purple", "orange", "teal", "rose", "slate"] as const;
 
@@ -108,7 +109,7 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
-        <Row label={t("colorScheme")} hint={t("colorSchemeHint")}>
+        <Row label={t("colorScheme")} info={t("colorSchemeHint")}>
           <div className="flex gap-2 flex-wrap" role="radiogroup" aria-label={t("colorScheme")}>
             {COLOR_SCHEMES.map((c) => {
               const on = (settings.colorScheme ?? "white") === c;
@@ -135,7 +136,7 @@ export function SettingsPanel() {
           </div>
         </Row>
         {(settings.colorScheme ?? "white") === "white" && (
-        <Row label={t("accentColor")} hint={t("accentColorHint")}>
+        <Row label={t("accentColor")} info={t("accentColorHint")}>
           <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label={t("accentColor")}>
             {ACCENTS.map((a) => (
               <button
@@ -153,7 +154,7 @@ export function SettingsPanel() {
           </div>
         </Row>
         )}
-        <Row label={t("textSize")} hint={t("textSizeHint")}>
+        <Row label={t("textSize")} info={t("textSizeHint")}>
           <div className="seg seg-sm seg-fit">
             {(["system", 1, 1.12, 1.25] as const).map((v) => (
               <button key={String(v)} aria-pressed={settings.uiScale === v} onClick={() => void update({ uiScale: v })}>
@@ -183,7 +184,7 @@ export function SettingsPanel() {
         </Row>
       </Section>
 
-      <Section title={t("routingMode")} hint={t("routingModeHint")}>
+      <Section title={t("routingMode")} info={t("routingModeHint")}>
         <div className="p-2">
           <div className="seg seg-fit">
             {(["auto", "online", "offline"] as const).map((m) => (
@@ -199,7 +200,7 @@ export function SettingsPanel() {
         <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
         <Toggle label={t("navVoiceSetting")} checked={settings.navVoice ?? true} onChange={(v) => void update({ navVoice: v })} />
         <Toggle label={t("navVoiceNiqqud")} checked={settings.navVoiceNiqqud ?? true} onChange={(v) => void update({ navVoiceNiqqud: v })} />
-        <Row label={t("navVehicle")} hint={t("navVehicleHint")}>
+        <Row label={t("navVehicle")} info={t("navVehicleHint")}>
           <VehiclePicker />
         </Row>
         <Toggle label={t("transitReliabilitySetting")} checked={settings.transitReliability ?? true} onChange={(v) => void update({ transitReliability: v })} />
@@ -233,7 +234,6 @@ export function SettingsPanel() {
       <section className="flex flex-col gap-2">
         <h2 className="section-label m-0">{t("shortcuts")}</h2>
         <ShortcutList />
-        <p className="m-0 text-xs text-muted px-0.5">{t("shortcutsNote")}</p>
       </section>
 
       {/* rarely changed: data folder, touchpad behaviour, logs, reset */}
@@ -244,7 +244,7 @@ export function SettingsPanel() {
         </button>
         {advancedOpen && (
           <div className="flex flex-col gap-5 fade-in">
-            <Section title={t("gestures")} hint={t("gesturesHint")}>
+            <Section title={t("gestures")} info={t("gesturesHint")}>
               <Row label={t("twoFingerScroll")}>
                 <div className="seg seg-sm seg-fit">
                   {(["pan", "zoom"] as const).map((m) => (
@@ -272,7 +272,7 @@ export function SettingsPanel() {
               </div>
             </Section>
 
-            <Section title={t("troubleshooting")} hint={t("logsHint")}>
+            <Section title={t("troubleshooting")} info={t("logsHint")}>
               <div className="row gap-2 flex-wrap">
                 <button className="btn btn-sm" onClick={() => void openLogs()}>
                   <Icon as={FileText} size={14} /> {t("openLogs")}
@@ -399,10 +399,13 @@ const ACCENT_SWATCH: Record<string, string> = {
   pastel: "conic-gradient(from 90deg, #b8c8f5, #f5c6d6, #c8ecd9, #fbe3b3, #d9ccf5, #b8c8f5)",
 };
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function Section({ title, hint, info, children }: { title: string; hint?: string; info?: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
-      <h2 className="section-label m-0">{title}</h2>
+      <h2 className="section-label m-0 inline-flex items-center gap-1.5">
+        {title}
+        {info && <InfoTip text={info} />}
+      </h2>
       <div className="group-list">{children}</div>
       {hint && <p className="m-0 text-xs text-muted px-0.5">{hint}</p>}
     </section>
@@ -411,11 +414,14 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 
 /** Label above its control, the control full width: long Hebrew labels never wrap into a
  *  narrow column next to a segmented control. */
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Row({ label, hint, info, children }: { label: string; hint?: string; info?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5 [&>.seg]:w-full">
       <span className="flex flex-col">
-        <span>{label}</span>
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {info && <InfoTip text={info} />}
+        </span>
         {hint && (
           <span className="text-xs text-muted" dir="auto">
             {hint}

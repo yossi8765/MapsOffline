@@ -107,7 +107,7 @@ export function MapView() {
   flavorRef.current = flavor;
 
   const styleOptions = (): StyleOptions => {
-    return { tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles, trails: layers.trails, trailsUrl, customLayers, onlineTerrain: onlineOk, onlineTrails: onlineOk };
+    return { tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteRoads: layers.satelliteRoads, satelliteLabels: layers.satelliteLabels, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles, trails: layers.trails, trailsUrl, customLayers, onlineTerrain: onlineOk, onlineTrails: onlineOk };
   };
 
   /** Show a bubble on the map (one at a time). */
@@ -175,7 +175,7 @@ export function MapView() {
     lastStyle.current = key;
     map.setStyle(next, { diff: true, transformStyle: (prev, nextStyle) => keepOverlays(prev as StyleSpecification | undefined, nextStyle) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapRef.current, tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme, layers.contours, layers.trails, contourTiles, trailsUrl, customLayers, onlineOk]);
+  }, [mapRef.current, tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.satelliteRoads, layers.satelliteLabels, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme, layers.contours, layers.trails, contourTiles, trailsUrl, customLayers, onlineOk]);
 
   // ---- colour scheme / theme / map flavour: the overlays take their colours from the CSS tokens,
   // which change without a style rebuild. Re-read them after App has set data-accent / data-theme.

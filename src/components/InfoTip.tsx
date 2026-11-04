@@ -1,3 +1,6 @@
+// Clean panels rule: explanations that are not needed to operate a control go behind an InfoTip
+// "!" (hover / keyboard focus); visible text is only what changes an action – errors, warnings,
+// states ("פועל ברשת", "בתור"), empty states and licence credits.
 import { CircleAlert } from "lucide-react";
 import { Icon } from "./Icon";
 import { Tip } from "./Tip";

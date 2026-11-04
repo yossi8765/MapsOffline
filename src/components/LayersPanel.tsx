@@ -3,15 +3,19 @@ import { AppWindow, Columns2, FileUp, Grid2x2, Layers3, Pencil, Ruler, Route as 
 import { Icon } from "./Icon";
 import { useStore, type MapLayers } from "../lib/store";
 import { useT } from "../lib/i18n";
+import { InfoTip } from "./InfoTip";
 
 /** A layer switch; disabled (with a link to the Data panel) while its data is not installed
  *  (report ב-23: the switch used to turn on and show nothing). */
-function LayerToggle({ label, checked, onChange, missing }: { label: string; checked: boolean; onChange: (v: boolean) => void; missing?: boolean }) {
+function LayerToggle({ label, checked, onChange, missing, info, sub }: { label: string; checked: boolean; onChange: (v: boolean) => void; missing?: boolean; info?: string; /** a sub-option of the row above (indented, smaller) */ sub?: boolean }) {
   const t = useT();
   return (
-    <div className={clsx("row justify-between", missing && "opacity-80")}>
+    <div className={clsx("row justify-between", missing && "opacity-80", sub && "ps-8 fade-in")}>
       <span className="flex flex-col min-w-0">
-        <span className={clsx("text-base", missing && "text-muted")}>{label}</span>
+        <span className={clsx(sub ? "text-sm" : "text-base", "inline-flex items-center gap-1.5", missing && "text-muted")}>
+          {label}
+          {info && <InfoTip text={info} />}
+        </span>
         {missing && (
           <button
             type="button"
@@ -57,22 +61,24 @@ export function LayersPanel() {
     <div className="px-4 pb-4 flex flex-col gap-5">
       <section className="flex flex-col gap-2">
         <div className="group-list">
-          <LayerToggle label={t("layerSatellite")} checked={layers.satellite} missing={!satelliteUrl} onChange={(v) => setLayers({ satellite: v })} />
+          <LayerToggle label={t("layerSatellite")} info={t("layerSatelliteHint")} checked={layers.satellite} missing={!satelliteUrl} onChange={(v) => setLayers({ satellite: v })} />
+          {layers.satellite && satelliteUrl && (
+            <>
+              <LayerToggle label={t("satRoads")} sub checked={layers.satelliteRoads ?? true} onChange={(v) => setLayers({ satelliteRoads: v })} />
+              <LayerToggle label={t("satLabels")} sub checked={layers.satelliteLabels ?? true} onChange={(v) => setLayers({ satelliteLabels: v })} />
+            </>
+          )}
           <LayerToggle label={t("layerHillshade")} checked={layers.hillshade} missing={noTerrain} onChange={(v) => setLayers({ hillshade: v })} />
-          <LayerToggle label={t("layerTerrain3d")} checked={layers.terrain3d} missing={noTerrain} onChange={(v) => setLayers({ terrain3d: v })} />
-          <LayerToggle label={t("layer3d")} checked={layers.buildings3d} onChange={(v) => setLayers({ buildings3d: v })} />
+          <LayerToggle label={t("layerTerrain3d")} info={t("layerTerrainHint")} checked={layers.terrain3d} missing={noTerrain} onChange={(v) => setLayers({ terrain3d: v })} />
+          <LayerToggle label={t("layer3d")} info={t("layer3dHint")} checked={layers.buildings3d} onChange={(v) => setLayers({ buildings3d: v })} />
           <LayerToggle label={t("layerPoi")} checked={layers.poi} onChange={(v) => setLayers({ poi: v })} />
-          <LayerToggle label={t("layerTransit")} checked={layers.transitStops} missing={!transitInstalled} onChange={(v) => setLayers({ transitStops: v })} />
+          <LayerToggle label={t("layerTransit")} info={t("layerTransitZoomHint")} checked={layers.transitStops} missing={!transitInstalled} onChange={(v) => setLayers({ transitStops: v })} />
           <LayerToggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
           <LayerToggle label={t("contours")} checked={layers.contours} missing={noTerrain} onChange={(v) => setLayers({ contours: v })} />
           <LayerToggle label={t("trails")} checked={layers.trails} missing={!trailsInstalled && !onlineOk} onChange={(v) => setLayers({ trails: v })} />
         </div>
-        {layers.satellite && satelliteUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerSatelliteHint")}</p>}
-        {(layers.hillshade || layers.terrain3d) && terrainUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerTerrainHint")}</p>}
-        {layers.buildings3d && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layer3dHint")}</p>}
-        {layers.transitStops && transitInstalled && (
-          <p className="m-0 text-xs text-muted px-0.5 fade-in">{stopsUnavailable ? t("layerTransitHint") : t("layerTransitZoomHint")}</p>
-        )}
+        {/* a state, not an explanation: stays visible */}
+        {layers.transitStops && transitInstalled && stopsUnavailable && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerTransitHint")}</p>}
       </section>
 
       <section className="flex flex-col gap-2">

@@ -151,7 +151,7 @@ export function RoutePanel() {
       )}
       {base === "foot" && (
         <div className="-mt-2">
-          <Toggle label={t("wheelchairRoute")} hint={t("wheelchairRouteHint")} checked={mode === "wheelchair"} onChange={(v) => setMode(v ? "wheelchair" : "foot")} bare />
+          <Toggle label={t("wheelchairRoute")} info={t("wheelchairRouteHint")} checked={mode === "wheelchair"} onChange={(v) => setMode(v ? "wheelchair" : "foot")} bare />
         </div>
       )}
 
@@ -320,7 +320,7 @@ export function RoutePanel() {
                 onChange={(v) => setAvoid({ unpaved: v, unpavedLongOnly: v && useStore.getState().settings.unpaved !== "avoid" })}
               />
             )}
-            {(base === "foot" || base === "bike") && <Toggle label={t("avoidHills")} hint={t("avoidHillsHint")} checked={!!avoid.hills} onChange={(v) => setAvoid({ hills: v })} />}
+            {(base === "foot" || base === "bike") && <Toggle label={t("avoidHills")} info={t("avoidHillsHint")} checked={!!avoid.hills} onChange={(v) => setAvoid({ hills: v })} />}
             {base === "car" && <Toggle label={t("avoidHardTurns")} checked={avoid.hardTurns} onChange={(v) => setAvoid({ hardTurns: v })} />}
             {mode === "transit" && (
               <>
@@ -347,7 +347,7 @@ export function RoutePanel() {
                     ))}
                   </div>
                 </div>
-                <Toggle label={t("transitAccessible")} hint={t("transitAccessibleHint")} checked={accessible} onChange={setAccessible} />
+                <Toggle label={t("transitAccessible")} info={t("transitAccessibleHint")} checked={accessible} onChange={setAccessible} />
               </>
             )}
             {mode !== "transit" && (
@@ -427,8 +427,10 @@ function TripPlanner() {
   };
   return (
     <div className="card p-3 flex flex-col gap-2 fade-in">
-      <div className="text-sm font-semibold">{t("tripPlanner")}</div>
-      <p className="m-0 text-xs text-muted">{t("tripPlannerHint")}</p>
+      <div className="text-sm font-semibold inline-flex items-center gap-1.5">
+        {t("tripPlanner")}
+        <InfoTip text={t("tripPlannerHint")} />
+      </div>
       <div className="flex flex-col gap-2">
         {waypoints.map((wp, i) =>
           i === 0 ? null : (

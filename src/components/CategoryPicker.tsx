@@ -6,6 +6,7 @@ import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { POI_CATEGORIES, POI_GROUPS, QUICK_CATEGORIES, type PoiCategory } from "../lib/poiCategories";
 import { useDialog } from "../lib/useDialog";
+import { InfoTip } from "./InfoTip";
 
 /** Map control under the categories button: centre the map on the device's position. */
 export function LocateButton() {
@@ -112,7 +113,10 @@ export function CategoryPicker() {
       {open && (
         <div ref={dialogRef} className="absolute top-0 end-12 w-[340px] max-w-[calc(100vw-80px)] popover rounded-[var(--radius-card)] p-3 flex flex-col gap-3 fade-in" role="dialog" aria-label={t("categoriesTitle")}>
           <div className="flex items-center justify-between">
-            <h2 className="section-label m-0 p-0">{t("categoriesTitle")}</h2>
+            <h2 className="section-label m-0 p-0 inline-flex items-center gap-1.5">
+              {t("categoriesTitle")}
+              <InfoTip text={t("poiLayerHint")} />
+            </h2>
             <button className="btn btn-ghost btn-icon btn-sm -me-1 text-muted" onClick={() => setOpen(false)} aria-label={t("close")}>
               <Icon as={X} size={15} />
             </button>
@@ -154,7 +158,6 @@ export function CategoryPicker() {
             )}
             {visible.length === 0 && <div className="text-sm text-muted py-2">{t("noCategoriesMatch")}</div>}
           </div>
-          <p className="m-0 text-xs text-subtle">{t("poiLayerHint")}</p>
         </div>
       )}
     </div>

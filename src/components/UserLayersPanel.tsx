@@ -16,6 +16,7 @@ import { useDialog } from "../lib/useDialog";
 import { firstLine, lineElevations } from "../map/geoFiles";
 import { climb, densify, pathLengthM } from "../map/measure";
 import { fmtDistance } from "../lib/format";
+import { InfoTip } from "./InfoTip";
 
 const ACCEPT = ".gpx,.kml,.geojson,.json";
 
@@ -47,7 +48,10 @@ export function ImportDialog() {
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/20 no-print" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div ref={ref} role="dialog" aria-modal="true" aria-label={t("importTitle")} className="popover rounded-[var(--radius)] w-[420px] max-w-[calc(100%-32px)] p-4 flex flex-col gap-3 fade-in">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold m-0">{t("importTitle")}</h2>
+          <h2 className="text-base font-semibold m-0 inline-flex items-center gap-1.5">
+            {t("importTitle")}
+            <InfoTip text={t("importHint")} />
+          </h2>
           <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")}>
             <Icon as={X} size={16} />
           </button>
@@ -82,7 +86,6 @@ export function ImportDialog() {
             }}
           />
         </div>
-        <p className="m-0 text-xs text-muted">{t("importHint")}</p>
       </div>
     </div>
   );

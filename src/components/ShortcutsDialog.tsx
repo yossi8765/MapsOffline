@@ -53,7 +53,6 @@ function Dialog() {
         <div className="scroll-y min-h-0">
           <ShortcutList />
         </div>
-        <p className="m-0 mt-3 text-xs text-muted">{t("shortcutsNote")}</p>
       </div>
     </div>
   );

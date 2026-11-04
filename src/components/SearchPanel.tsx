@@ -30,7 +30,6 @@ const KIND_LABEL: Record<GeoResult["kind"], I18nKey> = {
 };
 
 export function SearchPanel() {
-  const t = useT();
   const focusTick = useStore((s) => s.searchFocusTick);
   const external = useStore((s) => s.searchPick);
   const [picked, setPicked] = useState<Pick | null>(external);
@@ -64,7 +63,7 @@ export function SearchPanel() {
           useStore.getState().setMarker(null);
         }}
       />
-      {picked ? <PlaceCard key={`${picked.lon},${picked.lat},${picked.label}`} picked={picked} /> : <p className="m-0 px-1 text-muted">{t("searchHint")}</p>}
+      {picked ? <PlaceCard key={`${picked.lon},${picked.lat},${picked.label}`} picked={picked} /> : null}
     </div>
   );
 }

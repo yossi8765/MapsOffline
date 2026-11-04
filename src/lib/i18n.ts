@@ -10,7 +10,6 @@ const he = {
   favAddresses: "כתובות",
   favStops: "תחנות אוטובוס",
   favPlaces: "מקומות",
-  favoritesHint: "לשמירה: הכוכב בכרטיס של מקום, הכוכב ליד קו בקטע תחב״צ של מסלול, או ״הוסף מועדף״ כאן.",
   favoriteAdded: "נוסף למועדפים",
   favoriteRemoved: "הוסר מהמועדפים",
   favoriteRemove: "הסר מהמועדפים",
@@ -93,7 +92,6 @@ const he = {
   shortcutNorth: "צפון למעלה",
   shortcut3d: "תלת-ממד",
   shortcutHelp: "טבלת הקיצורים",
-  shortcutsNote: "הקיצורים פועלים גם כשהמקלדת בעברית (לפי מיקום המקש).",
   ctxNearby: "מה יש בסביבה",
   nearbyTitle: "בסביבה",
   nearbyAll: "הכל",
@@ -133,7 +131,6 @@ const he = {
   // search
   searchPlaceholder: "חיפוש כתובת, רחוב, יישוב או מקום",
   searchNoResults: "לא נמצאו תוצאות",
-  searchHint: "לדוגמה: הרצל 12, תל אביב",
   searchClear: "נקה חיפוש",
   keyboardFixed: "תוקנה שפת המקלדת:",
   recent: "אחרונים",
@@ -257,7 +254,6 @@ const he = {
   copied: "הועתק ללוח",
   exportSaved: "המסלול נשמר:",
   clearRoute: "נקה מסלול",
-  pickPointsHint: "יש לבחור מוצא ויעד כדי לחשב מסלול. אפשר גם ללחוץ על המפה בלחצן הימני.",
   // map
   ctxFromHere: "מסלול מכאן",
   ctxToHere: "מסלול לכאן",
@@ -606,6 +602,7 @@ const he = {
   err_CHECKSUM_MISMATCH: "הקובץ שהורד פגום (טביעת האצבע אינה תואמת). יש לנסות שוב.",
 
   // ===== [F1] =====
+  logsTitle: "קובצי יומן",
   simSpeedTitle: "מהירות הנסיעה המדומה",
   simSpeedRoad: "לפי הכביש",
   simSpeedHint: "\"לפי הכביש\" נוסע במהירות המותרת בכל קטע (50 קמ״ש כשהיא לא ידועה). אפשר לשנות את המהירות גם תוך כדי נסיעה.",
@@ -849,6 +846,8 @@ const he = {
   batchOnMap: "הכתובות נוספו כשכבה במפה",
 
   // ===== [F2] =====
+  satRoads: "כבישים על התצלום",
+  satLabels: "שמות על התצלום",
   shortcutFullscreen: "מסך מלא",
   favGroupShowOnMap: "הצג במפה",
   favGroupHideOnMap: "הסתר מהמפה",
@@ -1017,7 +1016,6 @@ const en: Record<I18nKey, string> = {
   favAddresses: "Addresses",
   favStops: "Bus stops",
   favPlaces: "Places",
-  favoritesHint: "Save with the star on a search result, the star next to a line in a transit route, or \"Add favorite\" here.",
   favoriteAdded: "Added to favorites",
   favoriteRemoved: "Removed from favorites",
   favoriteRemove: "Remove from favorites",
@@ -1099,7 +1097,6 @@ const en: Record<I18nKey, string> = {
   shortcutNorth: "North up",
   shortcut3d: "3D",
   shortcutHelp: "Shortcut table",
-  shortcutsNote: "Shortcuts also work with the Hebrew keyboard layout.",
   ctxNearby: "What's nearby",
   nearbyTitle: "Nearby",
   nearbyAll: "All",
@@ -1138,7 +1135,6 @@ const en: Record<I18nKey, string> = {
   none: "None",
   searchPlaceholder: "Search for an address, street, town or place",
   searchNoResults: "No results",
-  searchHint: "e.g. Herzl 12, Tel Aviv",
   searchClear: "Clear search",
   keyboardFixed: "Keyboard layout corrected:",
   recent: "Recent",
@@ -1261,7 +1257,6 @@ const en: Record<I18nKey, string> = {
   copied: "Copied to clipboard",
   exportSaved: "Route saved:",
   clearRoute: "Clear route",
-  pickPointsHint: "Choose an origin and a destination to get directions. You can also right-click the map.",
   ctxFromHere: "Directions from here",
   ctxToHere: "Directions to here",
   hoverDetails: "Details",
@@ -1603,6 +1598,7 @@ const en: Record<I18nKey, string> = {
   err_CHECKSUM_MISMATCH: "The downloaded file is damaged (checksum mismatch). Try again.",
 
   // ===== [F1] =====
+  logsTitle: "Log files",
   simSpeedTitle: "Simulated speed",
   simSpeedRoad: "As the road allows",
   simSpeedHint: "\"As the road allows\" drives at each stretch's speed limit (50 km/h where it is unknown). The speed can also be changed while driving.",
@@ -1836,6 +1832,8 @@ const en: Record<I18nKey, string> = {
   batchOnMap: "The addresses were added as a map layer",
 
   // ===== [F2] =====
+  satRoads: "Roads over the imagery",
+  satLabels: "Names over the imagery",
   shortcutFullscreen: "Full screen",
   favGroupShowOnMap: "Show on the map",
   favGroupHideOnMap: "Hide from the map",

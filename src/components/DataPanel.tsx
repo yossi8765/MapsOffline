@@ -15,6 +15,7 @@ import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Toggle } from "./RoutePanel";
 import { RegionsSection } from "./RegionsSection";
+import { InfoTip } from "./InfoTip";
 
 const META: Record<DataComponent, { icon: typeof Map; label: I18nKey; desc: I18nKey }> = {
   tiles: { icon: Map, label: "compTiles", desc: "compTilesDesc" },
@@ -54,23 +55,6 @@ const PHASE_KEY: Record<ProgressPhase, I18nKey> = {
   failed: "phaseFailed",
   cancelled: "phaseCancelled",
 };
-
-/** A hint shown as its first sentence with "עוד…" for the rest (long explanations no longer
- *  push the controls down on every visit). */
-export function MoreText({ text, className }: { text: string; className?: string }) {
-  const t = useT();
-  const [open, setOpen] = useState(false);
-  const m = /^(.+?[.!?])\s+(.+)$/s.exec(text);
-  if (!m) return <p className={clsx("m-0 text-xs text-muted", className)}>{text}</p>;
-  return (
-    <p className={clsx("m-0 text-xs text-muted", className)}>
-      {open ? text : m[1]}{" "}
-      <button className="text-accent hover:underline underline-offset-2" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {open ? t("showLess") : t("showMore")}
-      </button>
-    </p>
-  );
-}
 
 /** The components the update checks offer (settings.wantedComponents; null = all). */
 export function isWanted(c: DataComponent, wanted: DataComponent[] | null | undefined): boolean {
@@ -254,7 +238,10 @@ export function DataPanel() {
       )}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between px-0.5">
-          <h2 className="section-label m-0 p-0">{t("dataTitle")}</h2>
+          <h2 className="section-label m-0 p-0 inline-flex items-center gap-1.5">
+            {t("dataTitle")}
+            <InfoTip text={t("dataNeedsInternet")} />
+          </h2>
           <button
             className="btn btn-ghost btn-sm text-muted -me-1"
             disabled={checking}
@@ -317,7 +304,6 @@ export function DataPanel() {
               )
             )
           ) : null}
-          <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
           <div className="group-list">
             <Toggle label={t("prebuiltData")} info={t("prebuiltDataHint")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
           </div>
@@ -342,7 +328,10 @@ export function DataPanel() {
                 c === "satellite" ? (
                   <div className="flex flex-col gap-1.5 mt-1.5">
                     <label className="flex flex-col gap-1 text-xs text-muted">
-                      <span>{t("satelliteSource")}</span>
+                      <span className="inline-flex items-center gap-1.5">
+                        {t("satelliteSource")}
+                        {ortho && <InfoTip text={t("satOrthoNote")} />}
+                      </span>
                       <select
                         className="input h-9 w-full min-w-0"
                         value={satelliteSource}
@@ -381,7 +370,6 @@ export function DataPanel() {
                         )}
                       </select>
                     </label>
-                    {ortho && <MoreText text={t("satOrthoNote")} />}
                   </div>
                 ) : undefined
               }
@@ -413,14 +401,19 @@ export function DataPanel() {
         {(advanced || (pkgOrigin === "transfer" && (pkgActive || !!pkgFile))) && (
           <div id="data-advanced" className="flex flex-col gap-4 fade-in">
             <div className="flex flex-col gap-2">
-              <h2 className="section-label m-0">{t("offlineTransfer")}</h2>
+              <h2 className="section-label m-0 inline-flex items-center gap-1.5">
+                {t("offlineTransfer")}
+                <InfoTip text={t("offlineTransferHint")} />
+              </h2>
               <div className="group-list">
                 <div className="px-3 py-2.5 flex flex-col gap-2">
-                  <button className="btn btn-sm btn-primary" disabled={updating || pkgActive} onClick={() => void doDownloadPackage()}>
-                    <Icon as={Download} size={14} /> {t("downloadPackage")}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button className="btn btn-sm btn-primary flex-1" disabled={updating || pkgActive} onClick={() => void doDownloadPackage()}>
+                      <Icon as={Download} size={14} /> {t("downloadPackage")}
+                    </button>
+                    <InfoTip text={t("downloadPackageHint")} />
+                  </div>
                   {pkgOrigin === "transfer" && <PackageProgress ref={pkgTransferRef} pkg={pkg} file={pkgFile} onInstall={pkgFile ? () => void importData(pkgFile) : undefined} />}
-                  <MoreText text={t("downloadPackageHint")} />
                 </div>
                 {anyPresent && (
                   <div className="px-3 py-2.5 flex flex-col gap-2">
@@ -460,11 +453,13 @@ export function DataPanel() {
                   </button>
                 </div>
               </div>
-              <MoreText text={t("offlineTransferHint")} className="px-0.5" />
             </div>
 
             <div className="flex flex-col gap-2">
-              <h2 className="section-label m-0">{t("wantedComponents")}</h2>
+              <h2 className="section-label m-0 inline-flex items-center gap-1.5">
+                {t("wantedComponents")}
+                <InfoTip text={t("wantedComponentsHint")} />
+              </h2>
               <div className="flex flex-wrap gap-1.5" role="group" aria-label={t("wantedComponents")}>
                 {DATA_COMPONENTS.map((c) => {
                   const on = isWanted(c, wanted);
@@ -486,7 +481,6 @@ export function DataPanel() {
                   );
                 })}
               </div>
-              <p className="m-0 text-xs text-muted px-0.5">{t("wantedComponentsHint")}</p>
             </div>
 
             {status?.dir && (
@@ -502,7 +496,10 @@ export function DataPanel() {
                     </button>
                   </div>
                   <div className="row">
-                    <div className="flex-1 min-w-0 text-xs text-muted">{t("logsHint")}</div>
+                    <div className="flex-1 min-w-0 flex items-center gap-1.5 text-sm">
+                      {t("logsTitle")}
+                      <InfoTip text={t("logsHint")} />
+                    </div>
                     <button className="btn btn-sm shrink-0" onClick={() => void openLogs()}>
                       <Icon as={FileText} size={14} /> {t("openLogs")}
                     </button>

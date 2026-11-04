@@ -19,6 +19,10 @@ export interface StyleOptions {
   /** Raster PMTiles with Sentinel-2 imagery; shown under roads and labels when `satellite` is on. */
   satelliteUrl: string | null;
   satellite: boolean;
+  /** With the imagery on: draw the base map's roads / paths / rail / road numbers over it (default true). */
+  satelliteRoads?: boolean;
+  /** With the imagery on: draw the base map's names and labels over it (default true). */
+  satelliteLabels?: boolean;
   /** Installed imagery is the govmap orthophoto (else Sentinel-2): picks the attribution. */
   satelliteOrtho?: boolean;
   /** Raster-DEM PMTiles (Terrarium); hillshade and/or 3D terrain when installed. */
@@ -262,6 +266,28 @@ const SENTINEL_ATTRIBUTION =
 export const ORTHOPHOTO_ATTRIBUTION =
   'תצלומי אוויר © <a href="https://www.govmap.gov.il">המרכז למיפוי ישראל</a> (לשימוש אישי) · ' + SENTINEL_ATTRIBUTION;
 
+/** Road-network layers of the base map: road lines (incl. bridges / tunnels / casings), rail
+ *  and the road-number shields. */
+export function isRoadLayer(l: LayerSpecification): boolean {
+  const id = l.id.replace(/^world-/, "");
+  if (id === "roads_shields" || id === "roads_oneway") return true;
+  return l.type === "line" && (id.startsWith("roads") || id.startsWith("physical_line"));
+}
+
+/** Base-map text and point labels (place, street, water, POI names); road shields count as roads. */
+export function isLabelLayer(l: LayerSpecification): boolean {
+  return l.type === "symbol" && !isRoadLayer(l);
+}
+
+function hiddenOverImagery(l: LayerSpecification, o: StyleOptions): boolean {
+  return (o.satelliteRoads === false && isRoadLayer(l)) || (o.satelliteLabels === false && isLabelLayer(l));
+}
+
+function withVisibility(l: LayerSpecification, v: "visible" | "none"): LayerSpecification {
+  if (l.type === "background") return l;
+  return { ...l, layout: { ...((l as { layout?: object }).layout ?? {}), visibility: v } } as LayerSpecification;
+}
+
 function satelliteLayer(): LayerSpecification {
   return { id: "satellite", type: "raster", source: "satellite", paint: { "raster-resampling": "linear", "raster-fade-duration": 150 } };
 }
@@ -462,6 +488,10 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
           },
         } as LayerSpecification;
       });
+    // "imagery only": the roads and / or the names can be switched off over the photo. Hidden
+    // with `visibility` (not removed) so switching them is a layout change, not a rebuild.
+    ls = ls.map((l) => (hiddenOverImagery(l, o) ? withVisibility(l, "none") : l));
+    worldLayers = worldLayers.map((l) => (hiddenOverImagery(l, o) ? withVisibility(l, "none") : l));
     const bgIdx = ls.findIndex((l) => l.id === "background");
     ls.splice(bgIdx + 1, 0, satelliteLayer());
   }

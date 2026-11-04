@@ -12,6 +12,7 @@ import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { useDialog } from "../lib/useDialog";
 import { validateCustomLayer } from "../map/customLayers";
+import { InfoTip } from "./InfoTip";
 
 const KINDS: CustomLayer["kind"][] = ["xyz", "wms", "pmtiles", "mbtiles"];
 
@@ -100,7 +101,10 @@ export function CustomLayersDialog() {
           </ul>
         )}
         <section className="flex flex-col gap-2">
-          <h3 className="section-label m-0">{t("customAdd")}</h3>
+          <h3 className="section-label m-0 inline-flex items-center gap-1.5">
+            {t("customAdd")}
+            <InfoTip text={t("customHint")} />
+          </h3>
           <input className="input h-9" placeholder={t("customName")} aria-label={t("customName")} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           <div className="seg seg-sm" role="group" aria-label={t("customKind")}>
             {KINDS.map((k) => (
@@ -123,7 +127,6 @@ export function CustomLayersDialog() {
           <button className="btn btn-primary btn-sm self-start" onClick={add}>
             <Icon as={Plus} size={14} /> {t("customAddButton")}
           </button>
-          <p className="m-0 text-xs text-muted">{t("customHint")}</p>
         </section>
       </div>
     </div>

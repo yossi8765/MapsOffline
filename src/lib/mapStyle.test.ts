@@ -96,3 +96,35 @@ describe("online stand-ins for elevation and trails", () => {
     expect(s.sources.trails).toBeDefined();
   });
 });
+
+describe("satellite: roads and names over the imagery", () => {
+  const visible = (l: unknown) => ((l as { layout?: { visibility?: string } }).layout?.visibility ?? "visible") !== "none";
+  const roadLines = (s: ReturnType<typeof buildStyle>) => s.layers.filter((l) => l.type === "line" && l.id.replace(/^world-/, "").startsWith("roads"));
+  const baseSymbols = (s: ReturnType<typeof buildStyle>) => s.layers.filter((l) => l.type === "symbol" && !/roads_shields|roads_oneway/.test(l.id));
+
+  it("both on by default: roads and labels drawn over the photo", () => {
+    const s = buildStyle({ ...base, satellite: true });
+    expect(roadLines(s).length).toBeGreaterThan(0);
+    expect(roadLines(s).every(visible)).toBe(true);
+    expect(baseSymbols(s).some(visible)).toBe(true);
+  });
+
+  it("roads off: no road line visible, labels stay", () => {
+    const s = buildStyle({ ...base, satellite: true, satelliteRoads: false });
+    expect(roadLines(s).some(visible)).toBe(false);
+    expect(s.layers.filter((l) => /roads_shields|roads_oneway/.test(l.id)).some(visible)).toBe(false);
+    expect(baseSymbols(s).some(visible)).toBe(true);
+  });
+
+  it("labels off: no base-map symbol visible, roads stay", () => {
+    const s = buildStyle({ ...base, satellite: true, satelliteLabels: false });
+    expect(baseSymbols(s).some(visible)).toBe(false);
+    expect(roadLines(s).every(visible)).toBe(true);
+  });
+
+  it("the switches only matter with the imagery on", () => {
+    const s = buildStyle({ ...base, satellite: false, satelliteRoads: false, satelliteLabels: false });
+    expect(roadLines(s).every(visible)).toBe(true);
+    expect(baseSymbols(s).some(visible)).toBe(true);
+  });
+});

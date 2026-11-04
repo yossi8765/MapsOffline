@@ -383,7 +383,6 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
             {!loading && text.trim() && rows.length === 0 && !noIndex && (
               <div className="px-3 py-3">
                 <div className="font-medium">{t("searchNoResults")}</div>
-                <div className="text-muted text-xs mt-1">{t("searchHint")}</div>
               </div>
             )}
             {rows.map((row, i) => {

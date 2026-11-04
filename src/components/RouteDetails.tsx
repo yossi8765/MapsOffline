@@ -37,6 +37,7 @@ import { copyText, fmtDistance, fmtDuration, fmtTime, routeArrow, routeToGpx, ro
 import { api } from "../lib/api";
 import { useMenuKeys } from "../lib/useDialog";
 import { legColorHex, vehicleIcon } from "./RouteResults";
+import { InfoTip } from "./InfoTip";
 
 function maneuverIcon(m: Maneuver, size = 16) {
   switch (m) {
@@ -599,7 +600,10 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
       {simPick && route.mode !== "transit" && (
         <div className="card p-3 flex flex-col gap-2 no-print fade-in" role="group" aria-label={t("simSpeedTitle")}>
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium">{t("simSpeedTitle")}</span>
+            <span className="font-medium inline-flex items-center gap-1.5">
+              {t("simSpeedTitle")}
+              <InfoTip text={t("simSpeedHint")} />
+            </span>
             <button className="btn btn-ghost btn-sm" onClick={() => setSimPick(false)}>
               {t("cancel")}
             </button>
@@ -619,7 +623,6 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
               </button>
             ))}
           </div>
-          <p className="m-0 text-xs text-muted">{t("simSpeedHint")}</p>
         </div>
       )}
       {!embedded && <h2 className="section-label m-0">{t("steps")}</h2>}
