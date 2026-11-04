@@ -40,7 +40,7 @@ fn to_result(f: &Value) -> Option<GeoResult> {
         _ => label,
     };
     let (kind, precision, label, category) = match typ.as_str() {
-        "house" if key != "place" && name.is_none() => {
+        "house" if house.is_some() && (name.is_none() || key == "place") => {
             let label = match (&street, &house) {
                 (Some(st), Some(h)) => format!("{st} {h}"),
                 (Some(st), None) => st.clone(),
