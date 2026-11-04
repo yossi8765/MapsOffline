@@ -261,6 +261,8 @@ interface Actions {
   startUpdate: (components: DataComponent[]) => Promise<void>;
   exportData: (dest: string, components?: DataComponent[]) => Promise<void>;
   importData: (src: string) => Promise<void>;
+  /** Download the full ready-made data package to `dest`; resolves to true when it finished. */
+  downloadPackage: (dest: string) => Promise<boolean>;
   cancelUpdate: (component?: DataComponent) => Promise<void>;
   pauseUpdate: (paused: boolean) => Promise<void>;
 
@@ -855,6 +857,20 @@ export const useStore = create<State & Actions>((set, get) => ({
       get().toast("success", t("exportDone"));
     } catch (e) {
       get().toastError(e);
+    } finally {
+      await get().refreshDataStatus();
+    }
+  },
+  downloadPackage: async (dest) => {
+    const t = get().t;
+    set((s) => ({ dataStatus: s.dataStatus && { ...s.dataStatus, updating: true } }));
+    try {
+      await api.dataDownloadPackage(dest);
+      get().toast("success", t("downloadPackageDone"));
+      return true;
+    } catch (e) {
+      get().toastError(e);
+      return false;
     } finally {
       await get().refreshDataStatus();
     }

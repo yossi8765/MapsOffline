@@ -645,6 +645,8 @@ export const api = {
   dataExport: (dest: string, components?: DataComponent[]) => invoke<DataComponent[]>("data_export", { dest, components: components ?? null }),
   /** Install a .mapsdata file into the data directory. */
   dataImport: (src: string) => invoke<DataComponent[]>("data_import", { src }),
+  /** Download the full ready-made data package (weekly GitLab build) to `dest`; returns its size. Progress: event `package-download`. */
+  dataDownloadPackage: (dest: string) => invoke<number>("data_download_package", { dest }),
   dataPreload: (transit: boolean) => invoke<void>("data_preload", { transit }),
 
   settingsGet: () => invoke<Settings>("settings_get"),

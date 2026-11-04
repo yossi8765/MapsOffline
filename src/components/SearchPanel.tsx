@@ -168,7 +168,7 @@ function RoundAction({ icon, label, onClick, primary, pressed, title }: { icon: 
       >
         {icon}
       </span>
-      <span className="text-xs text-center leading-tight text-fg w-full truncate">{label}</span>
+      <span className="text-xs text-center leading-tight text-fg w-full break-words [text-align-last:center]">{label}</span>
     </button>
   );
 }

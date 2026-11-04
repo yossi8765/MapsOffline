@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { BookOpen, Bus, Download, Footprints, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
@@ -56,7 +57,7 @@ export function DataPanel() {
   const lang = useStore((s) => s.settings.language);
   const check = useStore((s) => s.dataCheck);
   const checking = useStore((s) => s.checkingUpdates);
-  const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, toastError, updateSettings } = useStore.getState();
+  const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, downloadPackage, toastError, updateSettings } = useStore.getState();
   const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
   const usePrebuilt = useStore((s) => s.settings.usePrebuiltData ?? true);
   const satelliteSource = useStore((s) => s.settings.satelliteSource ?? "govmap");
@@ -91,6 +92,32 @@ export function DataPanel() {
         filters: [{ name: t("packageFilter"), extensions: ["mapsdata"] }],
       });
       if (dest) await exportData(dest, selected.length === present.length ? undefined : selected);
+    } catch (e) {
+      toastError(e);
+    }
+  };
+  // full ready-made package download: live progress and the saved file (to install / show)
+  const [pkg, setPkg] = useState<{ phase: ProgressPhase; done: number; total: number; message: string } | null>(null);
+  const [pkgFile, setPkgFile] = useState<string | null>(null);
+  useEffect(() => {
+    const un = listen<{ phase: ProgressPhase; done: number; total: number; message: string }>("package-download", (e) => setPkg(e.payload));
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+  const pkgActive = !!pkg && pkg.phase !== "done" && pkg.phase !== "failed" && pkg.phase !== "cancelled";
+  const pkgPct = pkg && pkg.total > 0 ? Math.min(100, Math.round((pkg.done / pkg.total) * 100)) : null;
+  const doDownloadPackage = async () => {
+    try {
+      const dest = await saveDialog({
+        title: t("downloadPackage"),
+        defaultPath: "MapsOffline-data.mapsdata",
+        filters: [{ name: t("packageFilter"), extensions: ["mapsdata"] }],
+      });
+      if (!dest) return;
+      setPkgFile(null);
+      setPkg({ phase: "queued", done: 0, total: 0, message: "" });
+      if (await downloadPackage(dest)) setPkgFile(dest);
     } catch (e) {
       toastError(e);
     }
@@ -304,6 +331,36 @@ export function DataPanel() {
       <div className="flex flex-col gap-2">
         <h2 className="section-label m-0">{t("offlineTransfer")}</h2>
         <div className="group-list">
+          <div className="px-3 py-2.5 flex flex-col gap-2">
+            <button className="btn btn-sm btn-primary" disabled={updating} onClick={() => void doDownloadPackage()}>
+              <Download size={14} strokeWidth={1.75} /> {t("downloadPackage")} <bdi dir="ltr" className="num opacity-80">(~420 MB)</bdi>
+            </button>
+            {pkgActive && (
+              <div className="flex flex-col gap-1 fade-in">
+                <div className="flex items-center gap-2 text-xs text-muted">
+                  <span className="flex-1 min-w-0 truncate"><bdi>{pkg?.message}</bdi></span>
+                  {pkgPct !== null && <span className="num shrink-0">{pkgPct}%</span>}
+                  <button className="btn btn-ghost btn-icon btn-sm text-muted shrink-0" title={t("cancel")} aria-label={t("cancel")} onClick={() => void cancelUpdate()}>
+                    <X size={14} strokeWidth={1.75} />
+                  </button>
+                </div>
+                <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pkgPct ?? undefined}>
+                  <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pkgPct === null && "animate-pulse w-1/3")} style={pkgPct !== null ? { width: `${pkgPct}%` } : undefined} />
+                </div>
+              </div>
+            )}
+            {pkgFile && !pkgActive && (
+              <div className="flex gap-2 fade-in">
+                <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void importData(pkgFile)}>
+                  <PackageOpen size={14} strokeWidth={1.75} /> {t("installDownloaded")}
+                </button>
+                <button className="btn btn-sm flex-1" onClick={() => void revealItemInDir(pkgFile).catch(toastError)}>
+                  <FolderOpen size={14} strokeWidth={1.75} /> {t("showInFolder")}
+                </button>
+              </div>
+            )}
+            <p className="m-0 text-xs text-muted">{t("downloadPackageHint")}</p>
+          </div>
           {anyPresent && (
             <div className="px-3 py-2.5 flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2 text-xs text-muted">

@@ -671,6 +671,72 @@ pub async fn data_import(app: AppHandle, state: State<'_, Arc<AppState>>, src: S
     res
 }
 
+/// The full ready-made data package of the weekly GitLab build (every component in one file).
+const FULL_PACKAGE_URL: &str = "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/packages/generic/mapsdata-all/latest/MapsOffline-data.mapsdata";
+
+/// Progress of `data_download_package`, emitted as event `package-download`.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackageDownloadProgress {
+    phase: ProgressPhase,
+    done: u64,
+    total: u64,
+    message: String,
+}
+
+/// Download the full ready-made data package to `dest` (to keep, carry to another computer or
+/// import later). The file goes through the downloads folder first, so a broken or paused download
+/// resumes where it stopped; cancel with `data_cancel()`. Returns the file size.
+#[tauri::command]
+pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState>>, dest: String) -> R<u64> {
+    let st = state.inner().clone();
+    if st.updating.swap(true, Ordering::SeqCst) {
+        return Err("UPDATE_RUNNING".into());
+    }
+    st.cancel.reset();
+    let paths = st.paths();
+    let st2 = st.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<u64> {
+        let emit = |phase: ProgressPhase, done: u64, total: u64, message: &str| {
+            let _ = app.emit("package-download", PackageDownloadProgress { phase, done, total, message: message.to_string() });
+        };
+        let r = (|| -> anyhow::Result<u64> {
+            let file = paths.downloads_dir().join("MapsOffline-data.mapsdata");
+            let progress = |phase: ProgressPhase, d: u64, t: u64, msg: &str| -> bool {
+                st2.cancel.wait_if_paused();
+                emit(phase, d, t, msg);
+                !st2.cancel.is_cancelled()
+            };
+            crate::data::download::ensure_fresh(FULL_PACKAGE_URL, &file, &progress, &st2.cancel)?;
+            if st2.cancel.is_cancelled() {
+                anyhow::bail!("בוטל");
+            }
+            emit(ProgressPhase::Finalizing, 0, 0, "שומר את הקובץ");
+            let dest = std::path::PathBuf::from(&dest);
+            if dest != file {
+                // same drive: a rename; otherwise a copy
+                if std::fs::rename(&file, &dest).is_err() {
+                    std::fs::copy(&file, &dest)?;
+                    let _ = std::fs::remove_file(&file);
+                }
+                let _ = std::fs::remove_file(crate::data::download::meta_path(&file));
+            }
+            let size = std::fs::metadata(&dest)?.len();
+            emit(ProgressPhase::Done, size, size, "הושלם");
+            Ok(size)
+        })();
+        if let Err(e) = &r {
+            let phase = if st2.cancel.is_cancelled() { ProgressPhase::Cancelled } else { ProgressPhase::Failed };
+            emit(phase, 0, 0, &format!("{e:#}"));
+        }
+        st2.updating.store(false, Ordering::SeqCst);
+        r
+    })
+    .await
+    .map_err(err)?;
+    res.map_err(err)
+}
+
 async fn run_package_job<F>(app: AppHandle, st: Arc<AppState>, job: F) -> R<Vec<DataComponent>>
 where
     F: FnOnce(&crate::paths::DataPaths, &(dyn Fn(DataComponent, ProgressPhase, u64, u64, &str) + Sync), &crate::data::Cancel) -> anyhow::Result<Vec<DataComponent>>

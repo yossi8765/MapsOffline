@@ -136,6 +136,7 @@ pub fn run() {
             commands::data_check,
             commands::data_export,
             commands::data_import,
+            commands::data_download_package,
             commands::data_cancel,
             commands::data_pause,
             commands::data_preload,
