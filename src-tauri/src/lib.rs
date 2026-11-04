@@ -31,6 +31,25 @@ use std::sync::Arc;
 
 use state::AppState;
 
+/// Maximise the main window when its restored rectangle sticks out of its monitor's work area
+/// (above the top edge, or wider / taller than the screen): that is a maximised window saved
+/// without the flag, and it would show with the title bar cut off.
+fn fix_offscreen_window(w: &tauri::WebviewWindow) {
+    if w.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(pos), Ok(size), Ok(Some(mon))) = (w.outer_position(), w.outer_size(), w.current_monitor()) else { return };
+    let area = mon.work_area();
+    let (ax, ay) = (area.position.x, area.position.y);
+    let (aw, ah) = (area.size.width as i32, area.size.height as i32);
+    let off_top = pos.y < ay;
+    let too_big = size.width as i32 >= aw - 4 && size.height as i32 >= ah - 40;
+    let off_side = pos.x < ax - 4 || pos.x + size.width as i32 > ax + aw + 4;
+    if off_top || too_big || off_side {
+        let _ = w.maximize();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = Arc::new(AppState::new());
@@ -93,6 +112,12 @@ pub fn run() {
             use tauri::Manager;
             let root = app.state::<Arc<AppState>>().paths().root;
             allow_asset_dir(app.handle(), &root);
+            // A window restored by the window-state plugin with the size of a maximised window but
+            // not flagged maximised sits partly off-screen (title bar cut at the top). Such a
+            // geometry means "maximised": maximise it properly.
+            if let Some(w) = app.get_webview_window("main") {
+                fix_offscreen_window(&w);
+            }
             // Installed builds register the link schemes through the installer; a dev / portable
             // run registers them for the current user so links work there too.
             #[cfg(windows)]
