@@ -8,7 +8,21 @@ export function cssVar(name: string, fallback: string): string {
 /** Every colour the map overlays use, read from the CSS tokens, so the theme and the colour
  *  scheme reach the route, my location, stops and labels too. `dark` = the map is dark (the map
  *  flavour can differ from the panel theme). */
-export function mapColors(dark: boolean) {
+export function mapColors(dark: boolean): MapColors {
+  // getComputedStyle is slow and this runs per route leg / stop: cache per theme state
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  const key = `${dark}|${root?.getAttribute("data-theme") ?? ""}|${root?.getAttribute("data-accent") ?? ""}|${root?.getAttribute("style") ?? ""}`;
+  const hit = colorCache.get(key);
+  if (hit) return hit;
+  const c = readMapColors(dark);
+  if (colorCache.size > 8) colorCache.clear();
+  colorCache.set(key, c);
+  return c;
+}
+
+const colorCache = new Map<string, MapColors>();
+
+function readMapColors(dark: boolean) {
   const n = dark ? "-night" : "";
   return {
     me: cssVar("--map-me", "#1a66d9"),
@@ -27,7 +41,7 @@ export function mapColors(dark: boolean) {
   };
 }
 
-export type MapColors = ReturnType<typeof mapColors>;
+export type MapColors = ReturnType<typeof readMapColors>;
 
 export function modeColor(mode: string): string {
   return cssVar(mode === "foot" ? "--route-foot" : mode === "bike" ? "--route-bike" : "--route-car", "#1a66d9");

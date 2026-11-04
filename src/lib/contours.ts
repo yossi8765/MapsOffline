@@ -5,6 +5,10 @@
  * maplibre-contour fetches DEM tiles from a {z}/{x}/{y} URL; our elevation data is one PMTiles
  * archive, so its tile manager is given a fetch function that reads the archive directly (and
  * answers a flat sea-level tile where the archive has none, e.g. over the sea).
+ *
+ * This module (and maplibre-contour with it) is loaded on demand by MapView, only once contour
+ * lines or the topographic theme are switched on. The contour maths stays on the main thread:
+ * maplibre-contour's own worker fetches DEM tiles by URL and cannot read our PMTiles archive.
  */
 import * as maplibregl from "maplibre-gl";
 import mlcontour from "maplibre-contour";
@@ -41,7 +45,8 @@ export function contourTilesUrl(terrainUrl: string): string {
   const source = new mlcontour.DemSource({ url: PATTERN, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, worker: false, id });
   source.manager = new mlcontour.LocalDemManager({
     demUrlPattern: PATTERN,
-    cacheSize: 100,
+    // decoded 512 px DEM tiles are ~1 MB each: 32 keep a city's worth of hills (was 100 ≈ 100 MB)
+    cacheSize: 32,
     encoding: "terrarium",
     maxzoom: TERRAIN_MAX_ZOOM,
     timeoutMs: 10_000,

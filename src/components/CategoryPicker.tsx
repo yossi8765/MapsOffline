@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { POI_CATEGORIES, POI_GROUPS, QUICK_CATEGORIES, type PoiCategory } from "../lib/poiCategories";
+import { useDialog } from "../lib/useDialog";
 
 /** Map control under the categories button: centre the map on the device's position. */
 export function LocateButton() {
@@ -28,7 +29,7 @@ export function LocateButton() {
 /** Map control under "my location": opens the map layers popover (LayersPopover, rendered by App). */
 export function LayersButton() {
   const t = useT();
-  const open = useStore((s) => s.layersOpen);
+  const open = useStore((s) => s.mapPopover === "layers");
   return (
     <button
       type="button"
@@ -52,27 +53,28 @@ export function CategoryPicker() {
   const t = useT();
   const selected = useStore((s) => s.layers.poiCats);
   const setLayers = useStore((s) => s.setLayers);
-  const [open, setOpen] = useState(false);
+  // one of the map popovers (store.mapPopover): opening it closes the layers / nearby popover
+  const open = useStore((s) => s.mapPopover === "categories");
+  const setOpen = (v: boolean | ((o: boolean) => boolean)) => {
+    const s = useStore.getState();
+    const next = typeof v === "function" ? v(s.mapPopover === "categories") : v;
+    s.setMapPopover(next ? "categories" : s.mapPopover === "categories" ? null : s.mapPopover);
+  };
   const [query, setQuery] = useState("");
+
   const [sort, setSort] = useState<"groups" | "alpha">("groups");
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialog(dialogRef, () => setOpen(false), { active: open, initialFocus: inputRef });
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.setTimeout(() => inputRef.current?.focus(), 30);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
   const toggle = (id: string) => setLayers({ poiCats: selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id] });
@@ -107,7 +109,7 @@ export function CategoryPicker() {
       </button>
 
       {open && (
-        <div className="absolute top-0 end-12 w-[340px] max-w-[calc(100vw-80px)] popover rounded-[var(--radius-card)] p-3 flex flex-col gap-3 fade-in" role="dialog" aria-label={t("categoriesTitle")}>
+        <div ref={dialogRef} className="absolute top-0 end-12 w-[340px] max-w-[calc(100vw-80px)] popover rounded-[var(--radius-card)] p-3 flex flex-col gap-3 fade-in" role="dialog" aria-label={t("categoriesTitle")}>
           <div className="flex items-center justify-between">
             <h2 className="section-label m-0 p-0">{t("categoriesTitle")}</h2>
             <button className="btn btn-ghost btn-icon btn-sm -me-1 text-muted" onClick={() => setOpen(false)} aria-label={t("close")}>

@@ -1,8 +1,15 @@
 import { useCallback, useRef, useState } from "react";
 import type * as maplibregl from "maplibre-gl";
 import type { Point } from "geojson";
-import type { HoverTarget } from "../components/MapHoverCard";
-import { parseResult } from "./overlays/pois";
+import { placeHoverCard, type HoverTarget } from "../components/MapHoverCard";
+import { resultOf } from "./overlays/pois";
+import { useStore } from "../lib/store";
+
+/** A map tool takes the clicks (measure, draw). */
+export function toolActive(): boolean {
+  const s = useStore.getState();
+  return !!(s.measure || s.drawing);
+}
 
 /** Layers whose features open the hover card. */
 export const HOVER_LAYERS = ["poi-layer", "transit-stops"];
@@ -20,6 +27,7 @@ export function useHoverCard() {
   const hoverRef = useRef<HoverTarget | null>(null);
   hoverRef.current = hover;
   const timers = useRef<{ show?: ReturnType<typeof setTimeout>; hide?: ReturnType<typeof setTimeout> }>({});
+  const cardRef = useRef<HTMLDivElement | null>(null);
 
   /** Wire the map events (call once, when the map is created). `beforePin` runs before a click
    *  pins a card (closes other bubbles). */
@@ -36,7 +44,7 @@ export function useHoverCard() {
         color: stop ? undefined : (f.properties?.color as string | undefined),
         // the full search result of a POI marker: the place card needs its category (synagogue →
         // prayer times), opening hours and kosher flag
-        result: stop ? undefined : parseResult(f.properties?.json, String(f.properties?.label ?? "")),
+        result: stop ? undefined : resultOf(f.properties?.rid, String(f.properties?.label ?? "")),
         lonlat: [lon, lat],
         x: pt.x,
         y: pt.y,
@@ -69,7 +77,8 @@ export function useHoverCard() {
       });
       map.on("click", layer, (e) => {
         const f = e.features?.[0];
-        if (!f) return;
+        // measuring / drawing: a click is a vertex, not "open this marker"
+        if (!f || toolActive()) return;
         clearTimeout(timers.current.show);
         clearTimeout(timers.current.hide);
         beforePin();
@@ -87,8 +96,11 @@ export function useHoverCard() {
         setHover(null);
         return;
       }
+      // a pinned card follows its marker: moved straight in the DOM, no React render per frame
       const pt = map.project(h.lonlat);
-      setHover({ ...h, x: pt.x, y: pt.y });
+      h.x = pt.x;
+      h.y = pt.y;
+      if (cardRef.current) placeHoverCard(cardRef.current, pt.x, pt.y);
     });
   }, []);
 
@@ -99,6 +111,7 @@ export function useHoverCard() {
       if (!hoverRef.current?.pinned) timers.current.hide = setTimeout(() => setHover(null), HIDE_MS);
     },
     onClose: () => setHover(null),
+    elRef: cardRef,
   };
 
   return { hover, setHover, bind, cardHandlers };

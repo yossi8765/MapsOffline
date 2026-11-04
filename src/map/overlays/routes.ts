@@ -21,9 +21,10 @@ export function routeFeatures(routes: Route[], selectedId: string | null) {
       continue;
     }
     r.legs.forEach((leg, i) => {
+      const color = legColor(r, i);
       sel.push({
         type: "Feature",
-        properties: { id: r.id, leg: i, kind: leg.kind, color: legColor(r, i), walk: leg.kind === "walk" && r.mode === "transit" },
+        properties: { id: r.id, leg: i, kind: leg.kind, color, walk: leg.kind === "walk" && r.mode === "transit" },
         geometry: { type: "LineString", coordinates: leg.geometry },
       });
       if (leg.transit) {
@@ -32,7 +33,7 @@ export function routeFeatures(routes: Route[], selectedId: string | null) {
           const isEnd = j === 0 || j === ts.stops.length - 1;
           stops.push({
             type: "Feature",
-            properties: { name: s.name, end: isEnd, color: legColor(r, i) },
+            properties: { name: s.name, end: isEnd, color },
             geometry: { type: "Point", coordinates: [s.lon, s.lat] },
           });
         });

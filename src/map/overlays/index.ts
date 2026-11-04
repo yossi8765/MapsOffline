@@ -8,8 +8,10 @@ import * as myLocation from "./myLocation";
 import * as pois from "./pois";
 import * as routes from "./routes";
 import * as transitStops from "./transitStops";
+import * as tools from "./tools";
+import { cssVar } from "../colors";
 
-export { linePreview, myLocation, pois, routes, transitStops };
+export { linePreview, myLocation, pois, routes, transitStops, tools };
 export * as waypoints from "./waypoints";
 
 /**
@@ -22,6 +24,7 @@ export function addAll(map: maplibregl.Map, dark: boolean, onPoisReady: () => vo
   transitStops.add(map, firstSymbol, dark);
   routes.add(map, firstSymbol, dark);
   linePreview.add(map, firstSymbol, dark);
+  tools.addTools(map, firstSymbol, cssVar("--accent", "#1a66d9"));
   myLocation.add(map);
   void loadPoiIcons(map, dark).then(() => {
     if (!map.getStyle()) return;

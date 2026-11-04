@@ -946,6 +946,10 @@ export const apiX = {
 // ===== [F1] =====
 
 // ===== [F2] =====
+/** Text of a file dropped on the window (GPX / KML / GeoJSON import). NEEDS R1: command
+ *  `read_text_file(path) -> String`, limited to .gpx/.kml/.geojson/.json and a size cap. Until it
+ *  exists the drop handler falls back to the import dialog (file picker). */
+export const readTextFile = (path: string) => invoke<string>("read_text_file", { path });
 
 // ===== [R1] =====
 
