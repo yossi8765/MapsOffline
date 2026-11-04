@@ -88,6 +88,9 @@ pub struct MinyanTable {
     pub message: Option<String>,
     pub source: String,
     pub fetched: String,
+    /// fetched from Nedarim Plus just now (online), not from the weekly snapshot
+    #[serde(default)]
+    pub live: bool,
 }
 
 /// An upcoming prayer nearby (IPC `minyanim_next`).
@@ -478,6 +481,7 @@ pub fn table_for(paths: &DataPaths, lon: f64, lat: f64, poi_name: Option<&str>) 
         message: m.message.clone(),
         source: snap.source.clone(),
         fetched: snap.fetched.clone(),
+        live: false,
     }))
 }
 
@@ -531,6 +535,135 @@ fn next_from(snap: &Snapshot, at: [f64; 2], radius_m: f64, within: i64, wd: chro
     out
 }
 
+// ---------------------------------------------------------------- live (online)
+
+/// One request with a short timeout (the caller falls back to the snapshot on any error). The
+/// same public endpoint KioskLock's prayer-times add-on reads (`GetMosadMinyan&MosadId=`).
+fn live_json(params: &[(&str, String)]) -> anyhow::Result<Option<serde_json::Value>> {
+    let client = download::http_client()?;
+    let r = client.get(BASE).query(params).timeout(Duration::from_secs(8)).send()?;
+    if r.status().as_u16() == 418 {
+        bail!("{}", download::blocked_message(BASE));
+    }
+    let body = r.error_for_status()?.text()?;
+    let body = body.trim_start_matches('\u{feff}').trim_start();
+    Ok(if body.starts_with('{') { serde_json::from_str(body).ok() } else { None })
+}
+
+/// A row of `GetNearestMinyan` (prayers of the next 24 hours around a point).
+struct NearRow {
+    id: String,
+    name: Option<String>,
+    address: Option<String>,
+    loc: [f64; 2],
+    prayer: String,
+    time: String,
+    hall: Option<String>,
+}
+
+fn live_nearest(lon: f64, lat: f64, radius_km: f64) -> anyhow::Result<Vec<NearRow>> {
+    let v = live_json(&[("Action", "GetNearestMinyan".into()), ("lat", format!("{lat:.6}")), ("lng", format!("{lon:.6}")), ("radius", format!("{radius_km:.3}"))])?;
+    let mut out = Vec::new();
+    for r in v.as_ref().and_then(|v| v.get("data")).and_then(|d| d.as_array()).into_iter().flatten() {
+        let s = |k: &str| r.get(k).and_then(|x| x.as_str());
+        let id = s("M").unwrap_or("").trim().to_string();
+        let (Some(loc), Some(time)) = (s("W").and_then(parse_loc), norm_time(s("H"))) else { continue };
+        let prayer = clean(s("T"));
+        if id.is_empty() || prayer.is_empty() {
+            continue;
+        }
+        out.push(NearRow {
+            id,
+            name: clean_name(s("L")),
+            address: Some(clean(s("A"))).filter(|x| !x.is_empty()),
+            loc,
+            prayer,
+            time,
+            // in this answer C is the hall ("בית המדרש", "עזרת נשים")
+            hall: Some(clean(s("C"))).filter(|x| !x.is_empty()),
+        });
+    }
+    Ok(out)
+}
+
+/// The synagogue's current weekly timetable from Nedarim Plus. The synagogue is the one the
+/// snapshot matches here, else the one a live search around the point finds (same rule as
+/// [`table_for`]: within 60 m when the names agree, else the nearest within 25 m).
+pub fn table_live(paths: &DataPaths, lon: f64, lat: f64, poi_name: Option<&str>) -> anyhow::Result<Option<MinyanTable>> {
+    let at = [lon, lat];
+    let known = table_for(paths, lon, lat, poi_name).ok().flatten();
+    let (id, name, address, loc, d) = match known {
+        Some(t) => (t.mosad_id, t.name, t.address, [t.lon, t.lat], t.distance_m),
+        None => {
+            let mut best: Option<(f64, NearRow, f64)> = None;
+            for r in live_nearest(lon, lat, 0.1)? {
+                let d = dist_m(r.loc, at);
+                let ns = match (poi_name, r.name.as_deref()) {
+                    (Some(p), Some(n)) => name_score(p, n),
+                    _ => 0.0,
+                };
+                if d > 60.0 || (ns < 0.5 && d > 25.0) {
+                    continue;
+                }
+                let rank = d - ns * 40.0;
+                if best.as_ref().is_none_or(|b| rank < b.0) {
+                    best = Some((rank, r, d));
+                }
+            }
+            let Some((_, r, d)) = best else { return Ok(None) };
+            (r.id, r.name, r.address, r.loc, d.round())
+        }
+    };
+    let v = live_json(&[("Action", "GetMosadMinyan".into()), ("MosadId", id.clone())])?.ok_or_else(|| anyhow!("no timetable"))?;
+    let (minyanim, message) = parse_timetable(&v);
+    Ok(Some(MinyanTable {
+        mosad_id: id,
+        name,
+        address,
+        lon: loc[0],
+        lat: loc[1],
+        distance_m: d,
+        minyanim,
+        message,
+        source: SOURCE_HE.into(),
+        fetched: now_jerusalem().format("%Y-%m-%d %H:%M").to_string(),
+        live: true,
+    }))
+}
+
+/// Prayers starting within `within_min` minutes inside `radius_m`, live from Nedarim Plus.
+pub fn next_live(lon: f64, lat: f64, radius_m: f64, within_min: Option<i64>) -> anyhow::Result<Vec<NextMinyan>> {
+    let now = now_jerusalem();
+    let now_min = (now.hour() * 60 + now.minute()) as i64;
+    let within = within_min.unwrap_or(180);
+    let mut out: Vec<NextMinyan> = live_nearest(lon, lat, radius_m / 1000.0)?
+        .into_iter()
+        .filter_map(|r| {
+            let (h, m) = r.time.split_once(':')?;
+            let t = h.parse::<i64>().ok()? * 60 + m.parse::<i64>().ok()?;
+            // the answer covers the next 24 hours: an earlier clock time is tomorrow
+            let delta = if t >= now_min { t - now_min } else { t + 1440 - now_min };
+            let d = dist_m(r.loc, [lon, lat]);
+            (delta <= within && d <= radius_m).then(|| NextMinyan {
+                mosad_id: r.id,
+                name: r.name,
+                address: r.address,
+                lon: r.loc[0],
+                lat: r.loc[1],
+                distance_m: d.round(),
+                prayer: r.prayer,
+                time: r.time,
+                in_minutes: delta,
+                hall: r.hall,
+                note: None,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.in_minutes.cmp(&b.in_minutes).then(a.distance_m.total_cmp(&b.distance_m)));
+    out.truncate(40);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +686,19 @@ mod tests {
                 m("2", "אוהל יצחק", [35.24400, 31.84200], vec![("מנחה", "13:20", "אבגדהו")]),
             ],
         }
+    }
+
+    /// Live Nedarim Plus (network): `cargo test --lib live_lookup -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_lookup() {
+        let paths = DataPaths::new(std::env::temp_dir().join("mo-live-minyan-none"));
+        let t = table_live(&paths, 34.89827, 31.93375, Some("בית המדרש הגדול חניכי הישיבות")).unwrap().expect("found");
+        eprintln!("{:?} {} minyanim", t.name, t.minyanim.len());
+        assert!(t.live && !t.minyanim.is_empty());
+        let n = next_live(34.89827, 31.93375, 600.0, Some(1440)).unwrap();
+        eprintln!("next: {:?}", n.iter().take(3).map(|m| (&m.time, &m.prayer, &m.name)).collect::<Vec<_>>());
+        assert!(!n.is_empty());
     }
 
     #[test]

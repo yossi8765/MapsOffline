@@ -590,14 +590,46 @@ pub fn trails_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
 #[tauri::command]
 pub async fn minyanim_for(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, poi_name: Option<String>) -> R<Option<crate::data::minyanim::MinyanTable>> {
     let paths = state.paths();
-    tauri::async_runtime::spawn_blocking(move || crate::data::minyanim::table_for(&paths, lon, lat, poi_name.as_deref()).map_err(err)).await.map_err(err)?
+    let online = state.settings.read().routing_mode != "offline";
+    tauri::async_runtime::spawn_blocking(move || {
+        // online: the current timetable from Nedarim Plus; any failure -> the weekly snapshot
+        if online {
+            match crate::data::minyanim::table_live(&paths, lon, lat, poi_name.as_deref()) {
+                Ok(Some(t)) => return Ok(Some(t)),
+                Ok(None) => {}
+                Err(e) => log::info!("live minyanim failed, using the snapshot: {e:#}"),
+            }
+        }
+        match crate::data::minyanim::table_for(&paths, lon, lat, poi_name.as_deref()) {
+            Ok(t) => Ok(t),
+            Err(_) if online => Ok(None),
+            Err(e) => Err(err(e)),
+        }
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Prayers starting soon around a point (default: within 180 minutes), soonest first.
 #[tauri::command]
 pub async fn minyanim_next(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, radius_m: f64, within_min: Option<i64>) -> R<Vec<crate::data::minyanim::NextMinyan>> {
     let paths = state.paths();
-    tauri::async_runtime::spawn_blocking(move || crate::data::minyanim::next_near(&paths, lon, lat, radius_m, within_min).map_err(err)).await.map_err(err)?
+    let online = state.settings.read().routing_mode != "offline";
+    tauri::async_runtime::spawn_blocking(move || {
+        if online {
+            match crate::data::minyanim::next_live(lon, lat, radius_m, within_min) {
+                Ok(v) => return Ok(v),
+                Err(e) => log::info!("live minyanim failed, using the snapshot: {e:#}"),
+            }
+        }
+        match crate::data::minyanim::next_near(&paths, lon, lat, radius_m, within_min) {
+            Ok(v) => Ok(v),
+            Err(_) if online => Ok(Vec::new()),
+            Err(e) => Err(err(e)),
+        }
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Elevation in metres at each point (None outside the installed DEM), for route profiles.

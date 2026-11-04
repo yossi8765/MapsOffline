@@ -28,6 +28,7 @@ export function MinyanimCard({ lon, lat, name }: { lon: number; lat: number; nam
   const installed = useStore((s) => s.dataStatus?.minyanim?.present);
   const [table, setTable] = useState<MinyanTable | null>(null);
   const [next, setNext] = useState<NextMinyan[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const today = DAY_LETTERS[new Date().getDay()];
   const [tab, setTab] = useState(() => Math.max(0, TABS.findIndex((x) => x.days.includes(today))));
 
@@ -35,14 +36,17 @@ export function MinyanimCard({ lon, lat, name }: { lon: number; lat: number; nam
     let alive = true;
     setTable(null);
     setNext([]);
-    api.minyanimFor(lon, lat, name).then((v) => alive && setTable(v), () => undefined);
-    api.minyanimNext(lon, lat, 600, 120).then((v) => alive && setNext(v.slice(0, 5)), () => undefined);
+    setLoaded(false);
+    // online the backend asks Nedarim Plus live, offline (or when that fails) it reads the snapshot
+    const a = api.minyanimFor(lon, lat, name).then((v) => alive && setTable(v), () => undefined);
+    const b = api.minyanimNext(lon, lat, 600, 120).then((v) => alive && setNext(v.slice(0, 5)), () => undefined);
+    void Promise.all([a, b]).then(() => alive && setLoaded(true));
     return () => {
       alive = false;
     };
   }, [lon, lat, name]);
 
-  if (installed === false)
+  if (!table && next.length === 0 && loaded && installed === false)
     return (
       <div className="card p-3 flex flex-col gap-2">
         <div className="text-sm font-semibold">{t("minyanimTitle")}</div>
@@ -91,7 +95,7 @@ export function MinyanimCard({ lon, lat, name }: { lon: number; lat: number; nam
           )}
           {table.message && <p className="m-0 text-xs text-muted">{table.message}</p>}
           <p className="m-0 text-xs text-subtle">
-            {table.source} · {table.fetched}
+            {table.source} · {table.live ? `${t("minyanimLive")} ${table.fetched.slice(11)}` : table.fetched}
           </p>
         </div>
       )}

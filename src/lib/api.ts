@@ -317,8 +317,10 @@ export interface MinyanTable {
   minyanim: Minyan[];
   message?: string | null;
   source: string;
-  /** YYYY-MM-DD of the snapshot */
+  /** YYYY-MM-DD of the snapshot, or "YYYY-MM-DD HH:MM" when live */
   fetched: string;
+  /** fetched from Nedarim Plus just now (online) instead of the weekly snapshot */
+  live?: boolean;
 }
 /** minyanim_next: a prayer starting soon nearby. */
 export interface NextMinyan {
