@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as maplibregl from "maplibre-gl";
 import type { FeatureCollection } from "geojson";
-import { Database, Wifi } from "lucide-react";
+import { InfoBar } from "./InfoBar";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { buildStyle, firstSymbolLayer, MAX_BOUNDS, isMergedTiles, type FlavorName, type StyleOptions } from "../lib/mapStyle";
@@ -18,7 +18,7 @@ import { routeImage } from "../lib/mapImage";
 import { setPrintMapProvider } from "../lib/print";
 import { hexColor, mapColors } from "../map/colors";
 import { BUS_ICON, drawBusIcon, loadPoiIcons } from "../map/icons";
-import { addAll, linePreview as lineOverlay, myLocation as meOverlay, pois as poiOverlay, routes as routeOverlay, transitStops as stopsOverlay, tools, waypoints as wpOverlay } from "../map/overlays";
+import { addAll, favorites as favOverlay, linePreview as lineOverlay, myLocation as meOverlay, pois as poiOverlay, routes as routeOverlay, transitStops as stopsOverlay, tools, waypoints as wpOverlay } from "../map/overlays";
 import { bindTrailPopup } from "../map/popups";
 import { toolActive, useHoverCard } from "../map/useHoverCard";
 import { useMapInstance } from "../map/useMapInstance";
@@ -251,6 +251,16 @@ export function MapView() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linePreview, online, mapReady]);
+
+  // ---- favorite groups shown on the map (favorites panel eye toggle)
+  const favorites = useStore((s) => s.favorites);
+  const visibleFavGroups = useStore((s) => s.visibleFavoriteGroups);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    favOverlay.sync(map, favorites, visibleFavGroups);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [favorites, visibleFavGroups, mapReady, styleLoads]);
 
   // ---- my location marker
   const myLocation = useStore((s) => s.myLocation);
@@ -530,25 +540,33 @@ export function MapView() {
       {!navigating && !onlineMap && <MapCredits />}
       {noTiles && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="popover rounded-[var(--radius)] p-6 w-[340px] max-w-[calc(100%-32px)] text-center pointer-events-auto fade-in">
-            <div className="mx-auto mb-4 w-10 h-10 rounded-full bg-surface-2 text-muted flex items-center justify-center">
-              <Database size={18} strokeWidth={1.75} />
-            </div>
-            <div className="text-lg font-semibold mb-1">{t("noTilesTitle")}</div>
-            <div className="text-muted text-sm mb-5">{t("noTilesBody")}</div>
-            <button className="btn btn-primary" onClick={() => setPanel("data")}>
-              {t("goToData")}
-            </button>
-          </div>
+          <InfoBar
+            severity="info"
+            className="w-[360px] max-w-[calc(100%-32px)] pointer-events-auto fade-in shadow-[var(--shadow-16)] !bg-[var(--surface)]"
+            title={t("noTilesTitle")}
+            action={
+              <button className="btn btn-primary btn-sm" onClick={() => setPanel("data")}>
+                {t("goToData")}
+              </button>
+            }
+          >
+            {t("noTilesBody")}
+          </InfoBar>
         </div>
       )}
       {onlineMap && (
-        <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 popover rounded-[var(--radius)] ps-3 pe-1.5 h-9 flex items-center gap-2 text-xs no-print fade-in">
-          <Wifi size={14} className="text-accent shrink-0" />
-          <span>{t("onlineMapBanner")}</span>
-          <button className="btn btn-primary btn-sm !h-6 !text-[12px] !px-2.5" onClick={() => setPanel("data")}>
-            {t("onlineMapDownload")}
-          </button>
+        <div className="absolute bottom-10 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 w-[420px] max-w-[calc(100%-32px)] no-print fade-in">
+          <InfoBar
+            severity="info"
+            className="shadow-[var(--shadow-8)] !bg-[var(--surface)]"
+            action={
+              <button className="btn btn-primary btn-sm" onClick={() => setPanel("data")}>
+                {t("onlineMapDownload")}
+              </button>
+            }
+          >
+            {t("onlineMapBanner")}
+          </InfoBar>
         </div>
       )}
       {hover && <MapHoverCard target={hover} {...cardHandlers} />}

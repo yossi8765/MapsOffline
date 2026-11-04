@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Check, Download, Loader2, MapPin, Pentagon, Spline, Square, Type, Undo2, X } from "lucide-react";
+import { Icon } from "./Icon";
 import clsx from "clsx";
 import { api } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -76,16 +77,16 @@ export function MeasureBar() {
         )}
         <span className="flex-1" />
         <button className={clsx("btn btn-ghost btn-sm", measure.area && "text-accent")} aria-pressed={measure.area} onClick={() => st.setMeasureArea(!measure.area)} title={t("measureArea")}>
-          <Pentagon size={15} strokeWidth={1.75} /> {t("measureArea")}
+          <Icon as={Pentagon} size={15} /> {t("measureArea")}
         </button>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.undoMeasurePoint()} disabled={!measure.points.length} aria-label={t("measureUndo")} title={`${t("measureUndo")} (Backspace)`}>
-          <Undo2 size={15} strokeWidth={1.75} />
+          <Icon as={Undo2} size={15} />
         </button>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => void exportGpx()} disabled={measure.points.length < 2} aria-label={t("measureExport")} title={t("measureExport")}>
-          <Download size={15} strokeWidth={1.75} />
+          <Icon as={Download} size={15} />
         </button>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.stopMeasure()} aria-label={t("close")} title={`${t("close")} (Esc)`}>
-          <X size={15} strokeWidth={1.75} />
+          <Icon as={X} size={15} />
         </button>
       </div>
       <div className="text-xs text-muted">{t("measureHint")}</div>
@@ -95,10 +96,10 @@ export function MeasureBar() {
 
 // ---------------------------------------------------------------- drawing
 const MODES: { id: DrawMode; icon: React.ReactNode; key: "drawPoint" | "drawLine" | "drawPolygon" | "drawText" }[] = [
-  { id: "point", icon: <MapPin size={15} strokeWidth={1.75} />, key: "drawPoint" },
-  { id: "line", icon: <Spline size={15} strokeWidth={1.75} />, key: "drawLine" },
-  { id: "polygon", icon: <Square size={15} strokeWidth={1.75} />, key: "drawPolygon" },
-  { id: "text", icon: <Type size={15} strokeWidth={1.75} />, key: "drawText" },
+  { id: "point", icon: <Icon as={MapPin} size={15} />, key: "drawPoint" },
+  { id: "line", icon: <Icon as={Spline} size={15} />, key: "drawLine" },
+  { id: "polygon", icon: <Icon as={Square} size={15} />, key: "drawPolygon" },
+  { id: "text", icon: <Icon as={Type} size={15} />, key: "drawText" },
 ];
 
 export function DrawToolbar() {
@@ -140,14 +141,14 @@ export function DrawToolbar() {
         <span className="flex-1" />
         {canFinish && (
           <button className="btn btn-sm" onClick={() => st.finishDrawFeature()} title={`${t("drawFinishShape")} (Enter)`}>
-            <Check size={14} /> {t("drawFinishShape")}
+            <Icon as={Check} size={14} /> {t("drawFinishShape")}
           </button>
         )}
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.undoDrawPoint()} aria-label={t("measureUndo")} title={`${t("measureUndo")} (Backspace)`}>
-          <Undo2 size={15} strokeWidth={1.75} />
+          <Icon as={Undo2} size={15} />
         </button>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.cancelDrawing()} aria-label={t("cancel")} title={`${t("cancel")} (Esc)`}>
-          <X size={15} strokeWidth={1.75} />
+          <Icon as={X} size={15} />
         </button>
       </div>
       {d.mode === "text" && (
@@ -185,9 +186,9 @@ export function IsochroneLegend() {
           ))}
         </div>
         <span className="flex-1" />
-        {iso.loading && <Loader2 size={15} className="animate-spin text-muted" aria-label={t("loading")} />}
+        {iso.loading && <Icon as={Loader2} size={15} className="animate-spin text-muted" aria-label={t("loading")} />}
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.clearIsochrone()} aria-label={t("close")} title={`${t("close")} (Esc)`}>
-          <X size={15} strokeWidth={1.75} />
+          <Icon as={X} size={15} />
         </button>
       </div>
       <div className="flex items-center gap-3 text-xs">
@@ -235,7 +236,7 @@ export function TrackRecorder() {
         </span>
       )}
       <button className="btn btn-sm btn-danger" disabled={track.starting} onClick={() => useStore.getState().toggleTrackRecording()}>
-        {track.starting ? <Loader2 size={14} className="animate-spin" /> : <Square size={12} fill="currentColor" />} {t("trackStop")}
+        {track.starting ? <Icon as={Loader2} size={14} className="animate-spin" /> : <Icon as={Square} size={12} fill="currentColor" />} {t("trackStop")}
       </button>
     </div>
   );

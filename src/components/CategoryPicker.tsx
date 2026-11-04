@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Layers, Loader2, LocateFixed, Search, SlidersHorizontal, X } from "lucide-react";
+import { Icon } from "./Icon";
 import clsx from "clsx";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -21,7 +22,7 @@ export function LocateButton() {
       disabled={locating}
       onClick={() => void useStore.getState().locate(true)}
     >
-      {locating ? <Loader2 size={18} strokeWidth={1.75} className="animate-spin" /> : <LocateFixed size={18} strokeWidth={1.75} />}
+      {locating ? <Icon as={Loader2} size={18} className="animate-spin" /> : <Icon as={LocateFixed} size={18} />}
     </button>
   );
 }
@@ -40,7 +41,7 @@ export function LayersButton() {
       aria-expanded={open}
       onClick={() => useStore.getState().toggleLayers()}
     >
-      <Layers size={18} strokeWidth={1.75} />
+      <Icon as={Layers} size={18} />
     </button>
   );
 }
@@ -89,7 +90,7 @@ export function CategoryPicker() {
       <button key={c.id} type="button" className="choice" aria-pressed={on} onClick={() => toggle(c.id)}>
         <span className="cat-glyph shrink-0" aria-hidden dangerouslySetInnerHTML={{ __html: c.svg }} />
         {labelOf(c)}
-        {on && <Check size={12} strokeWidth={2.5} />}
+        {on && <Icon as={Check} size={12} strokeWidth={2.5} />}
       </button>
     );
   };
@@ -104,7 +105,7 @@ export function CategoryPicker() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <SlidersHorizontal size={18} strokeWidth={1.75} />
+        <Icon as={SlidersHorizontal} size={18} />
         {selected.length > 0 && <span className="absolute -top-1 -end-1 min-w-4 h-4 px-1 rounded-full bg-accent text-white text-[10px] font-semibold num flex items-center justify-center">{selected.length}</span>}
       </button>
 
@@ -113,12 +114,12 @@ export function CategoryPicker() {
           <div className="flex items-center justify-between">
             <h2 className="section-label m-0 p-0">{t("categoriesTitle")}</h2>
             <button className="btn btn-ghost btn-icon btn-sm -me-1 text-muted" onClick={() => setOpen(false)} aria-label={t("close")}>
-              <X size={15} />
+              <Icon as={X} size={15} />
             </button>
           </div>
           <div className="flex flex-wrap gap-1.5">{QUICK_CATEGORIES.map((id) => POI_CATEGORIES.find((c) => c.id === id)).filter(Boolean).map((c) => chip(c!))}</div>
           <div className="relative">
-            <Search size={15} strokeWidth={1.75} className="absolute start-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <Icon as={Search} size={15} className="absolute start-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input ref={inputRef} className="input h-9 ps-9" placeholder={t("categoriesSearch")} value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           <div className="flex items-center justify-between gap-2">

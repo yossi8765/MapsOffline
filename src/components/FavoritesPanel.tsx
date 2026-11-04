@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bus, ChevronDown, Download, Flag, Loader2, Navigation, Pencil, Plus, Route as RouteIcon, StickyNote, Trash2, Upload } from "lucide-react";
+import { Bus, ChevronDown, Download, Eye, EyeOff, Flag, Loader2, Navigation, Pencil, Plus, Route as RouteIcon, StickyNote, Trash2, Upload } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import { Icon } from "./Icon";
@@ -133,6 +133,8 @@ export function FavoritesPanel() {
   const [note, setNote] = useState("");
   const [pick, setPick] = useState<Pick | null>(null);
   const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const visibleGroups = useStore((s) => s.visibleFavoriteGroups);
+  const toggleGroupOnMap = useStore((s) => s.toggleFavoriteGroupOnMap);
   // line picker
   const [agencies, setAgencies] = useState<string[] | null>(null);
   const [agency, setAgency] = useState("");
@@ -614,14 +616,26 @@ export function FavoritesPanel() {
           <button className="choice" aria-pressed={groupFilter === null} onClick={() => setGroupFilter(null)}>
             {t("nearbyAll")}
           </button>
-          {groups.map((g) => (
-            <button key={g} className="choice" aria-pressed={groupFilter === g} onClick={() => setGroupFilter(groupFilter === g ? null : g)}>
-              {g}
-            </button>
-          ))}
-          <button className="choice" aria-pressed={groupFilter === ""} onClick={() => setGroupFilter(groupFilter === "" ? null : "")}>
-            {t("favNoGroup")}
-          </button>
+          {[...groups, ""].map((g) => {
+            const onMap = visibleGroups.includes(g);
+            const label = g || t("favNoGroup");
+            return (
+              <span key={g || "__none"} className="inline-flex items-center gap-0.5">
+                <button className="choice" aria-pressed={groupFilter === g} onClick={() => setGroupFilter(groupFilter === g ? null : g)}>
+                  {label}
+                </button>
+                <button
+                  className="btn btn-ghost btn-icon btn-sm"
+                  aria-pressed={onMap}
+                  aria-label={`${onMap ? t("favGroupHideOnMap") : t("favGroupShowOnMap")}: ${label}`}
+                  title={onMap ? t("favGroupHideOnMap") : t("favGroupShowOnMap")}
+                  onClick={() => toggleGroupOnMap(g)}
+                >
+                  <Icon as={onMap ? Eye : EyeOff} size={14} className={onMap ? "text-accent" : "text-muted"} />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
       {favorites.length === 0 && !adding && (

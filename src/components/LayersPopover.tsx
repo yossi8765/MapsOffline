@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
+import { Icon } from "./Icon";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { useDialog } from "../lib/useDialog";
@@ -38,7 +39,7 @@ export function LayersPopover() {
       <div className="flex items-center justify-between ps-4 pe-2 h-12 shrink-0">
         <h2 className="text-base font-semibold m-0">{t("layersButton")}</h2>
         <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")} title={t("close")}>
-          <X size={16} />
+          <Icon as={X} size={16} />
         </button>
       </div>
       <div className="flex-1 min-h-0 scroll-y">

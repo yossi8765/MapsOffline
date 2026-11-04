@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import * as maplibregl from "maplibre-gl";
 import { Columns2, GripVertical, SplitSquareHorizontal, X } from "lucide-react";
+import { Icon } from "./Icon";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { buildStyle, type StyleOptions } from "../lib/mapStyle";
@@ -158,7 +159,7 @@ export function CompareView({ mainRef }: { mainRef: RefObject<maplibregl.Map | n
               if (e.key === "ArrowRight") setPos((p) => Math.min(0.95, p + 0.05));
             }}
           >
-            <GripVertical size={16} />
+            <Icon as={GripVertical} size={16} />
           </button>
         </div>
       ) : (
@@ -169,12 +170,12 @@ export function CompareView({ mainRef }: { mainRef: RefObject<maplibregl.Map | n
         <div className="seg seg-sm" role="group" aria-label={t("compareMode")}>
           <button aria-pressed={mode === "split"} onClick={() => st.setCompare("split")} title={t("compareSplit")}>
             <span className="flex items-center gap-1">
-              <Columns2 size={14} /> {t("compareSplit")}
+              <Icon as={Columns2} size={14} /> {t("compareSplit")}
             </span>
           </button>
           <button aria-pressed={mode === "swipe"} onClick={() => st.setCompare("swipe")} title={t("compareSwipe")}>
             <span className="flex items-center gap-1">
-              <SplitSquareHorizontal size={14} /> {t("compareSwipe")}
+              <Icon as={SplitSquareHorizontal} size={14} /> {t("compareSwipe")}
             </span>
           </button>
         </div>
@@ -186,7 +187,7 @@ export function CompareView({ mainRef }: { mainRef: RefObject<maplibregl.Map | n
           ))}
         </select>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={() => st.setCompare("off")} aria-label={t("close")} title={`${t("close")} (Esc)`}>
-          <X size={15} />
+          <Icon as={X} size={15} />
         </button>
       </div>
     </>

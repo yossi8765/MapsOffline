@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Printer, X } from "lucide-react";
+import { Icon } from "./Icon";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDateTime, fmtDistance, fmtDuration, fmtTime, routeArrow } from "../lib/format";
@@ -73,7 +74,7 @@ function PrintOptionsDialog() {
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold m-0">{t("printOptionsTitle")}</h2>
           <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => done(null)} aria-label={t("close")}>
-            <X size={16} />
+            <Icon as={X} size={16} />
           </button>
         </div>
         <div className="flex flex-col gap-1.5">
@@ -98,7 +99,7 @@ function PrintOptionsDialog() {
             {t("cancel")}
           </button>
           <button ref={okRef} className="btn btn-primary btn-sm" onClick={() => done(opts)}>
-            <Printer size={14} /> {t("print")}
+            <Icon as={Printer} size={14} /> {t("print")}
           </button>
         </div>
       </div>

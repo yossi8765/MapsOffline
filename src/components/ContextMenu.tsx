@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Ban, Copy, ExternalLink, FileUp, Flag, Info, MapPin, Navigation, Radar, Ruler, Star, Timer } from "lucide-react";
+import { Icon } from "./Icon";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { findFavorite, useStore, type ContextMenuState } from "../lib/store";
@@ -23,6 +24,8 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
   const isoMode: IsochroneMode = routeMode === "foot" || routeMode === "bike" || routeMode === "transit" || routeMode === "wheelchair" ? routeMode : "car";
 
   useEffect(() => {
+    // the focus goes back where it was (map canvas, a button) when the menu closes
+    const previous = document.activeElement as HTMLElement | null;
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
@@ -37,6 +40,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey, true);
+      if (previous && typeof previous.focus === "function" && document.contains(previous)) previous.focus();
     };
   }, []);
 
@@ -60,7 +64,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
   const items = [
     {
       group: 0,
-      icon: <Navigation size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Navigation} size={16} />,
       label: t("ctxFromHere"),
       run: async () => {
         const label = await resolveLabel();
@@ -70,7 +74,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 0,
-      icon: <Flag size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Flag} size={16} />,
       label: t("ctxToHere"),
       run: async () => {
         const label = await resolveLabel();
@@ -80,7 +84,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 0,
-      icon: <MapPin size={16} strokeWidth={1.75} />,
+      icon: <Icon as={MapPin} size={16} />,
       label: t("ctxAddVia"),
       run: async () => {
         const label = await resolveLabel();
@@ -90,7 +94,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 1,
-      icon: <Info size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Info} size={16} />,
       label: t("ctxWhatHere"),
       run: async () => {
         // the place card of what is here (nearest address / place), at the clicked point
@@ -107,25 +111,25 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 1,
-      icon: <Radar size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Radar} size={16} />,
       label: t("ctxNearby"),
       run: async () => useStore.getState().showNearby(state.lon, state.lat),
     },
     {
       group: 2,
-      icon: <Ruler size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Ruler} size={16} />,
       label: t("ctxMeasure"),
       run: async () => useStore.getState().startMeasure([state.lon, state.lat]),
     },
     {
       group: 2,
-      icon: <Timer size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Timer} size={16} />,
       label: t("ctxIsochrone"),
       run: async () => useStore.getState().showIsochrone([state.lon, state.lat], isoMode),
     },
     {
       group: 2,
-      icon: <Ban size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Ban} size={16} />,
       label: t("ctxAvoidArea"),
       run: async () => {
         const s = useStore.getState();
@@ -135,13 +139,13 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 2,
-      icon: <FileUp size={16} strokeWidth={1.75} />,
+      icon: <Icon as={FileUp} size={16} />,
       label: t("ctxImport"),
       run: async () => useStore.getState().openImport(),
     },
     {
       group: 3,
-      icon: <Copy size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Copy} size={16} />,
       label: t("ctxCopyCoords"),
       run: async () => {
         if (await copyText(coordText)) useStore.getState().toast("success", t("copied"));
@@ -151,7 +155,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
       ? [
           {
             group: 3,
-            icon: <ExternalLink size={16} strokeWidth={1.75} />,
+            icon: <Icon as={ExternalLink} size={16} />,
             label: t("ctxOpenGoogle"),
       run: async () => {
         // Google's universal "search" URL centres the map on the exact coordinate with a pin
@@ -167,7 +171,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
       : []),
     {
       group: 3,
-      icon: <Star size={16} strokeWidth={1.75} />,
+      icon: <Icon as={Star} size={16} />,
       label: t("ctxAddFavorite"),
       run: async () => {
         // through toggleFavorite: no "added" toast for a spot that is already saved (5.61)
