@@ -13,6 +13,7 @@ fn req(from: [f64; 2], to: [f64; 2], mode: Mode, alternatives: u32) -> RouteRequ
         time: TimeSpec::default(),
         avoid: Avoid::default(),
         alternatives,
+        ..Default::default()
     }
 }
 

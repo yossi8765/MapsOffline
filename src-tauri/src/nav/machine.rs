@@ -8,8 +8,8 @@
 //! that our engines do not produce (they would have to be synthesised anyway). The parts we need
 //! – snapping, step advance, deviation and announcement timing – fit in this file.
 
-use crate::geo::{bearing_deg, haversine_m};
-use crate::types::{LonLat, Maneuver, Route};
+use crate::geo::{bearing_deg, haversine_m, local_proj};
+use crate::types::{Lane, LonLat, Maneuver, Route};
 
 /// Metres from the route before a fix counts as "off the route".
 pub const OFF_ROUTE_M: f64 = 40.0;
@@ -17,6 +17,17 @@ pub const OFF_ROUTE_M: f64 = 40.0;
 pub const OFF_ROUTE_FIXES: u32 = 3;
 /// Distance to the end of the route that counts as arrived.
 pub const ARRIVE_M: f64 = 25.0;
+/// Fixes less accurate than this (m) come from Wi-Fi / cell positioning: "approximate".
+pub const APPROXIMATE_M: f64 = 50.0;
+/// Speed cameras are announced this far ahead (m).
+pub const CAMERA_WARN_M: f64 = 400.0;
+pub const CAMERA_SHOW_M: f64 = 1_500.0;
+
+/// Off-route threshold for a fix of the given accuracy: never below [`OFF_ROUTE_M`], wider for
+/// coarse positions (a laptop without GPS must not reroute every few seconds).
+pub fn off_route_threshold(accuracy_m: Option<f64>) -> f64 {
+    accuracy_m.map_or(OFF_ROUTE_M, |a| (a * 1.5).clamp(OFF_ROUTE_M, 400.0))
+}
 
 /// One maneuver on the flattened route.
 #[derive(Debug, Clone)]
@@ -30,6 +41,10 @@ pub struct NavStep {
     pub lead_len_m: f64,
     pub lead_sec: f64,
     pub leg: usize,
+    /// posted limit on the stretch after this maneuver
+    pub speed_limit_kmh: Option<u32>,
+    /// lanes before this maneuver
+    pub lanes: Vec<Lane>,
 }
 
 /// The active route, flattened over its legs.
@@ -44,6 +59,11 @@ pub struct NavRoute {
     pub steps: Vec<NavStep>,
     pub total_m: f64,
     pub total_sec: f64,
+    /// Seconds from the start to each point (step durations spread over their geometry), so the
+    /// remaining time follows the real speeds of the remaining stretch, not the average.
+    pub cum_sec: Vec<f64>,
+    /// Distance along the route of each speed camera on it.
+    pub cameras: Vec<f64>,
 }
 
 impl NavRoute {
@@ -81,8 +101,11 @@ impl NavRoute {
         let total_m = d;
         let mut steps: Vec<NavStep> = Vec::new();
         let mut prev: Option<&crate::types::Step> = None;
+        // (point index, duration) of each step for the time profile
+        let mut timing: Vec<(usize, f64)> = Vec::new();
         for (li, idx, s) in steps_raw {
             let at_m = cum.get(idx).copied().unwrap_or(total_m);
+            timing.push((idx, s.duration_sec));
             steps.push(NavStep {
                 instruction: s.instruction.clone(),
                 maneuver: s.maneuver,
@@ -91,9 +114,13 @@ impl NavRoute {
                 lead_len_m: prev.map_or(0.0, |p| p.distance_m),
                 lead_sec: prev.map_or(0.0, |p| p.duration_sec),
                 leg: li,
+                speed_limit_kmh: s.speed_limit_kmh,
+                lanes: s.lanes.clone(),
             });
             prev = Some(s);
         }
+        let total_sec = r.duration_sec.max(1.0);
+        let cum_sec = time_profile(&cum, &timing, total_sec);
         // routes without steps (some online answers): a single arrive step
         if steps.iter().all(|s| s.maneuver != Maneuver::Arrive) {
             steps.push(NavStep {
@@ -104,10 +131,89 @@ impl NavRoute {
                 lead_len_m: prev.map_or(total_m, |p| p.distance_m),
                 lead_sec: prev.map_or(r.duration_sec, |p| p.duration_sec),
                 leg: r.legs.len().saturating_sub(1),
+                speed_limit_kmh: None,
+                lanes: Vec::new(),
             });
         }
-        Self { route_id: r.id.clone(), pts, cum, seg_leg, steps, total_m, total_sec: r.duration_sec.max(1.0) }
+        Self { route_id: r.id.clone(), pts, cum, seg_leg, steps, total_m, total_sec, cum_sec, cameras: Vec::new() }
     }
+
+    /// Seconds from the start at distance `d` along the route.
+    pub fn sec_at(&self, d: f64) -> f64 {
+        let n = self.cum.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let i = self.cum.partition_point(|&c| c <= d);
+        if i == 0 {
+            return 0.0;
+        }
+        if i >= n {
+            return self.cum_sec[n - 1];
+        }
+        let (c0, c1) = (self.cum[i - 1], self.cum[i]);
+        let t = if c1 > c0 { (d - c0) / (c1 - c0) } else { 0.0 };
+        self.cum_sec[i - 1] + (self.cum_sec[i] - self.cum_sec[i - 1]) * t
+    }
+
+    /// Place speed cameras (positions) that lie on the route (≤ 30 m from it).
+    pub fn set_cameras(&mut self, cams: &[LonLat]) {
+        let mut out = Vec::new();
+        for &c in cams {
+            let s = snap(self, c, None, 0);
+            if s.dist_m <= 30.0 {
+                out.push(s.along_m);
+            }
+        }
+        out.sort_by(|a, b| a.total_cmp(b));
+        out.dedup_by(|a, b| (*a - *b).abs() < 20.0);
+        self.cameras = out;
+    }
+}
+
+/// Cumulative seconds per point: each step's duration spread over its points by distance;
+/// stretches without step information get the route's average pace. Scaled to `total_sec`.
+fn time_profile(cum: &[f64], timing: &[(usize, f64)], total_sec: f64) -> Vec<f64> {
+    let n = cum.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let total_m = cum[n - 1].max(1e-6);
+    let mut out = vec![f64::NAN; n];
+    out[0] = 0.0;
+    let mut k = 0;
+    while k < timing.len() {
+        let (a, dur) = timing[k];
+        let b = timing.get(k + 1).map_or(n - 1, |t| t.0).min(n - 1);
+        if b > a && a < n {
+            let (d0, d1) = (cum[a], cum[b]);
+            let t0 = if out[a].is_finite() { out[a] } else { total_sec * d0 / total_m };
+            for i in a..=b {
+                let f = if d1 > d0 { (cum[i] - d0) / (d1 - d0) } else { 1.0 };
+                out[i] = t0 + dur * f;
+            }
+        }
+        k += 1;
+    }
+    // gaps: average pace
+    for i in 0..n {
+        if !out[i].is_finite() {
+            out[i] = total_sec * cum[i] / total_m;
+        }
+    }
+    for i in 1..n {
+        if out[i] < out[i - 1] {
+            out[i] = out[i - 1];
+        }
+    }
+    let last = out[n - 1];
+    if last > 0.0 {
+        let k = total_sec / last;
+        for v in &mut out {
+            *v *= k;
+        }
+    }
+    out
 }
 
 /// Where a fix lies on the route.
@@ -119,17 +225,16 @@ pub struct Snap {
     pub point: LonLat,
 }
 
-/// Local equirectangular projection around `o` (metres).
-fn xy(o: LonLat, p: LonLat) -> (f64, f64) {
-    let k = 111_320.0;
-    ((p[0] - o[0]) * k * o[1].to_radians().cos(), (p[1] - o[1]) * k)
-}
-
 /// Nearest point of the route to `p`. Searches forward from the last snapped segment first (a
 /// vehicle rarely jumps back), and the whole route when that window is far off. A heading that
 /// disagrees with a segment by more than 100° makes that segment 25 m "further" (parallel
 /// carriageways, loops).
 pub fn snap(route: &NavRoute, p: LonLat, heading: Option<f64>, last_seg: usize) -> Snap {
+    snap_within(route, p, heading, last_seg, OFF_ROUTE_M)
+}
+
+/// [`snap`] that keeps the forward window for fixes up to `max_window_m` off the route.
+pub fn snap_within(route: &NavRoute, p: LonLat, heading: Option<f64>, last_seg: usize, max_window_m: f64) -> Snap {
     let n = route.pts.len();
     if n < 2 {
         let q = route.pts.first().copied().unwrap_or(p);
@@ -137,8 +242,8 @@ pub fn snap(route: &NavRoute, p: LonLat, heading: Option<f64>, last_seg: usize) 
     }
     let eval = |i: usize| -> (f64, Snap) {
         let (a, b) = (route.pts[i], route.pts[i + 1]);
-        let (bx, by) = xy(a, b);
-        let (px, py) = xy(a, p);
+        let (bx, by) = local_proj(a, b);
+        let (px, py) = local_proj(a, p);
         let len2 = bx * bx + by * by;
         let t = if len2 > 0.0 { ((px * bx + py * by) / len2).clamp(0.0, 1.0) } else { 0.0 };
         let q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
@@ -161,7 +266,7 @@ pub fn snap(route: &NavRoute, p: LonLat, heading: Option<f64>, last_seg: usize) 
     let lo = last_seg.saturating_sub(3);
     let window = best_in(lo, last_seg + 400);
     match window {
-        Some((score, s)) if score <= OFF_ROUTE_M => s,
+        Some((score, s)) if score <= OFF_ROUTE_M.max(max_window_m) => s,
         _ => {
             let all = best_in(0, n - 1).map(|x| x.1);
             all.unwrap_or(Snap { seg: 0, along_m: 0.0, dist_m: haversine_m(p, route.pts[0]), point: route.pts[0] })
@@ -177,6 +282,8 @@ pub struct Fix {
     /// Degrees from north, when the source knows it (moving).
     pub heading: Option<f64>,
     pub speed_mps: Option<f64>,
+    /// Horizontal accuracy (m), when the source reports it.
+    pub accuracy_m: Option<f64>,
 }
 
 /// What the UI shows after each fix (event "nav-update").
@@ -207,6 +314,21 @@ pub struct NavUpdate {
     pub arrived: bool,
     /// Text spoken for this fix, if any (the backend speaks it when voice is on).
     pub speech: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_kmh: Option<f64>,
+    /// posted limit on the current stretch
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_limit_kmh: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accuracy_m: Option<f64>,
+    /// coarse position (Wi-Fi / cell): off-route detection is relaxed
+    pub approximate: bool,
+    /// next speed camera on the route, metres ahead (within 1.5 km)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_ahead_m: Option<f64>,
+    /// lanes before the next maneuver
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lanes: Vec<Lane>,
 }
 
 /// Session state between fixes.
@@ -223,11 +345,13 @@ pub struct Navigator {
     /// Last sentence and where it was said: two consecutive steps with the same text (a road
     /// split into pieces) must not repeat it.
     last_speech: Option<(String, f64)>,
+    /// cameras (index into `route.cameras`) already announced
+    cameras_said: Vec<usize>,
 }
 
 impl Navigator {
     pub fn new(route: NavRoute) -> Self {
-        Self { route, last_seg: 0, off_count: 0, reroute_sent: false, arrived: false, announced: Vec::new(), started_announce: false, last_speech: None }
+        Self { route, last_seg: 0, off_count: 0, reroute_sent: false, arrived: false, announced: Vec::new(), started_announce: false, last_speech: None, cameras_said: Vec::new() }
     }
 
     /// Thresholds before a maneuver (metres): longer on fast roads. "Continue straight" is said
@@ -247,8 +371,10 @@ impl Navigator {
         let r = &self.route;
         let p = [fix.lon, fix.lat];
         let heading = fix.heading.filter(|_| fix.speed_mps.is_none_or(|v| v > 2.0));
-        let s = snap(r, p, heading, self.last_seg);
-        let off = s.dist_m > OFF_ROUTE_M;
+        let threshold = off_route_threshold(fix.accuracy_m);
+        let approximate = fix.accuracy_m.is_some_and(|a| a > APPROXIMATE_M);
+        let s = snap_within(r, p, heading, self.last_seg, threshold);
+        let off = s.dist_m > threshold;
         if off {
             self.off_count += 1;
         } else {
@@ -272,7 +398,7 @@ impl Navigator {
         let st = &r.steps[idx];
         let dist = (st.at_m - along).max(0.0);
         let next = r.steps.get(idx + 1);
-        let remaining_sec = r.total_sec * if r.total_m > 0.0 { remaining_m / r.total_m } else { 0.0 };
+        let remaining_sec = (r.total_sec - r.sec_at(along)).max(0.0);
         let eta = now + chrono::Duration::seconds(remaining_sec.round() as i64);
         let seg = s.seg.min(r.pts.len().saturating_sub(2));
         let bearing = if r.pts.len() >= 2 { bearing_deg(r.pts[seg], r.pts[seg + 1]) } else { 0.0 };
@@ -315,6 +441,19 @@ impl Navigator {
             }
         }
 
+        // speed cameras: shown within 1.5 km, said once at ~400 m
+        let cam = r.cameras.iter().enumerate().find(|(_, &c)| c >= along - 5.0 && c - along <= CAMERA_SHOW_M).map(|(i, &c)| (i, (c - along).max(0.0)));
+        if let Some((ci, d)) = cam {
+            if d <= CAMERA_WARN_M && !self.cameras_said.contains(&ci) && !off_route && !self.arrived {
+                self.cameras_said.push(ci);
+                let warn = format!("מצלמת מהירות בעוד {}", say_distance(d));
+                speech = Some(match speech {
+                    Some(t) => format!("{t}. {warn}"),
+                    None => warn,
+                });
+            }
+        }
+
         if let Some(text) = &speech {
             let repeat = self.last_speech.as_ref().is_some_and(|(t, at)| t == text && along - at < 300.0);
             if repeat && !reroute_needed {
@@ -346,6 +485,13 @@ impl Navigator {
             reroute_needed,
             arrived: self.arrived,
             speech,
+            speed_kmh: fix.speed_mps.filter(|v| v.is_finite() && *v >= 0.0).map(|v| (v * 3.6 * 10.0).round() / 10.0),
+            // the stretch being driven belongs to the step before the next maneuver
+            speed_limit_kmh: idx.checked_sub(1).and_then(|k| r.steps.get(k)).and_then(|x| x.speed_limit_kmh),
+            accuracy_m: fix.accuracy_m,
+            approximate,
+            camera_ahead_m: cam.map(|c| c.1.round()),
+            lanes: st.lanes.clone(),
         }
     }
 }
@@ -394,7 +540,7 @@ mod tests {
     use crate::types::{Leg, LegKind, Mode, Step};
 
     fn step(instr: &str, m: Maneuver, start: usize, dist: f64, sec: f64) -> Step {
-        Step { instruction: instr.into(), maneuver: m, roundabout_exit: None, street: None, distance_m: dist, duration_sec: sec, geometry_start: start }
+        Step::basic(instr.into(), m, None, None, dist, sec, start)
     }
 
     /// An L-shaped city route: 1 km east, then 600 m north.
@@ -429,7 +575,7 @@ mod tests {
         let mut last = None;
         while d <= nr.total_m + 10.0 {
             let (p, b) = point_at(&nr, d);
-            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(14.0) }, now());
+            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(14.0), accuracy_m: None }, now());
             assert!(!u.off_route);
             if let Some(s) = &u.speech {
                 spoken.push((d.round(), s.clone()));
@@ -457,13 +603,13 @@ mod tests {
         let nr = NavRoute::from_route(&l_route());
         let mut nav = Navigator::new(nr.clone());
         let (p, b) = point_at(&nr, 300.0);
-        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None }, now());
+        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None, accuracy_m: None }, now());
         assert_eq!(u.maneuver, Maneuver::TurnLeft);
         assert!((u.dist_to_maneuver_m - 700.0).abs() < 3.0, "{}", u.dist_to_maneuver_m);
         assert!((u.remaining_m - 1300.0).abs() < 3.0);
         assert!((u.remaining_sec - 156.0).abs() < 1.0, "{}", u.remaining_sec);
         let (p, b) = point_at(&nr, 1200.0);
-        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None }, now());
+        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None, accuracy_m: None }, now());
         assert_eq!(u.maneuver, Maneuver::Arrive);
         assert!((u.bearing - 0.0).abs() < 1.0 || (u.bearing - 360.0).abs() < 1.0, "{}", u.bearing);
     }
@@ -473,10 +619,10 @@ mod tests {
         let nr = NavRoute::from_route(&l_route());
         let mut nav = Navigator::new(nr.clone());
         let (p, _) = point_at(&nr, 200.0);
-        nav.update(Fix { lon: p[0], lat: p[1], heading: None, speed_mps: None }, now());
+        nav.update(Fix { lon: p[0], lat: p[1], heading: None, speed_mps: None, accuracy_m: None }, now());
         // 80 m south of the road, three fixes
         let away = [p[0], p[1] - 80.0 / 111_320.0];
-        let f = Fix { lon: away[0], lat: away[1], heading: None, speed_mps: None };
+        let f = Fix { lon: away[0], lat: away[1], heading: None, speed_mps: None, accuracy_m: None };
         let a = nav.update(f, now());
         let b = nav.update(f, now());
         let c = nav.update(f, now());
@@ -486,7 +632,7 @@ mod tests {
         assert!(c.speech.as_deref().unwrap().contains("מחשב מסלול מחדש"));
         assert!(d.off_route && !d.reroute_needed, "only one reroute per deviation");
         // back on the road resets it
-        let e = nav.update(Fix { lon: p[0], lat: p[1], heading: None, speed_mps: None }, now());
+        let e = nav.update(Fix { lon: p[0], lat: p[1], heading: None, speed_mps: None, accuracy_m: None }, now());
         assert!(!e.off_route);
     }
 
@@ -498,9 +644,70 @@ mod tests {
             let (p, b) = point_at(&nr, d);
             // ±15 m zig-zag
             let off = if i % 2 == 0 { 15.0 } else { -15.0 } / 111_320.0;
-            let u = nav.update(Fix { lon: p[0] + off * 0.3, lat: p[1] + off, heading: Some(b), speed_mps: Some(10.0) }, now());
+            let u = nav.update(Fix { lon: p[0] + off * 0.3, lat: p[1] + off, heading: Some(b), speed_mps: Some(10.0), accuracy_m: None }, now());
             assert!(!u.off_route, "fix {i} at {d} m");
         }
+    }
+
+    /// A route that is slow at first (city, 600 s for 1 km) and fast later (600 m in 72 s): the
+    /// remaining time follows the step durations, not the average speed.
+    #[test]
+    fn eta_by_step_seconds() {
+        let mut r = l_route();
+        r.legs[0].steps[0].duration_sec = 600.0;
+        r.duration_sec = 672.0;
+        let nr = NavRoute::from_route(&r);
+        let mut nav = Navigator::new(nr.clone());
+        let (p, b) = point_at(&nr, 1000.0);
+        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None, accuracy_m: None }, now());
+        assert!((u.remaining_sec - 72.0).abs() < 2.0, "{}", u.remaining_sec);
+        let (p, b) = point_at(&nr, 500.0);
+        let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: None, accuracy_m: None }, now());
+        assert!((u.remaining_sec - 372.0).abs() < 3.0, "{}", u.remaining_sec);
+    }
+
+    /// A Wi-Fi position 100 m off the road is not "off route"; a GPS one is.
+    #[test]
+    fn coarse_fixes_do_not_reroute() {
+        let nr = NavRoute::from_route(&l_route());
+        let mut nav = Navigator::new(nr.clone());
+        let (p, _) = point_at(&nr, 300.0);
+        let away = [p[0], p[1] - 100.0 / 111_320.0];
+        let mut last = None;
+        for _ in 0..5 {
+            last = Some(nav.update(Fix { lon: away[0], lat: away[1], heading: None, speed_mps: None, accuracy_m: Some(120.0) }, now()));
+        }
+        let u = last.take().unwrap();
+        assert!(!u.off_route && u.approximate);
+        let mut nav = Navigator::new(nr.clone());
+        for _ in 0..4 {
+            last = Some(nav.update(Fix { lon: away[0], lat: away[1], heading: None, speed_mps: None, accuracy_m: Some(5.0) }, now()));
+        }
+        assert!(last.unwrap().off_route);
+    }
+
+    #[test]
+    fn camera_announced_once() {
+        let mut nr = NavRoute::from_route(&l_route());
+        let (cam, _) = point_at(&nr, 1300.0);
+        nr.set_cameras(&[cam, [35.5, 33.0]]);
+        assert_eq!(nr.cameras.len(), 1);
+        let mut nav = Navigator::new(nr.clone());
+        let mut said = 0;
+        let mut d = 0.0;
+        while d < 1290.0 {
+            let (p, b) = point_at(&nr, d);
+            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(14.0), accuracy_m: Some(5.0) }, now());
+            if d > 1300.0 - CAMERA_SHOW_M {
+                assert!(u.camera_ahead_m.is_some());
+            }
+            if u.speech.as_deref().is_some_and(|s| s.contains("מצלמת מהירות")) {
+                said += 1;
+            }
+            assert_eq!(u.speed_kmh, Some(50.4));
+            d += 14.0;
+        }
+        assert_eq!(said, 1);
     }
 
     #[test]
@@ -524,7 +731,7 @@ mod tests {
         let mut n_speech = 0;
         while d <= nr.total_m + 20.0 {
             let (p, b) = point_at(&nr, d);
-            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(15.0) }, now());
+            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(15.0), accuracy_m: None }, now());
             assert!(!u.off_route, "off route at {d}");
             if let Some(s) = u.speech {
                 n_speech += 1;

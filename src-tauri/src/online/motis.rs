@@ -302,6 +302,7 @@ mod tests {
             time: TimeSpec::default(),
             avoid: Avoid::default(),
             alternatives: 4,
+            ..Default::default()
         };
         let r = plan(&req, "https://api.transitous.org").unwrap();
         assert!(!r.routes.is_empty());

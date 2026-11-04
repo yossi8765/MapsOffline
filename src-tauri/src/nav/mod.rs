@@ -3,6 +3,7 @@
 //! spoken instructions go to `crate::voice`.
 
 pub mod machine;
+pub mod track;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 
-use crate::types::Route;
+use crate::types::{LonLat, Route};
 use machine::{Fix, NavRoute, Navigator};
 
 /// Where fixes come from.
@@ -31,14 +32,23 @@ struct Session {
     voice: Arc<AtomicBool>,
 }
 
+fn nav_route(route: &Route, cameras: &[LonLat]) -> NavRoute {
+    let mut nr = NavRoute::from_route(route);
+    if !cameras.is_empty() {
+        nr.set_cameras(cameras);
+    }
+    nr
+}
+
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-/// Start navigating `route` (replaces a running session).
-pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool) -> anyhow::Result<()> {
+/// Start navigating `route` (replaces a running session). `cameras`: speed cameras near the
+/// route (those on it are announced).
+pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, cameras: &[LonLat]) -> anyhow::Result<()> {
     anyhow::ensure!(route.geometry.len() >= 2 || route.legs.iter().any(|l| l.geometry.len() >= 2), "ROUTE_EMPTY");
     stop();
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let nav = Arc::new(Mutex::new(Navigator::new(NavRoute::from_route(route))));
+    let nav = Arc::new(Mutex::new(Navigator::new(nav_route(route, cameras))));
     let route_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let voice_flag = Arc::new(AtomicBool::new(voice));
     *SESSION.lock() = Some(Session { stop: stop_flag.clone(), nav: nav.clone(), route_gen: route_gen.clone(), voice: voice_flag.clone() });
@@ -47,10 +57,10 @@ pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool) -> anyh
 }
 
 /// Replace the active route (after a reroute) without stopping the session.
-pub fn set_route(route: &Route) -> anyhow::Result<()> {
+pub fn set_route(route: &Route, cameras: &[LonLat]) -> anyhow::Result<()> {
     let g = SESSION.lock();
     let s = g.as_ref().ok_or_else(|| anyhow::anyhow!("NAV_NOT_RUNNING"))?;
-    *s.nav.lock() = Navigator::new(NavRoute::from_route(route));
+    *s.nav.lock() = Navigator::new(nav_route(route, cameras));
     s.route_gen.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
@@ -108,7 +118,7 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
                 let (p, b) = machine::point_at(&n.route, sim_d);
                 drop(n);
                 sim_d += speed_kmh / 3.6 * tick.as_secs_f64();
-                Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6) })
+                Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6), accuracy_m: Some(5.0) })
             }
             Source::Gps => match gps.as_mut().map(|g| g.fix()) {
                 Some(Ok(f)) => {
@@ -153,7 +163,7 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
 }
 
 #[cfg(windows)]
-mod gps {
+pub(crate) mod gps {
     use super::Fix;
     use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator, PositionAccuracy};
     use windows::Foundation::TimeSpan;
@@ -182,14 +192,15 @@ mod gps {
             let p = c.Point()?.Position()?;
             let heading = c.Heading().and_then(|h| h.Value()).ok().filter(|h| h.is_finite());
             let speed = c.Speed().and_then(|s| s.Value()).ok().filter(|s| s.is_finite());
+            let accuracy = c.Accuracy().ok().filter(|a| a.is_finite() && *a > 0.0);
             anyhow::ensure!(p.Longitude.is_finite() && p.Latitude.is_finite(), "no fix");
-            Ok(Fix { lon: p.Longitude, lat: p.Latitude, heading, speed_mps: speed })
+            Ok(Fix { lon: p.Longitude, lat: p.Latitude, heading, speed_mps: speed, accuracy_m: accuracy })
         }
     }
 }
 
 #[cfg(not(windows))]
-mod gps {
+pub(crate) mod gps {
     use super::Fix;
     pub struct Gps;
     impl Gps {
@@ -220,6 +231,7 @@ mod tests {
             time: TimeSpec::default(),
             avoid: Avoid::default(),
             alternatives: 1,
+            ..Default::default()
         };
         let r = g.route(&req).unwrap().routes.remove(0);
         let nr = NavRoute::from_route(&r);
@@ -231,7 +243,7 @@ mod tests {
         let mut last = None;
         while d <= nr.total_m + 30.0 {
             let (p, b) = point_at(&nr, d);
-            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(16.7) }, now);
+            let u = nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(16.7), accuracy_m: None }, now);
             if u.off_route {
                 off += 1;
             }

@@ -3,8 +3,8 @@
 //! Vertices are OSM nodes shared by ≥2 routable ways (or way endpoints). Edges are the way
 //! segments between vertices with their full intermediate geometry. Each edge is stored once;
 //! a *state* in the search is a directed edge `s = edge * 2 + dir` (`dir 0` = from→to).
-//! Adjacency is a CSR array of incident edge ids per vertex. Turn restrictions (via node) are
-//! stored per via vertex.
+//! Adjacency is a CSR array of incident edge ids per vertex. Turn restrictions via a node are
+//! stored per via vertex; restrictions via one or more ways ("via-way") as edge sequences.
 //!
 //! File format (v3): `MOGR` + u32 version, then a fixed sequence of raw little-endian arrays
 //! (`u64 element count` + payload), then `END!`. Everything the router needs at runtime –
@@ -24,11 +24,14 @@ use crate::routing::areas::{self, Areas};
 use crate::types::{LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOGR";
+/// v7: per-direction speeds and posted limits, road refs / exits / destinations / turn lanes
+/// (sparse), truck limits (sparse), elevation gain per edge (when the DEM was installed at build
+/// time), speed cameras, via-way turn restrictions and vehicle masks on restrictions.
 /// v6: geometry as zig-zag varint deltas, projected coordinates and restriction offsets
-/// recomputed at load (−23 MB on disk). v4/v5 files are still read.
-pub const VERSION: u32 = 6;
+/// recomputed at load. v6 files are still read (the new fields stay empty).
+pub const VERSION: u32 = 7;
 /// Oldest graph.bin layout `load` still reads.
-pub const MIN_READ_VERSION: u32 = 4;
+pub const MIN_READ_VERSION: u32 = 6;
 
 /// Can this build read a graph.bin of format `ver` (load, package import)?
 pub fn readable_version(ver: u32) -> bool {
@@ -36,7 +39,7 @@ pub fn readable_version(ver: u32) -> bool {
 }
 /// Revision of the build rules (access, costs) for the same file format: bumping it makes the
 /// update check offer a rebuild of graph.bin (see `data::build_tag`).
-pub const BUILD_REV: u32 = 2;
+pub const BUILD_REV: u32 = 1;
 const END_MAGIC: &[u8; 4] = b"END!";
 
 pub const NO_NAME: u32 = u32::MAX;
@@ -67,6 +70,22 @@ pub mod flags {
     pub const AREA_A: u32 = 1 << 15;
     /// inside Oslo Area B
     pub const AREA_B: u32 = 1 << 16;
+    /// car access only to reach a destination on it (access / motor_vehicle = destination)
+    pub const DESTINATION: u32 = 1 << 17;
+    /// closed to heavy goods vehicles (hgv=no)
+    pub const HGV_NO: u32 = 1 << 18;
+    /// not usable in a wheelchair (wheelchair=no, steep incline, bad smoothness)
+    pub const WHEELCHAIR_NO: u32 = 1 << 19;
+    /// explicitly wheelchair friendly (wheelchair=yes / designated, ramp:wheelchair=yes)
+    pub const WHEELCHAIR_YES: u32 = 1 << 20;
+}
+
+/// Vehicle bits of a turn restriction.
+pub mod rmask {
+    pub const CAR: u8 = 1;
+    pub const TRUCK: u8 = 2;
+    pub const BIKE: u8 = 4;
+    pub const ALL: u8 = CAR | TRUCK | BIKE;
 }
 
 #[repr(u8)]
@@ -175,8 +194,61 @@ pub struct Restriction {
     pub from_edge: u32,
     pub to_edge: u32,
     pub only: bool,
-    /// applies to bicycles as well
-    pub bike: bool,
+    /// vehicles it applies to ([`rmask`])
+    pub mask: u8,
+}
+
+impl Restriction {
+    /// stored byte: bit 0 only, bit 1 bike, bit 2 car, bit 3 truck
+    fn to_byte(self) -> u8 {
+        self.only as u8 | ((self.mask & rmask::BIKE != 0) as u8) << 1 | ((self.mask & rmask::CAR != 0) as u8) << 2 | ((self.mask & rmask::TRUCK != 0) as u8) << 3
+    }
+    fn from_byte(b: u8, ver: u32) -> (bool, u8) {
+        let mut m = 0;
+        if b & 2 != 0 {
+            m |= rmask::BIKE;
+        }
+        if ver < 7 || b & 4 != 0 {
+            m |= rmask::CAR;
+        }
+        if ver < 7 || b & 8 != 0 {
+            m |= rmask::TRUCK;
+        }
+        (b & 1 != 0, m)
+    }
+}
+
+/// A turn restriction via one or more ways: `edges` = from, via…, to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultiRestriction {
+    pub edges: Vec<u32>,
+    pub only: bool,
+    pub mask: u8,
+}
+
+/// Sparse per-edge text extras (indices into the name table, [`NO_NAME`] when absent).
+#[derive(Default, Clone, Debug)]
+pub struct EdgeExt {
+    /// sorted edge ids
+    pub edge: Vec<u32>,
+    /// road number (`ref`)
+    pub road_ref: Vec<u32>,
+    /// motorway exit number (`junction:ref`)
+    pub junction: Vec<u32>,
+    pub dest_fwd: Vec<u32>,
+    pub dest_bwd: Vec<u32>,
+    /// raw `turn:lanes` per direction
+    pub lanes_fwd: Vec<u32>,
+    pub lanes_bwd: Vec<u32>,
+}
+
+/// Sparse truck limits: height / width in decimetres, weight in half tonnes (0 = none).
+#[derive(Default, Clone, Debug)]
+pub struct Limits {
+    pub edge: Vec<u32>,
+    pub height_dm: Vec<u8>,
+    pub weight_ht: Vec<u8>,
+    pub width_dm: Vec<u8>,
 }
 
 /// Local equirectangular projection (meters) centred on Israel – used for the spatial index,
@@ -305,6 +377,9 @@ impl Grid {
         if !minx.is_finite() {
             return Grid { cell, off: vec![0], ..Default::default() };
         }
+        // big countries: grow the cell so the CSR offsets stay small (≤ ~4M cells)
+        let area = ((maxx - minx).max(1.0) as f64) * ((maxy - miny).max(1.0) as f64);
+        let cell = cell.max((area / 4.0e6).sqrt() as f32);
         let mut grid = Grid {
             x0: minx,
             y0: miny,
@@ -408,6 +483,24 @@ pub struct Graph {
     pub max_car_kmh: u8,
     /// restricted territories (rings) – used to check online routes
     pub areas: Areas,
+    // ---- v7 (empty when read from v6)
+    /// car speed against the edge direction (km/h); empty = same as `e_speed`
+    pub e_speed_bwd: Vec<u8>,
+    /// posted speed limit per direction (km/h, 0 = not tagged)
+    pub e_limit_fwd: Vec<u8>,
+    pub e_limit_bwd: Vec<u8>,
+    /// elevation gain / loss along the edge in its forward direction (decimetres); empty = no DEM
+    pub e_rise: Vec<u16>,
+    pub e_fall: Vec<u16>,
+    pub ext: EdgeExt,
+    pub limits: Limits,
+    /// fixed speed cameras, interleaved lon,lat (1e-7 deg)
+    pub cameras: Vec<i32>,
+    /// via-way restrictions
+    pub multi: Vec<MultiRestriction>,
+    /// derived: multi restrictions by their last via edge / first via edge
+    pub multi_by_last: FxHashMap<u32, smallvec::SmallVec<[u32; 2]>>,
+    pub multi_by_first: FxHashMap<u32, smallvec::SmallVec<[u32; 2]>>,
 }
 
 // ---------------------------------------------------------------- accessors
@@ -525,6 +618,82 @@ impl Graph {
     #[inline]
     pub fn flags(&self, e: u32) -> u32 {
         self.e_flags[e as usize]
+    }
+    /// Car speed (km/h) along directed state `s`.
+    #[inline]
+    pub fn speed_s(&self, s: u32) -> u8 {
+        let e = (s >> 1) as usize;
+        if s & 1 == 1 && !self.e_speed_bwd.is_empty() { self.e_speed_bwd[e] } else { self.e_speed[e] }
+    }
+    /// Posted speed limit along state `s`, when tagged.
+    #[inline]
+    pub fn limit_s(&self, s: u32) -> Option<u8> {
+        let e = (s >> 1) as usize;
+        let v = if s & 1 == 0 { self.e_limit_fwd.get(e) } else { self.e_limit_bwd.get(e) };
+        v.copied().filter(|&l| l > 0)
+    }
+    /// Metres climbed / descended along state `s` (0 without elevation data).
+    #[inline]
+    pub fn climb_s(&self, s: u32) -> (f32, f32) {
+        let e = (s >> 1) as usize;
+        if self.e_rise.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (r, f) = (self.e_rise[e] as f32 * 0.1, self.e_fall[e] as f32 * 0.1);
+        if s & 1 == 0 { (r, f) } else { (f, r) }
+    }
+    pub fn has_elevation(&self) -> bool {
+        !self.e_rise.is_empty()
+    }
+    /// Name-table string by index.
+    pub fn name_at(&self, n: u32) -> Option<&str> {
+        if n == NO_NAME || n as usize + 1 >= self.name_off.len() {
+            return None;
+        }
+        let (a, b) = (self.name_off[n as usize] as usize, self.name_off[n as usize + 1] as usize);
+        Some(&self.name_buf[a..b])
+    }
+    fn ext_index(&self, e: u32) -> Option<usize> {
+        self.ext.edge.binary_search(&e).ok()
+    }
+    /// Road number of edge `e` ("1", "443").
+    pub fn road_ref(&self, e: u32) -> Option<&str> {
+        self.ext_index(e).and_then(|i| self.name_at(self.ext.road_ref[i]))
+    }
+    /// Exit number (junction:ref) of a link edge.
+    pub fn junction_ref(&self, e: u32) -> Option<&str> {
+        self.ext_index(e).and_then(|i| self.name_at(self.ext.junction[i]))
+    }
+    /// Signposted destination along state `s`.
+    pub fn destination_s(&self, s: u32) -> Option<&str> {
+        let i = self.ext_index(s >> 1)?;
+        self.name_at(if s & 1 == 0 { self.ext.dest_fwd[i] } else { self.ext.dest_bwd[i] })
+    }
+    /// Raw turn:lanes along state `s`.
+    pub fn lanes_s(&self, s: u32) -> Option<&str> {
+        let i = self.ext_index(s >> 1)?;
+        self.name_at(if s & 1 == 0 { self.ext.lanes_fwd[i] } else { self.ext.lanes_bwd[i] })
+    }
+    /// (height m, weight t, width m) limits of edge `e`, 0 = none.
+    pub fn limits_of(&self, e: u32) -> Option<(f32, f32, f32)> {
+        let i = self.limits.edge.binary_search(&e).ok()?;
+        Some((self.limits.height_dm[i] as f32 * 0.1, self.limits.weight_ht[i] as f32 * 0.5, self.limits.width_dm[i] as f32 * 0.1))
+    }
+    /// Speed camera positions.
+    pub fn camera_points(&self) -> impl Iterator<Item = LonLat> + '_ {
+        self.cameras.as_chunks::<2>().0.iter().map(|c| [c[0] as f64 * 1e-7, c[1] as f64 * 1e-7])
+    }
+    /// Rebuild the lookup maps of the via-way restrictions.
+    pub fn index_multi(&mut self) {
+        self.multi_by_last.clear();
+        self.multi_by_first.clear();
+        for (i, m) in self.multi.iter().enumerate() {
+            if m.edges.len() < 3 {
+                continue;
+            }
+            self.multi_by_last.entry(m.edges[m.edges.len() - 2]).or_default().push(i as u32);
+            self.multi_by_first.entry(m.edges[1]).or_default().push(i as u32);
+        }
     }
     /// Project with this graph's projection (see [`Proj`]).
     #[inline]
@@ -737,6 +906,45 @@ impl Graph {
         self.e_name = perm(&self.e_name, &eorder);
         self.e_bear_start = perm(&self.e_bear_start, &eorder);
         self.e_bear_end = perm(&self.e_bear_end, &eorder);
+        if !self.e_speed_bwd.is_empty() {
+            self.e_speed_bwd = perm(&self.e_speed_bwd, &eorder);
+        }
+        if !self.e_limit_fwd.is_empty() {
+            self.e_limit_fwd = perm(&self.e_limit_fwd, &eorder);
+            self.e_limit_bwd = perm(&self.e_limit_bwd, &eorder);
+        }
+        if !self.e_rise.is_empty() {
+            self.e_rise = perm(&self.e_rise, &eorder);
+            self.e_fall = perm(&self.e_fall, &eorder);
+        }
+        {
+            let x = std::mem::take(&mut self.ext);
+            let mut idx: Vec<usize> = (0..x.edge.len()).collect();
+            idx.sort_by_key(|&i| enew[x.edge[i] as usize]);
+            self.ext = EdgeExt {
+                edge: idx.iter().map(|&i| enew[x.edge[i] as usize]).collect(),
+                road_ref: idx.iter().map(|&i| x.road_ref[i]).collect(),
+                junction: idx.iter().map(|&i| x.junction[i]).collect(),
+                dest_fwd: idx.iter().map(|&i| x.dest_fwd[i]).collect(),
+                dest_bwd: idx.iter().map(|&i| x.dest_bwd[i]).collect(),
+                lanes_fwd: idx.iter().map(|&i| x.lanes_fwd[i]).collect(),
+                lanes_bwd: idx.iter().map(|&i| x.lanes_bwd[i]).collect(),
+            };
+            let l = std::mem::take(&mut self.limits);
+            let mut idx: Vec<usize> = (0..l.edge.len()).collect();
+            idx.sort_by_key(|&i| enew[l.edge[i] as usize]);
+            self.limits = Limits {
+                edge: idx.iter().map(|&i| enew[l.edge[i] as usize]).collect(),
+                height_dm: idx.iter().map(|&i| l.height_dm[i]).collect(),
+                weight_ht: idx.iter().map(|&i| l.weight_ht[i]).collect(),
+                width_dm: idx.iter().map(|&i| l.width_dm[i]).collect(),
+            };
+            for m in &mut self.multi {
+                for e in &mut m.edges {
+                    *e = enew[*e as usize];
+                }
+            }
+        }
         let mut geom = Vec::with_capacity(self.geom.len());
         let mut goff = Vec::with_capacity(ne + 1);
         goff.push(0u32);
@@ -776,11 +984,12 @@ impl Graph {
         self.restr_off = restriction_offsets(&self.restrictions, n);
         self.max_car_kmh = (0..self.num_edges())
             .filter(|&e| self.e_flags[e] & (flags::CAR_FWD | flags::CAR_BWD) != 0)
-            .map(|e| self.e_speed[e])
+            .map(|e| self.e_speed[e].max(self.e_speed_bwd.get(e).copied().unwrap_or(0)))
             .max()
             .unwrap_or(130)
             .max(5);
         self.grid = Grid::build(self);
+        self.index_multi();
     }
 }
 
@@ -949,7 +1158,7 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     let rv: Vec<u32> = g.restrictions.iter().map(|r| r.via).collect();
     let rf: Vec<u32> = g.restrictions.iter().map(|r| r.from_edge).collect();
     let rt: Vec<u32> = g.restrictions.iter().map(|r| r.to_edge).collect();
-    let rb: Vec<u8> = g.restrictions.iter().map(|r| r.only as u8 | (r.bike as u8) << 1).collect();
+    let rb: Vec<u8> = g.restrictions.iter().map(|r| r.to_byte()).collect();
     put(&mut w, &rv)?;
     put(&mut w, &rf)?;
     put(&mut w, &rt)?;
@@ -961,6 +1170,34 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     put(&mut w, &g.areas.kind)?;
     put(&mut w, &g.areas.off)?;
     put(&mut w, &g.areas.pts)?;
+    // ---- v7
+    put(&mut w, &g.e_speed_bwd)?;
+    put(&mut w, &g.e_limit_fwd)?;
+    put(&mut w, &g.e_limit_bwd)?;
+    put(&mut w, &g.e_rise)?;
+    put(&mut w, &g.e_fall)?;
+    put(&mut w, &g.ext.edge)?;
+    put(&mut w, &g.ext.road_ref)?;
+    put(&mut w, &g.ext.junction)?;
+    put(&mut w, &g.ext.dest_fwd)?;
+    put(&mut w, &g.ext.dest_bwd)?;
+    put(&mut w, &g.ext.lanes_fwd)?;
+    put(&mut w, &g.ext.lanes_bwd)?;
+    put(&mut w, &g.limits.edge)?;
+    put(&mut w, &g.limits.height_dm)?;
+    put(&mut w, &g.limits.weight_ht)?;
+    put(&mut w, &g.limits.width_dm)?;
+    put(&mut w, &g.cameras)?;
+    let mut mr_off: Vec<u32> = vec![0];
+    let mut mr_edges: Vec<u32> = Vec::new();
+    for m in &g.multi {
+        mr_edges.extend_from_slice(&m.edges);
+        mr_off.push(mr_edges.len() as u32);
+    }
+    let mr_flags: Vec<u8> = g.multi.iter().map(|m| Restriction { via: 0, from_edge: 0, to_edge: 0, only: m.only, mask: m.mask }.to_byte()).collect();
+    put(&mut w, &mr_off)?;
+    put(&mut w, &mr_edges)?;
+    put(&mut w, &mr_flags)?;
     w.write_all(END_MAGIC)?;
     w.flush()?;
     Ok(())
@@ -980,7 +1217,7 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     r.read_exact(&mut ver)?;
     let ver = u32::from_le_bytes(ver);
     if !readable_version(ver) {
-        anyhow::bail!("graph file version {ver} is not supported (expected {VERSION}); update the routing data");
+        anyhow::bail!("NO_ROUTING_DATA: graph version {ver} is not supported (expected {VERSION}); update the routing data");
     }
     let m = file_len; // no array can be larger than the file
     let bad = || anyhow::anyhow!("corrupt graph file");
@@ -1063,6 +1300,26 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
         items: get(&mut r, m)?,
     };
     g.areas = Areas::from_parts(get(&mut r, m)?, get(&mut r, m)?, get(&mut r, m)?);
+    let mut multi_parts: Option<(Vec<u32>, Vec<u32>, Vec<u8>)> = None;
+    if ver >= 7 {
+        g.e_speed_bwd = get(&mut r, m)?;
+        g.e_limit_fwd = get(&mut r, m)?;
+        g.e_limit_bwd = get(&mut r, m)?;
+        g.e_rise = get(&mut r, m)?;
+        g.e_fall = get(&mut r, m)?;
+        g.ext = EdgeExt {
+            edge: get(&mut r, m)?,
+            road_ref: get(&mut r, m)?,
+            junction: get(&mut r, m)?,
+            dest_fwd: get(&mut r, m)?,
+            dest_bwd: get(&mut r, m)?,
+            lanes_fwd: get(&mut r, m)?,
+            lanes_bwd: get(&mut r, m)?,
+        };
+        g.limits = Limits { edge: get(&mut r, m)?, height_dm: get(&mut r, m)?, weight_ht: get(&mut r, m)?, width_dm: get(&mut r, m)? };
+        g.cameras = get(&mut r, m)?;
+        multi_parts = Some((get(&mut r, m)?, get(&mut r, m)?, get(&mut r, m)?));
+    }
     let mut end = [0u8; 4];
     r.read_exact(&mut end)?;
     if &end != END_MAGIC {
@@ -1072,8 +1329,22 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
         return Err(bad());
     }
     g.restrictions = (0..rv.len())
-        .map(|i| Restriction { via: rv[i], from_edge: rf[i], to_edge: rt[i], only: rb[i] & 1 != 0, bike: rb[i] & 2 != 0 })
+        .map(|i| {
+            let (only, mask) = Restriction::from_byte(rb[i], ver);
+            Restriction { via: rv[i], from_edge: rf[i], to_edge: rt[i], only, mask }
+        })
         .collect();
+    if let Some((off, edges, fl)) = multi_parts {
+        if off.is_empty() || off.len() != fl.len() + 1 || off.last().is_some_and(|&o| o as usize != edges.len()) || off.windows(2).any(|w| w[0] > w[1]) {
+            return Err(bad());
+        }
+        g.multi = (0..fl.len())
+            .map(|i| {
+                let (only, mask) = Restriction::from_byte(fl[i], ver);
+                MultiRestriction { edges: edges[off[i] as usize..off[i + 1] as usize].to_vec(), only, mask }
+            })
+            .collect();
+    }
     if ver >= 6 {
         // derived fields v6 no longer stores
         let n = g.vlon.len();
@@ -1091,6 +1362,7 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     }
     g.validate().map_err(|e| anyhow::anyhow!("corrupt graph file: {e}"))?;
     g.areas.build_index();
+    g.index_multi();
     log::info!(
         "graph loaded: {} vertices, {} edges, {} restrictions, {} area rings in {:?}",
         g.num_vertices(),
@@ -1135,6 +1407,43 @@ impl Graph {
             return Err("names");
         }
         self.areas.validate()?;
+        let opt = |l: usize| l == 0 || l == ne;
+        if !opt(self.e_speed_bwd.len())
+            || !opt(self.e_limit_fwd.len())
+            || self.e_limit_bwd.len() != self.e_limit_fwd.len()
+            || !opt(self.e_rise.len())
+            || self.e_fall.len() != self.e_rise.len()
+        {
+            return Err("v7 edge arrays");
+        }
+        let x = &self.ext;
+        let nx = x.edge.len();
+        if [x.road_ref.len(), x.junction.len(), x.dest_fwd.len(), x.dest_bwd.len(), x.lanes_fwd.len(), x.lanes_bwd.len()].iter().any(|&l| l != nx)
+            || x.edge.windows(2).any(|w| w[0] >= w[1])
+            || x.edge.last().is_some_and(|&e| e as usize >= ne)
+        {
+            return Err("edge extras");
+        }
+        let names = self.name_off.len().saturating_sub(1) as u32;
+        if [&x.road_ref, &x.junction, &x.dest_fwd, &x.dest_bwd, &x.lanes_fwd, &x.lanes_bwd].iter().any(|v| v.iter().any(|&n| n != NO_NAME && n >= names)) {
+            return Err("edge extras names");
+        }
+        let l = &self.limits;
+        if [l.height_dm.len(), l.weight_ht.len(), l.width_dm.len()].iter().any(|&k| k != l.edge.len())
+            || l.edge.windows(2).any(|w| w[0] >= w[1])
+            || l.edge.last().is_some_and(|&e| e as usize >= ne)
+        {
+            return Err("limits");
+        }
+        if !self.cameras.len().is_multiple_of(2) {
+            return Err("cameras");
+        }
+        if self.multi.iter().any(|m| m.edges.len() < 3 || m.edges.iter().any(|&e| e as usize >= ne)) {
+            return Err("via-way restrictions");
+        }
+        if self.restrictions.iter().any(|r| r.from_edge as usize >= ne || r.to_edge as usize >= ne || r.via as usize >= nv) {
+            return Err("restrictions");
+        }
         let cells = self.grid.nx as usize * self.grid.ny as usize;
         if self.grid.off.len() != cells + 1 || self.grid.off.last().is_none_or(|&o| o as usize != self.grid.items.len()) {
             return Err("grid");
@@ -1153,21 +1462,53 @@ impl Graph {
 
 // ---------------------------------------------------------------- build
 
+/// Everything the builder keeps of one routable way.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WayAttrs {
+    pub class: Option<Class>,
+    pub flags: u32,
+    pub speed_fwd: u8,
+    pub speed_bwd: u8,
+    /// posted limits (0 = not tagged)
+    pub limit_fwd: u8,
+    pub limit_bwd: u8,
+    /// display name (Hebrew first; "כביש N" when only a ref)
+    pub name: Option<String>,
+    pub road_ref: Option<String>,
+    pub junction: Option<String>,
+    pub dest_fwd: Option<String>,
+    pub dest_bwd: Option<String>,
+    pub lanes_fwd: Option<String>,
+    pub lanes_bwd: Option<String>,
+    pub height_dm: u8,
+    pub weight_ht: u8,
+    pub width_dm: u8,
+    /// ferry crossing time (seconds) from `duration`
+    pub ferry_secs: Option<u32>,
+}
+
+impl WayAttrs {
+    fn has_ext(&self) -> bool {
+        self.road_ref.is_some() || self.junction.is_some() || self.dest_fwd.is_some() || self.dest_bwd.is_some() || self.lanes_fwd.is_some() || self.lanes_bwd.is_some()
+    }
+    fn has_limits(&self) -> bool {
+        self.height_dm > 0 || self.weight_ht > 0 || self.width_dm > 0
+    }
+}
+
 struct WayRec {
     id: i64,
     refs: Vec<i64>,
-    class: Class,
-    flags: u32,
-    speed: u8,
-    name: Option<String>,
+    a: WayAttrs,
 }
 
 struct RelRec {
     from_way: i64,
-    via_node: i64,
+    via_node: Option<i64>,
+    via_ways: Vec<i64>,
     to_way: i64,
     only: bool,
-    bike: bool,
+    mask: u8,
 }
 
 /// Boundary relation of a restricted territory: kind + ordered outer member way ids.
@@ -1182,6 +1523,7 @@ struct Acc {
     rels: Vec<RelRec>,
     /// member ways of area relations: (way id, node refs)
     area_ways: Vec<(i64, Vec<i64>)>,
+    conditional: u64,
 }
 
 fn yes(v: &str) -> bool {
@@ -1191,10 +1533,28 @@ fn no(v: &str) -> bool {
     matches!(v, "no" | "private" | "false" | "0" | "agricultural" | "forestry" | "delivery" | "customers" | "military" | "emergency")
 }
 
+/// Implicit Israeli / generic limits ("IL:urban" …) in km/h.
+fn implicit_limit(v: &str) -> Option<u8> {
+    let kind = v.split_once(':').map(|(_, k)| k).unwrap_or(v);
+    Some(match kind {
+        "urban" => 50,
+        "rural" => 80,
+        "motorway" => 110,
+        "trunk" | "expressway" => 90,
+        "living_street" => 20,
+        "walk" => 10,
+        "school" => 30,
+        _ => return None,
+    })
+}
+
 fn parse_maxspeed(v: &str) -> Option<u8> {
     let v = v.trim();
     if v.is_empty() || v == "none" || v == "signals" || v == "variable" {
         return None;
+    }
+    if v.contains(':') && !v.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return implicit_limit(v);
     }
     let (num, mph) = if let Some(n) = v.strip_suffix("mph") { (n.trim(), true) } else { (v, false) };
     let n: f64 = num.split(';').next()?.trim().parse().ok()?;
@@ -1205,9 +1565,68 @@ fn parse_maxspeed(v: &str) -> Option<u8> {
     Some(kmh.min(130.0) as u8)
 }
 
-/// Parse way tags into a WayRec (without refs). None if not routable for any profile.
-fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<(Class, u32, u8, Option<String>)> {
+/// "3.5", "3.5 m", "3,5", "12'6\"" → metres.
+fn parse_metres(v: &str) -> Option<f64> {
+    let v = v.trim();
+    if let Some((ft, rest)) = v.split_once('\'') {
+        let ft: f64 = ft.trim().parse().ok()?;
+        let inch: f64 = rest.trim().trim_end_matches('"').trim().parse().unwrap_or(0.0);
+        return Some((ft * 12.0 + inch) * 0.0254);
+    }
+    let v = v.trim_end_matches('m').trim().replace(',', ".");
+    v.parse::<f64>().ok().filter(|x| *x > 0.0 && *x < 30.0)
+}
+
+/// "7.5", "7.5 t", "7500 kg", "12 st" → tonnes.
+fn parse_tonnes(v: &str) -> Option<f64> {
+    let v = v.trim().replace(',', ".");
+    let (num, kg) = if let Some(n) = v.strip_suffix("kg") { (n.trim().to_string(), true) } else { (v.trim_end_matches('t').trim().to_string(), false) };
+    let x: f64 = num.parse().ok()?;
+    let t = if kg { x / 1000.0 } else { x };
+    (t > 0.0 && t < 200.0).then_some(t)
+}
+
+/// Ferry `duration`: "HH:MM", "HH:MM:SS", "MM" or ISO "PT1H20M" → seconds.
+fn parse_duration(v: &str) -> Option<u32> {
+    let v = v.trim();
+    if let Some(iso) = v.strip_prefix("PT") {
+        let (mut secs, mut num) = (0u32, String::new());
+        for c in iso.chars() {
+            if c.is_ascii_digit() {
+                num.push(c);
+            } else {
+                let n: u32 = num.parse().ok()?;
+                num.clear();
+                secs += match c {
+                    'H' => n * 3600,
+                    'M' => n * 60,
+                    'S' => n,
+                    _ => return None,
+                };
+            }
+        }
+        return (secs > 0).then_some(secs);
+    }
+    let parts: Vec<u32> = v.split(':').map(|p| p.trim().parse().ok()).collect::<Option<Vec<u32>>>()?;
+    let secs = match parts.as_slice() {
+        [m] => m * 60,
+        [h, m] => h * 3600 + m * 60,
+        [h, m, s] => h * 3600 + m * 60 + s,
+        _ => return None,
+    };
+    (secs > 0).then_some(secs)
+}
+
+/// Wheelchair-relevant incline: "12%", "-8 %", "up"/"down" (unknown) → |percent|.
+fn parse_incline(v: &str) -> Option<f32> {
+    let v = v.trim().trim_end_matches('%').trim();
+    v.parse::<f32>().ok().map(f32::abs)
+}
+
+/// Parse way tags. `class` is None when the way is not routable for any profile.
+pub fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<WayAttrs> {
     let mut highway = None;
+    let mut route = None;
     let mut name = None;
     let mut name_he = None;
     let mut name_en = None;
@@ -1216,10 +1635,14 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     let mut oneway_bike = None;
     let mut junction = None;
     let mut maxspeed = None;
+    let mut maxspeed_fwd = None;
+    let mut maxspeed_bwd = None;
+    let mut maxspeed_type = None;
     let mut access = None;
     let mut motor = None;
     let mut foot = None;
     let mut bicycle = None;
+    let mut hgv = None;
     let mut toll = false;
     let mut surface = None;
     let mut tracktype = None;
@@ -1228,9 +1651,17 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     let mut motorroad = false;
     let mut cycleway_any = false;
     let mut area = false;
+    let mut junction_ref = None;
+    let (mut dest, mut dest_he, mut dest_fwd, mut dest_bwd, mut dest_ref, mut dest_ref_fwd, mut dest_ref_bwd) = (None, None, None, None, None, None, None);
+    let (mut lanes, mut lanes_fwd, mut lanes_bwd) = (None, None, None);
+    let (mut maxheight, mut maxweight, mut maxwidth) = (None, None, None);
+    let (mut wheelchair, mut ramp_wc, mut incline, mut smoothness) = (None, None, None, None);
+    let mut duration = None;
+    let mut destination_access = false;
     for (k, v) in tags {
         match k {
             "highway" => highway = Some(v),
+            "route" => route = Some(v),
             "name" => name = Some(v),
             "name:he" => name_he = Some(v),
             "name:en" => name_en = Some(v),
@@ -1238,15 +1669,24 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
             "oneway" => oneway = Some(v),
             "oneway:bicycle" => oneway_bike = Some(v),
             "junction" => junction = Some(v),
+            "junction:ref" => junction_ref = Some(v),
             "maxspeed" => maxspeed = Some(v),
-            "access" => access = Some(v),
+            "maxspeed:forward" => maxspeed_fwd = Some(v),
+            "maxspeed:backward" => maxspeed_bwd = Some(v),
+            "maxspeed:type" | "source:maxspeed" | "zone:maxspeed" => maxspeed_type = Some(v),
+            "access" => {
+                destination_access |= v == "destination";
+                access = Some(v)
+            }
             "motor_vehicle" | "motorcar" | "vehicle" => {
+                destination_access |= v == "destination";
                 if motor.is_none() || k == "motor_vehicle" {
                     motor = Some(v)
                 }
             }
             "foot" => foot = Some(v),
             "bicycle" => bicycle = Some(v),
+            "hgv" => hgv = Some(v),
             "toll" => toll = v == "yes",
             "surface" => surface = Some(v),
             "tracktype" => tracktype = Some(v),
@@ -1264,11 +1704,29 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
                 }
             }
             "area" => area = v == "yes",
+            "destination" => dest = Some(v),
+            "destination:he" => dest_he = Some(v),
+            "destination:forward" => dest_fwd = Some(v),
+            "destination:backward" => dest_bwd = Some(v),
+            "destination:ref" => dest_ref = Some(v),
+            "destination:ref:forward" => dest_ref_fwd = Some(v),
+            "destination:ref:backward" => dest_ref_bwd = Some(v),
+            "turn:lanes" => lanes = Some(v),
+            "turn:lanes:forward" => lanes_fwd = Some(v),
+            "turn:lanes:backward" => lanes_bwd = Some(v),
+            "maxheight" | "maxheight:physical" => maxheight = maxheight.or(Some(v)),
+            "maxweight" => maxweight = Some(v),
+            "maxwidth" | "maxwidth:physical" => maxwidth = maxwidth.or(Some(v)),
+            "wheelchair" => wheelchair = Some(v),
+            "ramp:wheelchair" => ramp_wc = Some(v),
+            "incline" => incline = Some(v),
+            "smoothness" => smoothness = Some(v),
+            "duration" => duration = Some(v),
             _ => {}
         }
     }
-    let highway = highway?;
-    let (class, link) = Class::parse(highway)?;
+    let ferry = highway.is_none() && route == Some("ferry");
+    let (class, link) = if ferry { (Class::Other, false) } else { Class::parse(highway?)? };
     if area && !matches!(class, Class::Pedestrian) {
         return None;
     }
@@ -1285,6 +1743,9 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     }
     if toll {
         f |= flags::TOLL;
+    }
+    if ferry {
+        f |= flags::FERRY;
     }
     let unpaved = match surface {
         Some(s) => matches!(
@@ -1308,6 +1769,23 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     if sidewalk.is_some() {
         f |= flags::SIDEWALK;
     }
+    // wheelchair
+    let ramp = ramp_wc.is_some_and(yes);
+    match wheelchair {
+        Some("no") => f |= flags::WHEELCHAIR_NO,
+        Some(v) if yes(v) => f |= flags::WHEELCHAIR_YES,
+        _ => {}
+    }
+    if ramp {
+        f |= flags::WHEELCHAIR_YES;
+    }
+    if ((class == Class::Steps && !ramp)
+        || incline.and_then(parse_incline).is_some_and(|i| i > 8.0)
+        || matches!(smoothness, Some("bad" | "very_bad" | "horrible" | "very_horrible" | "impassable")))
+        && f & flags::WHEELCHAIR_YES == 0
+    {
+        f |= flags::WHEELCHAIR_NO;
+    }
 
     // --- access
     let access_no = access.map(no).unwrap_or(false);
@@ -1316,11 +1794,22 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
         class,
         Class::Motorway | Class::Trunk | Class::Primary | Class::Secondary | Class::Tertiary | Class::Unclassified | Class::Residential | Class::Service | Class::LivingStreet | Class::Track | Class::Road
     );
-    let car = match motor {
-        Some(m) if no(m) => false,
-        Some(m) if yes(m) => car_class,
-        _ => car_class && !access_no,
+    let car = if ferry {
+        // ferries carry cars unless tagged otherwise
+        !motor.is_some_and(no) && !access_no
+    } else {
+        match motor {
+            Some(m) if no(m) => false,
+            Some(m) if yes(m) => car_class,
+            _ => car_class && !access_no,
+        }
     };
+    if car && destination_access {
+        f |= flags::DESTINATION;
+    }
+    if hgv.is_some_and(|v| no(v) || v == "destination") && car {
+        f |= flags::HGV_NO;
+    }
     // foot
     let foot_ok = match foot {
         Some(v) if no(v) => false,
@@ -1387,62 +1876,221 @@ fn parse_way_tags<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<
     if f & (flags::CAR_FWD | flags::CAR_BWD | flags::FOOT | flags::BIKE_FWD | flags::BIKE_BWD) == 0 {
         return None;
     }
-    // speed
-    let mut speed = maxspeed.and_then(parse_maxspeed).unwrap_or_else(|| class.default_car_speed());
-    if speed == 0 && car {
-        speed = 30;
-    }
-    if link && maxspeed.is_none() {
-        speed = (speed as f32 * 0.7) as u8;
-    }
+    // posted limits and speed
+    let both = maxspeed.and_then(parse_maxspeed).or_else(|| maxspeed_type.and_then(implicit_limit));
+    let limit_fwd = maxspeed_fwd.and_then(parse_maxspeed).or(both);
+    let limit_bwd = maxspeed_bwd.and_then(parse_maxspeed).or(both);
+    let speed_of = |limit: Option<u8>| -> u8 {
+        let mut speed = limit.unwrap_or_else(|| class.default_car_speed());
+        if speed == 0 && car {
+            speed = if ferry { 15 } else { 30 };
+        }
+        if link && limit.is_none() {
+            speed = (speed as f32 * 0.7) as u8;
+        }
+        speed
+    };
     // name: prefer Hebrew
     let n = name_he.or(name).or(name_en);
-    let display = match (n, r#ref) {
+    let rf = r#ref.map(|r| r.trim()).filter(|r| !r.is_empty());
+    let display = match (n, rf) {
         (Some(n), _) => Some(n.to_string()),
         (None, Some(r)) => Some(if r.chars().all(|c| c.is_ascii_digit()) { format!("כביש {r}") } else { r.to_string() }),
         (None, None) => None,
     };
-    Some((class, f, speed, display))
+    let clean = |v: Option<&str>| v.map(|x| x.split(';').map(str::trim).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ")).filter(|x| !x.is_empty());
+    let dest_text = |d: Option<&str>, r: Option<&str>| -> Option<String> {
+        match (clean(d), clean(r)) {
+            (Some(d), _) => Some(d),
+            (None, Some(r)) => Some(if r.chars().all(|c| c.is_ascii_digit()) { format!("כביש {r}") } else { r }),
+            _ => None,
+        }
+    };
+    let oneway_fwd = ow == 1;
+    let oneway_bwd = ow == -1;
+    let d_main = dest_he.or(dest);
+    let dest_f = dest_text(dest_fwd.or(if !oneway_bwd { d_main } else { None }), dest_ref_fwd.or(if !oneway_bwd { dest_ref } else { None }));
+    let dest_b = dest_text(dest_bwd.or(if oneway_bwd { d_main } else { None }), dest_ref_bwd.or(if oneway_bwd { dest_ref } else { None }));
+    let lanes_f = lanes_fwd.or(if oneway_fwd { lanes } else { None }).map(str::to_string);
+    let lanes_b = lanes_bwd.or(if oneway_bwd { lanes } else { None }).map(str::to_string);
+    let dm = |m: Option<f64>| m.map(|x| (x * 10.0).round().clamp(1.0, 255.0) as u8).unwrap_or(0);
+    let weight_ht = maxweight.and_then(parse_tonnes).map(|t| (t * 2.0).round().clamp(1.0, 255.0) as u8).unwrap_or(0);
+    Some(WayAttrs {
+        class: Some(class),
+        flags: f,
+        speed_fwd: speed_of(limit_fwd),
+        speed_bwd: speed_of(limit_bwd),
+        limit_fwd: limit_fwd.unwrap_or(0),
+        limit_bwd: limit_bwd.unwrap_or(0),
+        name: display,
+        road_ref: rf.map(str::to_string),
+        junction: junction_ref.map(|j| j.trim().to_string()).filter(|j| !j.is_empty()),
+        dest_fwd: dest_f,
+        dest_bwd: dest_b,
+        lanes_fwd: lanes_f,
+        lanes_bwd: lanes_b,
+        height_dm: dm(maxheight.and_then(parse_metres)),
+        weight_ht,
+        width_dm: dm(maxwidth.and_then(parse_metres)),
+        ferry_secs: if ferry { duration.and_then(parse_duration) } else { None },
+    })
 }
 
-fn parse_restriction<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, members: Vec<(RelMemberType, i64, String)>) -> Option<RelRec> {
+/// Restriction tags → (kind e.g. "no_left_turn", vehicle mask). None: not a usable restriction.
+/// `conditional` counts restrictions that only exist with a condition (ignored).
+fn restriction_kind<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, conditional: &mut u64) -> Option<(bool, u8)> {
     let mut is_restriction = false;
-    let mut restriction = None;
-    let mut except_bike = false;
-    let mut bike_only = false;
+    let mut generic = None;
+    let mut specific: Option<(String, u8)> = None;
+    let mut except = 0u8;
+    let mut cond = false;
     for (k, v) in tags {
         match k {
             "type" => is_restriction = v == "restriction",
-            "restriction" | "restriction:motorcar" | "restriction:motor_vehicle" => restriction = Some(v.to_string()),
+            "restriction" => generic = Some(v.to_string()),
+            "restriction:motorcar" => specific = Some((v.to_string(), rmask::CAR)),
+            "restriction:motor_vehicle" | "restriction:vehicle" => specific = Some((v.to_string(), rmask::CAR | rmask::TRUCK)),
+            "restriction:hgv" => specific = Some((v.to_string(), rmask::TRUCK)),
             "restriction:bicycle" => {
-                restriction = Some(v.to_string());
-                bike_only = true;
+                if specific.is_none() {
+                    specific = Some((v.to_string(), rmask::BIKE));
+                }
             }
-            "except" => except_bike = v.split(';').any(|s| s.trim() == "bicycle"),
+            "except" => {
+                for x in v.split(';').map(str::trim) {
+                    except |= match x {
+                        "bicycle" => rmask::BIKE,
+                        "motorcar" => rmask::CAR,
+                        "hgv" => rmask::TRUCK,
+                        "motor_vehicle" | "vehicle" => rmask::CAR | rmask::TRUCK,
+                        _ => 0,
+                    };
+                }
+            }
+            _ if k.starts_with("restriction") && k.ends_with(":conditional") => cond = true,
             _ => {}
         }
     }
     if !is_restriction {
         return None;
     }
-    let r = restriction?;
+    let (r, mask) = match (generic, specific) {
+        (Some(g), _) => (g, rmask::ALL),
+        (None, Some((s, m))) => (s, m),
+        (None, None) => {
+            if cond {
+                *conditional += 1;
+            }
+            return None;
+        }
+    };
     let only = r.starts_with("only_");
     if !(only || r.starts_with("no_")) {
         return None;
     }
+    let mask = mask & !except;
+    (mask != 0).then_some((only, mask))
+}
+
+fn parse_restriction<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, members: Vec<(RelMemberType, i64, String)>, conditional: &mut u64) -> Option<RelRec> {
+    let (only, mask) = restriction_kind(tags, conditional)?;
     let mut from_way = None;
     let mut to_way = None;
     let mut via_node = None;
+    let mut via_ways = Vec::new();
     for (t, id, role) in members {
         match (t, role.as_str()) {
             (RelMemberType::Way, "from") => from_way = Some(id),
             (RelMemberType::Way, "to") => to_way = Some(id),
             (RelMemberType::Node, "via") => via_node = Some(id),
+            (RelMemberType::Way, "via") => via_ways.push(id),
             _ => {}
         }
     }
-    let _ = bike_only;
-    Some(RelRec { from_way: from_way?, via_node: via_node?, to_way: to_way?, only, bike: !except_bike })
+    if via_node.is_none() && via_ways.is_empty() {
+        return None;
+    }
+    if via_node.is_some() {
+        via_ways.clear();
+    }
+    Some(RelRec { from_way: from_way?, via_node, via_ways, to_way: to_way?, only, mask })
+}
+
+/// Where the DEM for elevation sampling is: `MO_DEM`, else the terrain archive of the data
+/// directory that holds `out` (`<root>/routing/graph.bin…`).
+fn dem_for(out: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("MO_DEM") {
+        let p = std::path::PathBuf::from(p);
+        return p.exists().then_some(p);
+    }
+    let root = out.parent()?.parent()?;
+    let p = crate::paths::DataPaths::new(root.to_path_buf()).terrain_file_in_use();
+    p.exists().then_some(p)
+}
+
+/// Accumulated ascent / descent with a hysteresis band (DEM noise on flat roads is not climbing).
+pub fn climb(heights: &[f32]) -> (f32, f32) {
+    const H: f32 = 1.5;
+    let mut it = heights.iter().copied().filter(|h| h.is_finite());
+    let Some(mut anchor) = it.next() else { return (0.0, 0.0) };
+    let (mut up, mut down) = (0.0f32, 0.0f32);
+    for h in it {
+        if h - anchor > H {
+            up += h - anchor;
+            anchor = h;
+        } else if anchor - h > H {
+            down += anchor - h;
+            anchor = h;
+        }
+    }
+    (up, down)
+}
+
+impl Graph {
+    /// Sample the DEM along every edge into `e_rise` / `e_fall` (parallel, spatially coherent
+    /// chunks so each worker decodes few tiles). Edges with no DEM coverage stay 0.
+    pub fn sample_elevation(&mut self, dem: &Path) -> anyhow::Result<()> {
+        use rayon::prelude::*;
+        let t0 = std::time::Instant::now();
+        let ne = self.num_edges();
+        const CHUNK: usize = 20_000;
+        let ranges: Vec<(usize, usize)> = (0..ne).step_by(CHUNK).map(|a| (a, (a + CHUNK).min(ne))).collect();
+        let parts: Vec<anyhow::Result<Vec<(u16, u16)>>> = ranges
+            .par_iter()
+            .map(|&(a, b)| {
+                let mut pts: Vec<LonLat> = Vec::new();
+                let mut off = Vec::with_capacity(b - a + 1);
+                off.push(0usize);
+                for e in a..b {
+                    pts.extend(self.edge_points(e as u32));
+                    off.push(pts.len());
+                }
+                let h = crate::data::terrain::elevations(dem, &pts)?;
+                Ok((0..b - a)
+                    .map(|i| {
+                        let hs: Vec<f32> = h[off[i]..off[i + 1]].iter().map(|x| x.unwrap_or(f32::NAN)).collect();
+                        let (up, down) = climb(&hs);
+                        ((up * 10.0).round().min(65535.0) as u16, (down * 10.0).round().min(65535.0) as u16)
+                    })
+                    .collect())
+            })
+            .collect();
+        let mut rise = Vec::with_capacity(ne);
+        let mut fall = Vec::with_capacity(ne);
+        for p in parts {
+            for (r, f) in p? {
+                rise.push(r);
+                fall.push(f);
+            }
+        }
+        let any = rise.iter().any(|&r| r > 0) || fall.iter().any(|&f| f > 0);
+        if any {
+            self.e_rise = rise;
+            self.e_fall = fall;
+        }
+        log::info!("elevation sampled for {ne} edges in {:?} (data: {any})", t0.elapsed());
+        Ok(())
+    }
 }
 
 /// Build the graph from a PBF and write it to `out`.
@@ -1497,10 +2145,10 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
                     if area_way_ids1.contains(&w.id()) {
                         acc.area_ways.push((w.id(), w.refs().collect()));
                     }
-                    if let Some((class, flags, speed, name)) = parse_way_tags(w.tags()) {
+                    if let Some(a) = parse_way_tags(w.tags()) {
                         let refs: Vec<i64> = w.refs().collect();
                         if refs.len() >= 2 {
-                            acc.ways.push(WayRec { id: w.id(), refs, class, flags, speed, name });
+                            acc.ways.push(WayRec { id: w.id(), refs, a });
                         }
                     }
                     acc
@@ -1508,10 +2156,11 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
                 Element::Relation(r) => {
                     let members: Vec<(RelMemberType, i64, String)> =
                         r.members().map(|m| { let role = m.role().unwrap_or("").to_string(); (m.member_type, m.member_id, role) }).collect();
-                    match parse_restriction(r.tags(), members) {
-                        Some(rr) => Acc { rels: vec![rr], ..Default::default() },
-                        None => Acc::default(),
+                    let mut acc = Acc::default();
+                    if let Some(rr) = parse_restriction(r.tags(), members, &mut acc.conditional) {
+                        acc.rels.push(rr);
                     }
+                    acc
                 }
                 _ => Acc::default(),
             }
@@ -1524,12 +2173,22 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
             a.ways.append(&mut b.ways);
             a.rels.append(&mut b.rels);
             a.area_ways.append(&mut b.area_ways);
+            a.conditional += b.conditional;
             a
         },
     )?;
-    let Acc { ways, rels, area_ways } = acc;
+    let Acc { ways, rels, area_ways, conditional } = acc;
     let area_ways: FxHashMap<i64, Vec<i64>> = area_ways.into_iter().collect();
-    log::info!("pass 1: {} ways, {} restrictions, {} area ways in {:?}", ways.len(), rels.len(), area_ways.len(), t0.elapsed());
+    let n_via_way = rels.iter().filter(|r| r.via_node.is_none()).count();
+    log::info!(
+        "pass 1: {} ways, {} restrictions ({} via ways, {} conditional-only ignored), {} area ways in {:?}",
+        ways.len(),
+        rels.len(),
+        n_via_way,
+        conditional,
+        area_ways.len(),
+        t0.elapsed()
+    );
     if !progress(ProgressPhase::Processing, 30, 100, &format!("נמצאו {} דרכים; קורא צמתים", ways.len())) {
         anyhow::bail!("cancelled");
     }
@@ -1550,8 +2209,10 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     }
     // via nodes of restrictions must be vertices
     for r in &rels {
-        if let Some(c) = usage.get_mut(&r.via_node) {
-            *c = 2;
+        if let Some(v) = r.via_node {
+            if let Some(c) = usage.get_mut(&v) {
+                *c = 2;
+            }
         }
     }
     // area ring nodes: coordinates needed, but they never become vertices on their own
@@ -1561,38 +2222,55 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
         }
     }
 
-    // ---- pass 2: node coordinates
+    // ---- pass 2: node coordinates (+ signals, speed cameras anywhere)
     let needed = std::sync::Arc::new(usage);
     let counter2 = AtomicU64::new(0);
     let reader = ElementReader::from_path(pbf)?;
     let needed2 = needed.clone();
-    let mut coords: Vec<(i64, i32, i32, bool)> = reader.par_map_reduce(
+    const N_SIGNAL: u8 = 1;
+    const N_CAMERA: u8 = 2;
+    const N_NEEDED: u8 = 4;
+    let mut coords: Vec<(i64, i32, i32, u8)> = reader.par_map_reduce(
         move |el| {
             let c = counter2.fetch_add(1, Ordering::Relaxed);
             if c.is_multiple_of(2_000_000) {
                 progress(ProgressPhase::Processing, 30 + (c / 1_000_000).min(20), 100, "קורא קואורדינטות");
             }
-            // `highway=traffic_signals` on a junction node (not `crossing=traffic_signals`)
-            fn is_signal<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
-                let mut tags = tags;
-                tags.any(|(k, v)| k == "highway" && v == "traffic_signals")
+            // `highway=traffic_signals` on a junction node (not `crossing=traffic_signals`);
+            // `highway=speed_camera` anywhere
+            fn kind<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> u8 {
+                let mut k = 0;
+                for (key, v) in tags {
+                    if key == "highway" {
+                        if v == "traffic_signals" {
+                            k |= N_SIGNAL;
+                        } else if v == "speed_camera" {
+                            k |= N_CAMERA;
+                        }
+                    }
+                }
+                k
             }
-            let (id, lon, lat, sig) = match el {
+            let (id, lon, lat, k) = match el {
                 Element::DenseNode(n) => {
-                    if !needed2.contains_key(&n.id()) {
+                    let needed = needed2.contains_key(&n.id());
+                    let k = kind(n.tags());
+                    if !needed && k & N_CAMERA == 0 {
                         return Vec::new();
                     }
-                    (n.id(), n.lon(), n.lat(), is_signal(n.tags()))
+                    (n.id(), n.lon(), n.lat(), k | if needed { N_NEEDED } else { 0 })
                 }
                 Element::Node(n) => {
-                    if !needed2.contains_key(&n.id()) {
+                    let needed = needed2.contains_key(&n.id());
+                    let k = kind(n.tags());
+                    if !needed && k & N_CAMERA == 0 {
                         return Vec::new();
                     }
-                    (n.id(), n.lon(), n.lat(), is_signal(n.tags()))
+                    (n.id(), n.lon(), n.lat(), k | if needed { N_NEEDED } else { 0 })
                 }
                 _ => return Vec::new(),
             };
-            vec![(id, (lon * 1e7).round() as i32, (lat * 1e7).round() as i32, sig)]
+            vec![(id, (lon * 1e7).round() as i32, (lat * 1e7).round() as i32, k)]
         },
         Vec::new,
         |mut a, mut b| {
@@ -1605,18 +2283,20 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     )?;
     coords.sort_unstable_by_key(|c| c.0);
     coords.dedup_by_key(|c| c.0);
-    let signal_nodes: FxHashSet<i64> = coords.iter().filter(|c| c.3).map(|c| c.0).collect();
-    log::info!("pass 2: {} node coords ({} traffic signals) in {:?}", coords.len(), signal_nodes.len(), t0.elapsed());
+    let signal_nodes: FxHashSet<i64> = coords.iter().filter(|c| c.3 & N_SIGNAL != 0).map(|c| c.0).collect();
+    let mut camera_pts: Vec<[i32; 2]> = coords.iter().filter(|c| c.3 & N_CAMERA != 0).map(|c| [c.1, c.2]).collect();
+    camera_pts.sort_unstable();
+    camera_pts.dedup();
+    coords.retain(|c| c.3 & N_NEEDED != 0);
+    log::info!("pass 2: {} node coords ({} traffic signals, {} speed cameras) in {:?}", coords.len(), signal_nodes.len(), camera_pts.len(), t0.elapsed());
     if !progress(ProgressPhase::Processing, 55, 100, "בונה גרף דרכים") {
         anyhow::bail!("cancelled");
     }
     let usage = needed;
-    let lookup = |id: i64| -> Option<(i32, i32)> {
-        coords.binary_search_by_key(&id, |c| c.0).ok().map(|i| (coords[i].1, coords[i].2))
-    };
+    let lookup = |id: i64| -> Option<(i32, i32)> { coords.binary_search_by_key(&id, |c| c.0).ok().map(|i| (coords[i].1, coords[i].2)) };
 
     // ---- compaction
-    let restricted_ways: FxHashSet<i64> = rels.iter().flat_map(|r| [r.from_way, r.to_way]).collect();
+    let restricted_ways: FxHashSet<i64> = rels.iter().flat_map(|r| [r.from_way, r.to_way].into_iter().chain(r.via_ways.iter().copied())).collect();
     let mut way_edges: FxHashMap<i64, Vec<u32>> = FxHashMap::default();
     let mut vid: FxHashMap<i64, u32> = FxHashMap::default();
     let mut g = Graph::default();
@@ -1631,21 +2311,46 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
             (g.vlon.len() - 1) as u32
         })
     };
+    fn intern(g: &mut Graph, names: &mut FxHashMap<String, u32>, n: Option<&String>) -> u32 {
+        let Some(n) = n else { return NO_NAME };
+        *names.entry(n.clone()).or_insert_with(|| {
+            if g.name_off.is_empty() {
+                g.name_off.push(0);
+            }
+            g.name_buf.push_str(n);
+            g.name_off.push(g.name_buf.len() as u32);
+            (g.name_off.len() - 2) as u32
+        })
+    }
 
     for (wi, w) in ways.iter().enumerate() {
         if wi % 100_000 == 0 && !progress(ProgressPhase::Processing, 55 + (wi * 25 / ways.len().max(1)) as u64, 100, "בונה גרף דרכים") {
             anyhow::bail!("cancelled");
         }
-        let name_id = match &w.name {
-            Some(n) => *names.entry(n.clone()).or_insert_with(|| {
-                if g.name_off.is_empty() {
-                    g.name_off.push(0);
-                }
-                g.name_buf.push_str(n);
-                g.name_off.push(g.name_buf.len() as u32);
-                (g.name_off.len() - 2) as u32
-            }),
-            None => NO_NAME,
+        let a = &w.a;
+        let class = a.class.unwrap_or(Class::Other);
+        let name_id = intern(&mut g, &mut names, a.name.as_ref());
+        let ext = if a.has_ext() {
+            Some([
+                intern(&mut g, &mut names, a.road_ref.as_ref()),
+                intern(&mut g, &mut names, a.junction.as_ref()),
+                intern(&mut g, &mut names, a.dest_fwd.as_ref()),
+                intern(&mut g, &mut names, a.dest_bwd.as_ref()),
+                intern(&mut g, &mut names, a.lanes_fwd.as_ref()),
+                intern(&mut g, &mut names, a.lanes_bwd.as_ref()),
+            ])
+        } else {
+            None
+        };
+        // ferries: speed from the crossing time over the whole way
+        let (speed_fwd, speed_bwd) = match a.ferry_secs {
+            Some(secs) => {
+                let pts: Vec<LonLat> = w.refs.iter().filter_map(|&r| lookup(r)).map(|(x, y)| [x as f64 * 1e-7, y as f64 * 1e-7]).collect();
+                let len: f64 = pts.windows(2).map(|p| haversine_m(p[0], p[1])).sum();
+                let kmh = (len / secs as f64 * 3.6).clamp(3.0, 60.0) as u8;
+                (kmh, kmh)
+            }
+            None => (a.speed_fwd, a.speed_bwd),
         };
         // chain of points since last vertex
         let mut chain: Vec<(i64, i32, i32)> = Vec::new();
@@ -1680,12 +2385,30 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
                     g.e_from.push(from);
                     g.e_to.push(to);
                     g.e_len.push(len.max(0.1) as f32);
-                    g.e_speed.push(w.speed);
-                    g.e_flags.push(w.flags);
-                    g.e_class.push(w.class as u8);
+                    g.e_speed.push(speed_fwd);
+                    g.e_speed_bwd.push(speed_bwd);
+                    g.e_limit_fwd.push(a.limit_fwd);
+                    g.e_limit_bwd.push(a.limit_bwd);
+                    g.e_flags.push(a.flags);
+                    g.e_class.push(class as u8);
                     g.e_name.push(name_id);
                     g.e_bear_start.push(bs);
                     g.e_bear_end.push(be);
+                    if let Some(x) = ext {
+                        g.ext.edge.push(eid);
+                        g.ext.road_ref.push(x[0]);
+                        g.ext.junction.push(x[1]);
+                        g.ext.dest_fwd.push(x[2]);
+                        g.ext.dest_bwd.push(x[3]);
+                        g.ext.lanes_fwd.push(x[4]);
+                        g.ext.lanes_bwd.push(x[5]);
+                    }
+                    if a.has_limits() {
+                        g.limits.edge.push(eid);
+                        g.limits.height_dm.push(a.height_dm);
+                        g.limits.weight_ht.push(a.weight_ht);
+                        g.limits.width_dm.push(a.width_dm);
+                    }
                     for c in &chain[1..chain.len() - 1] {
                         g.geom.push(c.1);
                         g.geom.push(c.2);
@@ -1707,6 +2430,13 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
         }
     }
     drop(ways);
+    if g.e_limit_fwd.iter().chain(g.e_limit_bwd.iter()).all(|&l| l == 0) {
+        g.e_limit_fwd.clear();
+        g.e_limit_bwd.clear();
+    }
+    if g.e_speed_bwd == g.e_speed {
+        g.e_speed_bwd.clear();
+    }
 
     // ---- restricted territories: stitch rings, flag edges
     for rel in &area_rels {
@@ -1760,19 +2490,60 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
     }
     log::info!("{} signalised junction vertices", n_sig);
 
+    // speed cameras within 60 m of a car road (others: on paths, wrongly tagged)
+    {
+        let car = |e: u32| g.e_flags[e as usize] & (flags::CAR_FWD | flags::CAR_BWD) != 0;
+        // the grid is built later; a temporary one is cheap
+        g.proj0 = Proj::for_bbox(g.bbox);
+        g.vpx = (0..nv).map(|i| g.proj(g.vlon[i] as f64 * 1e-7, g.vlat[i] as f64 * 1e-7)[0]).collect();
+        g.vpy = (0..nv).map(|i| g.proj(g.vlon[i] as f64 * 1e-7, g.vlat[i] as f64 * 1e-7)[1]).collect();
+        g.grid = Grid::build(&g);
+        let kept: Vec<i32> = camera_pts
+            .iter()
+            .filter(|c| g.snap([c[0] as f64 * 1e-7, c[1] as f64 * 1e-7], &car).is_some_and(|s| s.dist_m <= 60.0))
+            .flat_map(|c| [c[0], c[1]])
+            .collect();
+        log::info!("{} speed cameras on car roads", kept.len() / 2);
+        g.cameras = kept;
+    }
+
     // restrictions
-    let mut restrictions = Vec::new();
+    let (mut restrictions, mut multi) = (Vec::new(), Vec::new());
+    let (mut ambiguous, mut unresolved) = (0usize, 0usize);
+    let edges_at = |way: i64, v: u32, g: &Graph| -> Vec<u32> {
+        way_edges.get(&way).map(|es| es.iter().copied().filter(|&e| g.e_from[e as usize] == v || g.e_to[e as usize] == v).collect()).unwrap_or_default()
+    };
     for r in &rels {
-        let Some(&via) = vid.get(&r.via_node) else { continue };
-        let find = |way: i64| -> Option<u32> {
-            way_edges.get(&way)?.iter().copied().find(|&e| g.e_from[e as usize] == via || g.e_to[e as usize] == via)
-        };
-        if let (Some(fe), Some(te)) = (find(r.from_way), find(r.to_way)) {
-            restrictions.push(Restriction { via, from_edge: fe, to_edge: te, only: r.only, bike: r.bike });
+        if let Some(vn) = r.via_node {
+            let Some(&via) = vid.get(&vn) else { continue };
+            let (fs, ts) = (edges_at(r.from_way, via, &g), edges_at(r.to_way, via, &g));
+            if fs.is_empty() || ts.is_empty() {
+                unresolved += 1;
+                continue;
+            }
+            if fs.len() > 1 || ts.len() > 1 {
+                ambiguous += 1;
+            }
+            // a from / to way passing through the via node (not split there): the restriction
+            // holds for each of its pieces at the via node
+            for &fe in &fs {
+                for &te in &ts {
+                    if fe != te || r.from_way == r.to_way {
+                        restrictions.push(Restriction { via, from_edge: fe, to_edge: te, only: r.only, mask: r.mask });
+                    }
+                }
+            }
+        } else {
+            match via_way_chain(&g, &way_edges, r) {
+                Some(edges) => multi.push(MultiRestriction { edges, only: r.only, mask: r.mask }),
+                None => unresolved += 1,
+            }
         }
     }
     restrictions.sort_by_key(|r| r.via);
     g.restrictions = restrictions;
+    g.multi = multi;
+    log::info!("restrictions: {} via node, {} via way, {} ambiguous, {} not resolvable", g.restrictions.len(), g.multi.len(), ambiguous, unresolved);
 
     log::info!(
         "graph: {} vertices, {} edges, {} geom pts, {} names, {} restrictions, built in {:?}",
@@ -1784,10 +2555,74 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Result<()>
         t0.elapsed()
     );
     g.finish_build();
+    if let Some(dem) = dem_for(out) {
+        progress(ProgressPhase::Processing, 82, 100, "מחשב שיפועים ממודל הגובה");
+        if let Err(e) = g.sample_elevation(&dem) {
+            log::warn!("elevation sampling failed (graph without elevation): {e:#}");
+        }
+    }
     progress(ProgressPhase::Finalizing, 85, 100, "שומר את גרף הדרכים");
     save(&g, out)?;
     progress(ProgressPhase::Finalizing, 100, 100, &format!("גרף הדרכים נבנה: {} צמתים, {} קטעי דרך", nv, ne));
     Ok(())
+}
+
+/// Edge sequence from, via…, to of a via-way restriction (None when the ways do not connect).
+fn via_way_chain(g: &Graph, way_edges: &FxHashMap<i64, Vec<u32>>, r: &RelRec) -> Option<Vec<u32>> {
+    let ends = |e: u32| (g.e_from[e as usize], g.e_to[e as usize]);
+    let touches = |es: &[u32], v: u32| es.iter().copied().find(|&e| {
+        let (a, b) = ends(e);
+        a == v || b == v
+    });
+    let from_edges = way_edges.get(&r.from_way)?;
+    let to_edges = way_edges.get(&r.to_way)?;
+    // vertices of the from way
+    let from_vs: FxHashSet<u32> = from_edges.iter().flat_map(|&e| [ends(e).0, ends(e).1]).collect();
+    let mut chain: Vec<u32> = Vec::new();
+    let mut cur: Option<u32> = None; // current vertex
+    let mut from_edge = None;
+    for (k, w) in r.via_ways.iter().enumerate() {
+        let es = way_edges.get(w)?;
+        // entry vertex: for the first via way the one shared with the from way, else the current
+        let entry = match cur {
+            Some(v) => v,
+            None => {
+                let v = es.iter().flat_map(|&e| [ends(e).0, ends(e).1]).find(|v| from_vs.contains(v))?;
+                from_edge = touches(from_edges, v);
+                v
+            }
+        };
+        // walk the via way's edges from the entry vertex
+        let mut used = vec![false; es.len()];
+        let mut v = entry;
+        while let Some(i) = (0..es.len()).find(|&i| !used[i] && (ends(es[i]).0 == v || ends(es[i]).1 == v)) {
+            used[i] = true;
+            chain.push(es[i]);
+            let (a, b) = ends(es[i]);
+            v = if a == v { b } else { a };
+            // stop at the next via way / the to way
+            let next_way_touch = match r.via_ways.get(k + 1) {
+                Some(nw) => way_edges.get(nw).is_some_and(|ne| touches(ne, v).is_some()),
+                None => touches(to_edges, v).is_some(),
+            };
+            if next_way_touch {
+                break;
+            }
+        }
+        if v == entry {
+            return None;
+        }
+        cur = Some(v);
+    }
+    let exit = cur?;
+    let to_edge = to_edges.iter().copied().find(|&e| {
+        let (a, b) = ends(e);
+        (a == exit || b == exit) && !chain.contains(&e)
+    })?;
+    let mut out = vec![from_edge?];
+    out.extend(chain);
+    out.push(to_edge);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1805,7 +2640,8 @@ mod tests {
     #[test]
     fn way_tags_residential() {
         let tags = vec![("highway", "residential"), ("name", "Herzl"), ("name:he", "הרצל")];
-        let (class, f, speed, name) = parse_way_tags(tags.into_iter()).unwrap();
+        let a = parse_way_tags(tags.into_iter()).unwrap();
+        let (class, f, speed, name) = (a.class.unwrap(), a.flags, a.speed_fwd, a.name);
         assert_eq!(class, Class::Residential);
         assert!(f & flags::CAR_FWD != 0 && f & flags::CAR_BWD != 0);
         assert!(f & flags::FOOT != 0 && f & flags::BIKE_FWD != 0);
@@ -1816,7 +2652,9 @@ mod tests {
     #[test]
     fn way_tags_motorway_oneway_toll() {
         let tags = vec![("highway", "motorway"), ("ref", "6"), ("toll", "yes")];
-        let (class, f, speed, name) = parse_way_tags(tags.into_iter()).unwrap();
+        let a = parse_way_tags(tags.into_iter()).unwrap();
+        let (class, f, speed, name) = (a.class.unwrap(), a.flags, a.speed_fwd, a.name.clone());
+        assert_eq!(a.road_ref.as_deref(), Some("6"));
         assert_eq!(class, Class::Motorway);
         assert!(f & flags::CAR_FWD != 0 && f & flags::CAR_BWD == 0);
         assert!(f & flags::FOOT == 0 && f & flags::BIKE_FWD == 0);
@@ -1828,12 +2666,12 @@ mod tests {
     #[test]
     fn way_tags_footway_and_private() {
         let tags = vec![("highway", "footway")];
-        let (_, f, _, _) = parse_way_tags(tags.into_iter()).unwrap();
+        let f = parse_way_tags(tags.into_iter()).unwrap().flags;
         assert!(f & flags::FOOT != 0 && f & (flags::CAR_FWD | flags::CAR_BWD) == 0);
         let tags = vec![("highway", "service"), ("access", "private")];
         assert!(parse_way_tags(tags.into_iter()).is_none());
         let tags = vec![("highway", "service"), ("access", "private"), ("foot", "yes")];
-        let (_, f, _, _) = parse_way_tags(tags.into_iter()).unwrap();
+        let f = parse_way_tags(tags.into_iter()).unwrap().flags;
         assert!(f & flags::FOOT != 0 && f & flags::CAR_FWD == 0);
     }
 
@@ -1925,7 +2763,7 @@ mod tests {
             }
             let e2 = others[rng.below(others.len() as u64) as usize];
             let only = rng.chance(20);
-            g.restrictions.push(Restriction { via, from_edge: e1, to_edge: e2, only, bike: true });
+            g.restrictions.push(Restriction { via, from_edge: e1, to_edge: e2, only, mask: rmask::ALL });
         }
         g.finish_build();
         g
@@ -1943,7 +2781,7 @@ mod tests {
         for d in 0..2u32 {
             let s = from.edge * 2 + d;
             if prof.allowed(g, s) {
-                let c = prof.cost(g, from.edge) * (1.0 - fd(from, d));
+                let c = prof.cost(g, s) * (1.0 - fd(from, d));
                 dist[s as usize] = c;
                 heap.push(Reverse(((c * 1000.0) as u64, s)));
             }
@@ -1960,7 +2798,7 @@ mod tests {
                     continue;
                 }
                 let Some(t) = prof.turn_cost(g, s, s2) else { continue };
-                let nd = base + t + prof.cost(g, e2);
+                let nd = base + t + prof.cost(g, s2);
                 if nd < dist[s2 as usize] {
                     dist[s2 as usize] = nd;
                     heap.push(Reverse(((nd * 1000.0) as u64, s2)));
@@ -1971,7 +2809,7 @@ mod tests {
             .map(|d| to.edge * 2 + d)
             .filter(|&s| dist[s as usize].is_finite())
             .map(|s| {
-                let w = prof.cost(g, to.edge);
+                let w = prof.cost(g, s);
                 dist[s as usize] - w + w * fd(to, s & 1)
             })
             .min_by(|a, b| a.total_cmp(b))
@@ -1999,7 +2837,7 @@ mod tests {
                     let from = Snap { edge: ea, frac: fa, point: g.vertex(g.e_from[ea as usize]), dist_m: 0.0 };
                     let to = Snap { edge: eb, frac: fb, point: g.vertex(g.e_to[eb as usize]), dist_m: 0.0 };
                     let want = dijkstra(&g, &prof, &from, &to);
-                    let params = SearchParams { profile: &prof, penalty: None, max_cost: f32::INFINITY };
+                    let params = SearchParams::new(&prof);
                     let got = search(&g, &params, &from, &to).map(|p| p.cost);
                     match (want, got) {
                         (None, None) => {}
@@ -2044,7 +2882,7 @@ mod tests {
             }
             g.e_geom_off.push((g.geom.len() / 2) as u32);
         }
-        g.restrictions.push(Restriction { via: 1, from_edge: 0, to_edge: 1, only: false, bike: true });
+        g.restrictions.push(Restriction { via: 1, from_edge: 0, to_edge: 1, only: false, mask: rmask::ALL });
         g.build_adjacency();
         g.finish_build();
         g
@@ -2109,6 +2947,258 @@ mod tests {
         assert!(s.dist_m < 20.0);
         // far away: nothing within 8 km
         assert!(g.snap([35.5, 33.0], &any).is_none());
+    }
+
+    /// Graph from points (lon, lat) and undirected residential edges, bearings from coordinates.
+    fn mk(pts: &[(f64, f64)], edges: &[(u32, u32)]) -> Graph {
+        let mut g = Graph::default();
+        for &(lon, lat) in pts {
+            g.vlon.push((lon * 1e7) as i32);
+            g.vlat.push((lat * 1e7) as i32);
+        }
+        g.bbox = [34.0, 31.0, 36.0, 33.0];
+        g.e_geom_off.push(0);
+        g.name_off.push(0);
+        for &(a, b) in edges {
+            let (pa, pb) = (g.vertex(a), g.vertex(b));
+            let bs = bearing_deg(pa, pb).round() as u16 % 360;
+            g.e_from.push(a);
+            g.e_to.push(b);
+            g.e_len.push(haversine_m(pa, pb) as f32);
+            g.e_speed.push(50);
+            g.e_flags.push(flags::CAR_FWD | flags::CAR_BWD | flags::FOOT | flags::BIKE_FWD | flags::BIKE_BWD);
+            g.e_class.push(Class::Residential as u8);
+            g.e_name.push(NO_NAME);
+            g.e_bear_start.push(bs);
+            g.e_bear_end.push(bs);
+            g.e_geom_off.push(0);
+        }
+        g.build_adjacency();
+        g
+    }
+
+    /// Edge ids of a path between the (pre-renumbering) vertices `a` and `b` found by A*, as
+    /// pairs of vertex coordinates so the test does not depend on edge numbering.
+    fn path_edges(g: &Graph, mode: crate::types::Mode, from_e: u32, to_e: u32) -> Option<Vec<u32>> {
+        use crate::routing::astar::{search, SearchParams};
+        use crate::routing::profile::Profile;
+        let prof = Profile::new(mode, Default::default());
+        let from = Snap { edge: from_e, frac: 0.0, point: g.vertex(g.e_from[from_e as usize]), dist_m: 0.0 };
+        let to = Snap { edge: to_e, frac: 1.0, point: g.vertex(g.e_to[to_e as usize]), dist_m: 0.0 };
+        search(g, &SearchParams::new(&prof), &from, &to).map(|p| p.states.iter().map(|s| s >> 1).collect())
+    }
+
+    /// Find the edge between two original points after `finish_build` renumbered everything.
+    fn edge_between(g: &Graph, a: (f64, f64), b: (f64, f64)) -> u32 {
+        let near = |v: u32, p: (f64, f64)| {
+            let q = g.vertex(v);
+            (q[0] - p.0).abs() < 1e-6 && (q[1] - p.1).abs() < 1e-6
+        };
+        (0..g.num_edges() as u32)
+            .find(|&e| {
+                let (f, t) = (g.e_from[e as usize], g.e_to[e as usize]);
+                (near(f, a) && near(t, b)) || (near(f, b) && near(t, a))
+            })
+            .expect("edge")
+    }
+
+    #[test]
+    fn bicycle_only_restriction_does_not_bind_cars() {
+        use crate::types::Mode;
+        // A - B - C(north of B), B - D (east): no left turn A→B→C for bicycles only
+        let p = [(34.80, 32.05), (34.801, 32.05), (34.801, 32.051), (34.802, 32.05)];
+        let mut g = mk(&p, &[(0, 1), (1, 2), (1, 3)]);
+        g.restrictions.push(Restriction { via: 1, from_edge: 0, to_edge: 1, only: false, mask: rmask::BIKE });
+        g.finish_build();
+        let (ab, bc, bd) = (edge_between(&g, p[0], p[1]), edge_between(&g, p[1], p[2]), edge_between(&g, p[1], p[3]));
+        let car = path_edges(&g, Mode::Car, ab, bc).unwrap();
+        assert_eq!(car, vec![ab, bc], "car takes the direct turn");
+        let bike = path_edges(&g, Mode::Bike, ab, bc).unwrap();
+        assert!(bike.contains(&bd), "bike must detour (U-turn at D): {bike:?}");
+    }
+
+    #[test]
+    fn several_only_restrictions_from_one_edge() {
+        use crate::routing::profile::Profile;
+        use crate::types::Mode;
+        // from A–B at B: only to C or only to D (two lane groups); E is forbidden
+        let p = [(34.80, 32.05), (34.801, 32.05), (34.801, 32.051), (34.802, 32.05), (34.801, 32.049)];
+        let mut g = mk(&p, &[(0, 1), (1, 2), (1, 3), (1, 4)]);
+        g.restrictions.push(Restriction { via: 1, from_edge: 0, to_edge: 1, only: true, mask: rmask::ALL });
+        g.restrictions.push(Restriction { via: 1, from_edge: 0, to_edge: 2, only: true, mask: rmask::ALL });
+        g.finish_build();
+        let (ab, bc, bd, be) = (edge_between(&g, p[0], p[1]), edge_between(&g, p[1], p[2]), edge_between(&g, p[1], p[3]), edge_between(&g, p[1], p[4]));
+        let prof = Profile::new(Mode::Car, Default::default());
+        let b = g.restrictions[0].via;
+        let into_b = g.state_from(g.e_from[ab as usize], ab);
+        assert_eq!(g.head(into_b), b);
+        assert!(prof.turn_cost(&g, into_b, g.state_from(b, bc)).is_some());
+        assert!(prof.turn_cost(&g, into_b, g.state_from(b, bd)).is_some());
+        assert!(prof.turn_cost(&g, into_b, g.state_from(b, be)).is_none());
+    }
+
+    #[test]
+    fn via_way_restriction() {
+        use crate::types::Mode;
+        // A - B - C - D along a line, C - E north; detour A - F - E. "No A-B, B-C, C-E" (via way B-C).
+        let p = [(34.80, 32.05), (34.801, 32.05), (34.802, 32.05), (34.803, 32.05), (34.802, 32.051), (34.80, 32.052)];
+        let edges = [(0, 1), (1, 2), (2, 4), (2, 3), (0, 5), (5, 4)];
+        let build = |only: bool, to: usize| {
+            let mut g = mk(&p, &edges);
+            g.multi.push(MultiRestriction { edges: vec![0, 1, to as u32], only, mask: rmask::CAR | rmask::TRUCK });
+            g.finish_build();
+            g
+        };
+        // without the restriction the straight way is used
+        let mut free = mk(&p, &edges);
+        free.finish_build();
+        let (ab, ce) = (edge_between(&free, p[0], p[1]), edge_between(&free, p[2], p[4]));
+        let r = path_edges(&free, Mode::Car, ab, ce).unwrap();
+        assert!(r.contains(&edge_between(&free, p[1], p[2])), "{r:?}");
+
+        // no_*: B-C then C-E is forbidden -> the detour through F
+        let g = build(false, 2);
+        let (ab, bc, ce, af) = (edge_between(&g, p[0], p[1]), edge_between(&g, p[1], p[2]), edge_between(&g, p[2], p[4]), edge_between(&g, p[0], p[5]));
+        assert_eq!(g.multi.len(), 1);
+        let r = path_edges(&g, Mode::Car, ab, ce).unwrap();
+        assert!(!r.windows(2).any(|w| w == [bc, ce]), "{r:?}");
+        assert!(r.contains(&af), "{r:?}");
+        // the restriction is for cars and trucks only: walking may go straight
+        let r = path_edges(&g, Mode::Foot, ab, ce).unwrap();
+        assert!(r.contains(&bc), "{r:?}");
+
+        // only_*: after A-B, B-C one must continue to D, so E is reached through F as well
+        let g = build(true, 3);
+        let (ab, bc, ce) = (edge_between(&g, p[0], p[1]), edge_between(&g, p[1], p[2]), edge_between(&g, p[2], p[4]));
+        let r = path_edges(&g, Mode::Car, ab, ce).unwrap();
+        assert!(!r.windows(2).any(|w| w == [bc, ce]), "{r:?}");
+    }
+
+    #[test]
+    fn restriction_tags() {
+        let mut c = 0;
+        let t = |v: &[(&'static str, &'static str)], c: &mut u64| restriction_kind(v.iter().copied(), c);
+        assert_eq!(t(&[("type", "restriction"), ("restriction", "no_left_turn")], &mut c), Some((false, rmask::ALL)));
+        assert_eq!(t(&[("type", "restriction"), ("restriction:bicycle", "no_left_turn")], &mut c), Some((false, rmask::BIKE)));
+        assert_eq!(t(&[("type", "restriction"), ("restriction:hgv", "only_straight_on")], &mut c), Some((true, rmask::TRUCK)));
+        assert_eq!(t(&[("type", "restriction"), ("restriction", "no_u_turn"), ("except", "bicycle;psv")], &mut c), Some((false, rmask::CAR | rmask::TRUCK)));
+        assert_eq!(t(&[("type", "restriction"), ("restriction:conditional", "no_left_turn @ (Mo-Fr 07:00-09:00)")], &mut c), None);
+        assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn way_tags_v7() {
+        let a = parse_way_tags(
+            [
+                ("highway", "motorway_link"),
+                ("oneway", "yes"),
+                ("junction:ref", "5"),
+                ("destination", "ירושלים;תל אביב"),
+                ("turn:lanes", "through|slight_right"),
+                ("maxspeed", "IL:urban"),
+                ("maxheight", "4.2"),
+                ("maxweight", "7500 kg"),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(a.junction.as_deref(), Some("5"));
+        assert_eq!(a.dest_fwd.as_deref(), Some("ירושלים, תל אביב"));
+        assert_eq!(a.dest_bwd, None);
+        assert_eq!(a.lanes_fwd.as_deref(), Some("through|slight_right"));
+        assert_eq!((a.limit_fwd, a.limit_bwd), (50, 50));
+        assert_eq!((a.height_dm, a.weight_ht), (42, 15));
+        let a = parse_way_tags([("highway", "primary"), ("maxspeed:forward", "70"), ("maxspeed:backward", "50")].into_iter()).unwrap();
+        assert_eq!((a.speed_fwd, a.speed_bwd, a.limit_fwd, a.limit_bwd), (70, 50, 70, 50));
+        let a = parse_way_tags([("highway", "residential"), ("access", "destination")].into_iter()).unwrap();
+        assert!(a.flags & flags::DESTINATION != 0 && a.flags & flags::CAR_FWD != 0);
+        let a = parse_way_tags([("route", "ferry"), ("duration", "01:30")].into_iter()).unwrap();
+        assert!(a.flags & flags::FERRY != 0 && a.flags & flags::CAR_FWD != 0);
+        assert_eq!(a.ferry_secs, Some(5400));
+        let a = parse_way_tags([("highway", "steps")].into_iter()).unwrap();
+        assert!(a.flags & flags::WHEELCHAIR_NO != 0);
+        let a = parse_way_tags([("highway", "service"), ("hgv", "no")].into_iter()).unwrap();
+        assert!(a.flags & flags::HGV_NO != 0);
+        assert_eq!(parse_duration("PT1H20M"), Some(4800));
+        assert_eq!(parse_metres("12'6\""), Some((12.0 * 12.0 + 6.0) * 0.0254));
+    }
+
+    #[test]
+    fn climb_hysteresis() {
+        let (up, down) = climb(&[100.0, 100.5, 101.0, 100.4, 103.0, 110.0, 108.0, 104.0]);
+        assert!((up - 10.0).abs() < 1e-4 && (down - 6.0).abs() < 1e-4, "{up} {down}");
+        assert_eq!(climb(&[5.0, 5.4, 4.8, 5.2]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn v7_fields_roundtrip() {
+        let mut g = tiny();
+        let ne = g.num_edges();
+        g.e_speed_bwd = vec![30; ne];
+        g.e_limit_fwd = vec![50; ne];
+        g.e_limit_bwd = vec![0; ne];
+        g.e_rise = vec![12; ne];
+        g.e_fall = vec![3; ne];
+        g.name_buf.push_str("443");
+        g.name_off.push(g.name_buf.len() as u32);
+        let n443 = (g.name_off.len() - 2) as u32;
+        g.ext = EdgeExt { edge: vec![2], road_ref: vec![n443], junction: vec![NO_NAME], dest_fwd: vec![0], dest_bwd: vec![NO_NAME], lanes_fwd: vec![NO_NAME], lanes_bwd: vec![NO_NAME] };
+        g.limits = Limits { edge: vec![1], height_dm: vec![40], weight_ht: vec![0], width_dm: vec![0] };
+        g.cameras = vec![347_850_000, 320_850_000];
+        g.multi = vec![MultiRestriction { edges: vec![0, 1, 2], only: true, mask: rmask::CAR }];
+        g.index_multi();
+        let dir = std::env::temp_dir().join(format!("mo-graph-v7-{}", std::process::id()));
+        let f = dir.join("g.bin");
+        save(&g, &f).unwrap();
+        let h = load(&f).unwrap();
+        assert_eq!(h.e_speed_bwd, g.e_speed_bwd);
+        assert_eq!(h.limit_s(0), Some(50));
+        assert_eq!(h.limit_s(1), None);
+        assert_eq!(h.climb_s(0), (1.2, 0.3));
+        assert_eq!(h.climb_s(1), (0.3, 1.2));
+        assert_eq!(h.road_ref(2), Some("443"));
+        assert_eq!(h.destination_s(4), Some("הרצל"));
+        assert_eq!(h.limits_of(1), Some((4.0, 0.0, 0.0)));
+        assert_eq!(h.camera_points().count(), 1);
+        assert_eq!(h.multi, g.multi);
+        assert_eq!(h.multi_by_last.get(&1).map(|v| v.len()), Some(1));
+        assert_eq!(h.restrictions[0].mask, rmask::ALL);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn isochrone_bands_grow() {
+        use crate::types::Mode;
+        let mut rng = Rng(0xDEAD_BEEF_1234_5678);
+        let g = random_graph(&mut rng, 14);
+        let o = g.vertex((g.num_vertices() / 2) as u32);
+        let bands = crate::routing::iso::isochrone(&g, o, Mode::Foot, &[2.0, 4.0, 1.0]).unwrap();
+        assert_eq!(bands.iter().map(|b| b.minutes).collect::<Vec<_>>(), vec![1.0, 2.0, 4.0]);
+        let area = |rings: &[Vec<LonLat>]| -> f64 {
+            rings.iter().map(|r| r.windows(2).map(|w| w[0][0] * w[1][1] - w[1][0] * w[0][1]).sum::<f64>() / 2.0).sum()
+        };
+        let a: Vec<f64> = bands.iter().map(|b| area(&b.rings)).collect();
+        assert!(a[0] > 0.0 && a[0] <= a[1] && a[1] <= a[2], "{a:?}");
+        // walking 4 minutes covers far less than the whole grid (~2 km across)
+        assert!(a[2] < 0.02 * 0.02, "{a:?}");
+    }
+
+    #[test]
+    fn walk_times_match_single_searches() {
+        let mut rng = Rng(0x1357_9BDF_2468_ACE0);
+        let g = random_graph(&mut rng, 10);
+        let o = g.vertex(0);
+        let targets: Vec<LonLat> = (1..12).map(|i| g.vertex((i * 7) as u32 % g.num_vertices() as u32)).collect();
+        let many = crate::routing::walk_times_from(&g, o, &targets, 3600.0);
+        for (t, m) in targets.iter().zip(&many) {
+            let single = crate::routing::astar::walk_leg(&g, o, *t).map(|l| l.duration_sec as f32);
+            match (single, m) {
+                // the one-to-many search minimises real time, walk_leg the preference cost
+                (Some(s), Some(m)) => assert!(*m <= s + 1.0 && s <= m * 1.3 + 30.0, "single {s} many {m}"),
+                (None, None) => {}
+                (s, m) => panic!("single {s:?} many {m:?}"),
+            }
+        }
     }
 
     #[test]

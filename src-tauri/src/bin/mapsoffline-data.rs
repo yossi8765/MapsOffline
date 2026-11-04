@@ -119,6 +119,36 @@ enum Cmd {
         /// Avoid difficult junctions (unsignalised left turns / U-turns)
         #[arg(long)]
         hard_turns: bool,
+        /// Truck dimensions: height_m,weight_t[,width_m] (mode truck)
+        #[arg(long)]
+        vehicle: Option<String>,
+        /// Prefer flatter ways (bike / foot)
+        #[arg(long)]
+        hills: bool,
+        /// Avoid the road nearest this point: lon,lat (repeatable)
+        #[arg(long)]
+        avoid_point: Vec<String>,
+        /// Use this graph file instead of the installed one
+        #[arg(long)]
+        graph: Option<String>,
+    },
+    /// Build graph.bin straight from a PBF (no download, no manifest): `graph-build <pbf> <out>`
+    /// [--dem <terrain.pmtiles>]
+    GraphBuild {
+        pbf: String,
+        out: String,
+        #[arg(long)]
+        dem: Option<String>,
+    },
+    /// Isochrone bands around a point: `iso lon,lat --mode foot --minutes 5,10,15`
+    Iso {
+        at: String,
+        #[arg(long, default_value = "foot")]
+        mode: String,
+        #[arg(long, value_delimiter = ',', default_value = "5,10,15")]
+        minutes: Vec<f64>,
+        #[arg(long)]
+        graph: Option<String>,
     },
     /// Geocode a query (addresses, places, POIs and – when transit data exists – bus stops)
     Search {
@@ -156,7 +186,28 @@ enum Cmd {
     Bench {
         #[arg(long, default_value_t = 5)]
         iters: usize,
+        /// Use this graph file instead of the installed one
+        #[arg(long)]
+        graph: Option<String>,
+        /// Also compare N random long car routes with and without hierarchy pruning
+        #[arg(long, default_value_t = 0)]
+        verify: usize,
+        /// Only the routing part (skip the geocoder)
+        #[arg(long)]
+        routing_only: bool,
     },
+}
+
+fn parse_mode(m: &str) -> anyhow::Result<Mode> {
+    Ok(match m {
+        "car" => Mode::Car,
+        "foot" => Mode::Foot,
+        "bike" => Mode::Bike,
+        "transit" => Mode::Transit,
+        "truck" => Mode::Truck,
+        "wheelchair" => Mode::Wheelchair,
+        m => anyhow::bail!("unknown mode {m}"),
+    })
 }
 
 fn parse_ll(s: &str) -> anyhow::Result<Waypoint> {
@@ -340,14 +391,31 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&c)?);
             eprintln!("checked in {:?}", t0.elapsed());
         }
-        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns } => {
-            let mode = match mode.as_str() {
-                "car" => Mode::Car,
-                "foot" => Mode::Foot,
-                "bike" => Mode::Bike,
-                "transit" => Mode::Transit,
-                m => anyhow::bail!("unknown mode {m}"),
+        Cmd::GraphBuild { pbf, out, dem } => {
+            if let Some(d) = dem {
+                std::env::set_var("MO_DEM", d);
+            }
+            let t0 = std::time::Instant::now();
+            let progress = |_: ProgressPhase, done: u64, total: u64, msg: &str| -> bool {
+                eprintln!("{done}/{total} {msg}");
+                true
             };
+            mapsoffline_lib::routing::build_graph(std::path::Path::new(&pbf), std::path::Path::new(&out), &progress)?;
+            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            println!("graph built in {:?}: {:.1} MB", t0.elapsed(), size as f64 / 1e6);
+        }
+        Cmd::Iso { at, mode, minutes, graph } => {
+            let p = parse_ll(&at)?;
+            let g = mapsoffline_lib::routing::load_graph(&graph.map(std::path::PathBuf::from).unwrap_or_else(|| paths.graph_file()))?;
+            let t0 = std::time::Instant::now();
+            let bands = mapsoffline_lib::routing::iso::isochrone(&g, [p.lon, p.lat], parse_mode(&mode)?, &minutes)?;
+            for b in &bands {
+                println!("{} min: {} rings, {} points", b.minutes, b.rings.len(), b.rings.iter().map(|r| r.len()).sum::<usize>());
+            }
+            println!("computed in {:?}", t0.elapsed());
+        }
+        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns, vehicle, hills, avoid_point, graph: graph_file } => {
+            let mode = parse_mode(&mode)?;
             let avoid = Avoid {
                 toll: avoid_toll,
                 area_a: matches!(avoid_areas.as_deref(), Some("a") | Some("ab")),
@@ -355,7 +423,16 @@ fn main() -> anyhow::Result<()> {
                 unpaved: unpaved != "allow",
                 unpaved_long_only: unpaved == "avoidLong",
                 hard_turns,
+                hills,
+                points: avoid_point.iter().map(|s| parse_ll(s).map(|w| [w.lon, w.lat])).collect::<anyhow::Result<Vec<_>>>()?,
                 ..Default::default()
+            };
+            let vehicle = match vehicle {
+                Some(v) => {
+                    let n: Vec<f64> = v.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+                    Some(VehicleDims { height_m: n.first().copied(), weight_t: n.get(1).copied(), width_m: n.get(2).copied() })
+                }
+                None => None,
             };
             let req = RouteRequest {
                 waypoints: vec![parse_ll(&from)?, parse_ll(&to)?],
@@ -366,10 +443,12 @@ fn main() -> anyhow::Result<()> {
                 },
                 avoid,
                 alternatives,
+                vehicle,
+                ..Default::default()
             };
             // graph is needed for offline routing and for checking online routes against territories
-            let graph = mapsoffline_lib::routing::load_graph(&paths.graph_file()).ok();
-            let online = if source != "offline" {
+            let graph = mapsoffline_lib::routing::load_graph(&graph_file.map(std::path::PathBuf::from).unwrap_or_else(|| paths.graph_file())).ok();
+            let online = if source != "offline" && mapsoffline_lib::online::supports(&req) {
                 let mut settings = Settings::default();
                 if let Some(u) = osrm_url {
                     settings.osrm_url = u;
@@ -463,7 +542,18 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         println!("   {:?} {:.0} m {:.1} min", leg.kind, leg.distance_m, leg.duration_sec / 60.0);
                         for s in &leg.steps {
-                            println!("      {:?} {:.0}m  {}", s.maneuver, s.distance_m, s.instruction);
+                            let mut extra = String::new();
+                            if let Some(r) = &s.road_ref {
+                                extra.push_str(&format!(" [ref {r}]"));
+                            }
+                            if let Some(l) = s.speed_limit_kmh {
+                                extra.push_str(&format!(" [{l} km/h]"));
+                            }
+                            if !s.lanes.is_empty() {
+                                let lanes: Vec<String> = s.lanes.iter().map(|l| format!("{}{}", l.directions.join(";"), if l.active { "*" } else { "" })).collect();
+                                extra.push_str(&format!(" [lanes {}]", lanes.join("|")));
+                            }
+                            println!("      {:?} {:.0}m  {}{}", s.maneuver, s.distance_m, s.instruction, extra);
                         }
                     }
                 }
@@ -597,7 +687,7 @@ fn main() -> anyhow::Result<()> {
             }
             println!("geocoder {geo_ms:.1} ms, stops {stop_ms:.1} ms");
         }
-        Cmd::Bench { iters } => bench::run(&paths, iters.max(1))?,
+        Cmd::Bench { iters, graph, verify, routing_only } => bench::run(&paths, iters.max(1), graph.as_deref(), verify, routing_only)?,
     }
     Ok(())
 }
@@ -615,6 +705,7 @@ mod bench {
             time: TimeSpec::default(),
             avoid: Avoid::default(),
             alternatives,
+            ..Default::default()
         }
     }
 
@@ -670,8 +761,15 @@ mod bench {
         0.0
     }
 
-    pub fn run(paths: &DataPaths, iters: usize) -> anyhow::Result<()> {
+    pub fn run(paths: &DataPaths, iters: usize, graph_file: Option<&str>, verify: usize, routing_only: bool) -> anyhow::Result<()> {
         println!("rss at start: {:.0} MB", rss_mb());
+        if !routing_only {
+            geocoder(paths, iters)?;
+        }
+        routing(paths, iters, graph_file, verify)
+    }
+
+    fn geocoder(paths: &DataPaths, iters: usize) -> anyhow::Result<()> {
         // ---- geocoder
         let t = Instant::now();
         let geo = mapsoffline_lib::geocode::open(&paths.geocode_file())?;
@@ -707,10 +805,14 @@ mod bench {
         });
         println!("reverse: {:.2} ms", med);
         println!("rss after geocoder: {:.0} MB", rss_mb());
+        Ok(())
+    }
 
+    fn routing(paths: &DataPaths, iters: usize, graph_file: Option<&str>, verify: usize) -> anyhow::Result<()> {
         // ---- graph
         let t = Instant::now();
-        let g = mapsoffline_lib::routing::load_graph(&paths.graph_file())?;
+        let gf = graph_file.map(std::path::PathBuf::from).unwrap_or_else(|| paths.graph_file());
+        let g = mapsoffline_lib::routing::load_graph(&gf)?;
         println!("graph load: {:.0} ms ({} vertices, {} edges, max car speed {} km/h)", ms(t), g.num_vertices(), g.num_edges(), g.max_car_kmh);
         println!("rss after graph: {:.0} MB", rss_mb());
         let tlv = [34.7818, 32.0853];
@@ -718,7 +820,16 @@ mod bench {
         let haifa = [34.9896, 32.7940];
         let eilat = [34.9519, 29.5577];
         let ks = [35.5695, 33.2075];
-        let cases: [(&str, [f64; 2], [f64; 2], Mode, u32); 8] = [
+        println!(
+            "graph v7 data: {} speed limits, {} edge extras, {} truck limits, {} cameras, {} via-way restrictions, elevation {}",
+            g.e_limit_fwd.iter().filter(|&&l| l > 0).count(),
+            g.ext.edge.len(),
+            g.limits.edge.len(),
+            g.cameras.len() / 2,
+            g.multi.len(),
+            g.has_elevation()
+        );
+        let cases: [(&str, [f64; 2], [f64; 2], Mode, u32); 11] = [
             ("car TLV-JLM alt3", tlv, jlm, Mode::Car, 3),
             ("car TLV-JLM alt1", tlv, jlm, Mode::Car, 1),
             ("car Eilat-KS alt3", eilat, ks, Mode::Car, 3),
@@ -727,6 +838,9 @@ mod bench {
             ("foot urban TLV", tlv, [34.7700, 32.0700], Mode::Foot, 3),
             ("bike TLV", tlv, [34.8100, 32.1100], Mode::Bike, 3),
             ("foot JLM 3km", jlm, [35.2300, 31.7800], Mode::Foot, 1),
+            ("truck TLV-Haifa", tlv, haifa, Mode::Truck, 1),
+            ("wheelchair TLV", tlv, [34.7700, 32.0700], Mode::Wheelchair, 1),
+            ("bike JLM 5km", jlm, [35.1900, 31.7600], Mode::Bike, 1),
         ];
         for (name, a, b, mode, alts) in cases {
             let r = req(a, b, mode, alts);
@@ -742,8 +856,76 @@ mod bench {
             let _ = g.walk([34.7818, 32.0853], [34.7850, 32.0870]);
         });
         println!("  walk_leg 350m          median {:7.2} ms  max {:7.2} ms", med, max);
+        let targets: Vec<[f64; 2]> = (0..30).map(|i| [34.7818 + (i % 6) as f64 * 0.002 - 0.005, 32.0853 + (i / 6) as f64 * 0.002 - 0.005]).collect();
+        let (med, max) = time(iters, || {
+            let _ = mapsoffline_lib::routing::walk_times_from(&g, tlv, &targets, 1200.0);
+        });
+        println!("  walk_times_from 30 tg  median {:7.2} ms  max {:7.2} ms", med, max);
+        for (mode, mins) in [(Mode::Foot, vec![5.0, 10.0, 15.0]), (Mode::Car, vec![10.0, 20.0, 30.0])] {
+            let (med, max) = time(iters.min(3), || {
+                let _ = mapsoffline_lib::routing::iso::isochrone(&g, tlv, mode, &mins);
+            });
+            println!("  isochrone {:<12} median {:7.2} ms  max {:7.2} ms", format!("{mode:?} {}m", mins[2]), med, max);
+        }
+        if verify > 0 {
+            verify_pruning(&g, verify);
+        }
         println!("rss end: {:.0} MB", rss_mb());
         Ok(())
+    }
+
+    /// Long random car routes with and without hierarchy pruning: how much worse (cost) the
+    /// pruned search gets. Prints the worst relative difference.
+    fn verify_pruning(g: &mapsoffline_lib::routing::Graph, n: usize) {
+        use mapsoffline_lib::routing::astar::{search, SearchParams};
+        use mapsoffline_lib::routing::profile::Profile;
+        let prof = Profile::new(Mode::Car, Avoid::default());
+        let allowed = |e: u32| prof.allowed_edge_any(g, e);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let nv = g.num_vertices() as u64;
+        let (mut checked, mut worse, mut worst, mut sum) = (0usize, 0usize, 0.0f64, 0.0f64);
+        let (mut t_pruned, mut t_full) = (0.0f64, 0.0f64);
+        while checked < n {
+            let a = g.vertex((rnd() % nv) as u32);
+            let b = g.vertex((rnd() % nv) as u32);
+            if mapsoffline_lib::geo::haversine_m(a, b) < 30_000.0 {
+                continue;
+            }
+            let (Some(sa), Some(sb)) = (g.snap(a, &allowed), g.snap(b, &allowed)) else { continue };
+            if sa.dist_m > 200.0 || sb.dist_m > 200.0 {
+                continue;
+            }
+            let t = Instant::now();
+            let p = search(g, &SearchParams::new(&prof), &sa, &sb);
+            t_pruned += ms(t);
+            let t = Instant::now();
+            let f = search(g, &SearchParams { prune: false, ..SearchParams::new(&prof) }, &sa, &sb);
+            t_full += ms(t);
+            let (Some(p), Some(f)) = (p, f) else { continue };
+            checked += 1;
+            let rel = (p.cost as f64 - f.cost as f64) / f.cost as f64;
+            sum += rel.max(0.0);
+            if rel > 1e-4 {
+                worse += 1;
+            }
+            if rel > worst {
+                worst = rel;
+                println!("  worse pair {:.5},{:.5} -> {:.5},{:.5}: +{:.2} %", a[0], a[1], b[0], b[1], rel * 100.0);
+            }
+        }
+        println!(
+            "pruning check: {checked} pairs, {worse} worse, worst +{:.2} %, mean +{:.3} %; time pruned {:.1} ms vs full {:.1} ms per route",
+            worst * 100.0,
+            sum / checked.max(1) as f64 * 100.0,
+            t_pruned / checked.max(1) as f64,
+            t_full / checked.max(1) as f64
+        );
     }
 }
 

@@ -130,6 +130,7 @@ fn req(t: &Transit, from: &str, to: &str, kind: TimeKind, iso: &str) -> RouteReq
         time: TimeSpec { kind, iso: Some(iso.to_string()) },
         avoid: Default::default(),
         alternatives: 3,
+        ..Default::default()
     }
 }
 
@@ -295,6 +296,7 @@ fn via_req(t: &Transit, codes: &[&str], kind: TimeKind, iso: &str) -> RouteReque
         time: TimeSpec { kind, iso: Some(iso.to_string()) },
         avoid: Default::default(),
         alternatives: 3,
+        ..Default::default()
     }
 }
 

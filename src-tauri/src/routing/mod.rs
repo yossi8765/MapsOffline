@@ -2,6 +2,9 @@
 //! Public API used by `commands.rs` and `data/`. Implemented in submodules.
 
 pub mod alternatives;
+pub mod avoid;
+pub mod iso;
+pub mod matching;
 pub mod order;
 pub mod areas;
 pub mod astar;
@@ -23,6 +26,12 @@ pub fn build_graph(pbf: &Path, out: &Path, progress: ProgressFn) -> anyhow::Resu
 /// Load a previously built graph.
 pub fn load_graph(path: &Path) -> anyhow::Result<Graph> {
     graph::load(path)
+}
+
+/// Walking time (seconds) from `origin` to each of `targets` over the foot network – one search
+/// for all of them – or None when farther than `max_sec` / off the network (transit access).
+pub fn walk_times_from(graph: &Graph, origin: LonLat, targets: &[LonLat], max_sec: f32) -> Vec<Option<f32>> {
+    iso::walk_times_from(graph, origin, targets, max_sec)
 }
 
 impl Graph {

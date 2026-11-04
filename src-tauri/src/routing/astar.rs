@@ -84,6 +84,9 @@ fn take_bufs(n: usize) -> Bufs {
 
 fn give_bufs(b: Bufs) {
     let mut pool = POOL.lock();
+    // buffers sized for another graph (an unloaded country, the previous graph file) are
+    // dropped instead of being kept alive next to the current ones
+    pool.retain(|x| x.n == b.n);
     if pool.len() < 4 {
         pool.push(b);
     }
@@ -121,8 +124,16 @@ pub struct SearchParams<'a> {
     pub profile: &'a Profile,
     /// extra multiplicative penalty per edge, indexed by edge id (alternatives)
     pub penalty: Option<&'a [f32]>,
-    /// give up when the cheapest open label exceeds this (seconds)
+    /// labels costlier than this (seconds) are not expanded
     pub max_cost: f32,
+    /// long-route hierarchy pruning (off only for verification)
+    pub prune: bool,
+}
+
+impl<'a> SearchParams<'a> {
+    pub fn new(profile: &'a Profile) -> Self {
+        SearchParams { profile, penalty: None, max_cost: f32::INFINITY, prune: true }
+    }
 }
 
 /// A found path as a sequence of directed states.
@@ -174,7 +185,7 @@ fn frac_dir(snap: &Snap, dir: u32) -> f32 {
 const PRUNE_MIN_STRAIGHT: f32 = 15_000.0;
 
 pub fn search(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap) -> Option<PathResult> {
-    let r = search_impl(g, p, from, to, true);
+    let r = search_impl(g, p, from, to, p.prune);
     if r.is_none() && d2(g.proj(from.point[0], from.point[1]), g.proj(to.point[0], to.point[1])) > PRUNE_MIN_STRAIGHT * PRUNE_MIN_STRAIGHT {
         // the hierarchy pruning cut the only connection (e.g. a long private / rural access road)
         return search_impl(g, p, from, to, false);
@@ -235,8 +246,11 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
             }
         }
         let e = s >> 1;
-        let w = prof.cost(g, e) * pen(penalty, e);
+        let w = prof.cost(g, s) * pen(penalty, e);
         let cand = lf.dist + lb.dist - w;
+        if cand < *best && prof.uses_multi(g) && multi_violated_at_meet(g, prof, b, s) {
+            return;
+        }
         if cand < *best {
             *best = cand;
             *meet = s;
@@ -245,13 +259,13 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
 
     for &s in &origin_init {
         let e = s >> 1;
-        let cost = prof.cost(g, e) * pen(penalty, e) * (1.0 - frac_dir(from, s & 1));
+        let cost = prof.cost(g, s) * pen(penalty, e) * (1.0 - frac_dir(from, s & 1));
         b.f[s as usize] = Label { stamp: gen, dist: cost, par: NONE };
         qf.push(Item { key: cost + pot(g.head(s)), s });
     }
     for &s in &dest_init {
         let e = s >> 1;
-        let cost = prof.cost(g, e) * pen(penalty, e) * frac_dir(to, s & 1);
+        let cost = prof.cost(g, s) * pen(penalty, e) * frac_dir(to, s & 1);
         b.b[s as usize] = Label { stamp: gen, dist: cost, par: NONE };
         qb.push(Item { key: cost - pot(g.tail(s)), s });
     }
@@ -274,14 +288,12 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
         d2(v, ps) < r2 || d2(v, pt) < r2
     };
 
+    let multi = prof.uses_multi(g);
     let mut settled = 0u32;
     loop {
         let tf = qf.peek().map(|i| i.key).unwrap_or(f32::INFINITY);
         let tb = qb.peek().map(|i| i.key).unwrap_or(f32::INFINITY);
-        if tf + tb >= best {
-            break;
-        }
-        if tf.min(tb) > p.max_cost {
+        if tf + tb >= best || (tf.is_infinite() && tb.is_infinite()) {
             break;
         }
         settled += 1;
@@ -292,13 +304,19 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
             if key > base + pot(v) + 1e-3 {
                 continue; // stale
             }
+            if base > p.max_cost {
+                continue; // beyond the bound: not expanded
+            }
             for &e2 in g.incident(v) {
                 let s2 = g.state_from(v, e2);
                 if !prof.allowed(g, s2) || !near_ok(e2) {
                     continue;
                 }
                 let Some(turn) = prof.turn_cost(g, s, s2) else { continue };
-                let nd = base + turn + prof.cost(g, e2) * pen(penalty, e2);
+                if multi && multi_forbidden_fwd(g, prof, &b.f, gen, s, s2) {
+                    continue;
+                }
+                let nd = base + turn + prof.cost(g, s2) * pen(penalty, e2);
                 let s2i = s2 as usize;
                 let l = &mut b.f[s2i];
                 if l.stamp != gen || nd < l.dist {
@@ -316,6 +334,9 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
             if key > base - pot(u) + 1e-3 {
                 continue;
             }
+            if base > p.max_cost {
+                continue;
+            }
             for &e0 in g.incident(u) {
                 // state arriving at u along e0
                 let s0 = if g.e_to[e0 as usize] == u { e0 * 2 } else { e0 * 2 + 1 };
@@ -323,7 +344,10 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
                     continue;
                 }
                 let Some(turn) = prof.turn_cost(g, s0, s) else { continue };
-                let nd = base + turn + prof.cost(g, e0) * pen(penalty, e0);
+                if multi && multi_forbidden_bwd(g, prof, &b.b, gen, s0, s) {
+                    continue;
+                }
+                let nd = base + turn + prof.cost(g, s0) * pen(penalty, e0);
                 let s0i = s0 as usize;
                 let l = &mut b.b[s0i];
                 if l.stamp != gen || nd < l.dist {
@@ -363,6 +387,198 @@ fn search_impl(g: &Graph, p: &SearchParams, from: &Snap, to: &Snap, allow_prune:
     };
     give_bufs(b);
     result
+}
+
+/// Does the forward step `s → s2` complete a forbidden via-way sequence (or leave an `only_` one)?
+/// Walks the forward parent chain of `s`.
+fn multi_forbidden_fwd(g: &Graph, prof: &Profile, f: &[Label], gen: u32, s: u32, s2: u32) -> bool {
+    let Some(list) = g.multi_by_last.get(&(s >> 1)) else { return false };
+    let e2 = s2 >> 1;
+    for &i in list {
+        let m = &g.multi[i as usize];
+        if !prof.multi_applies(m.mask) {
+            continue;
+        }
+        let k = m.edges.len();
+        // m.edges[k-2] == edge(s), then back to m.edges[0] through the parents
+        let mut cur = s;
+        let mut ok = true;
+        for j in (0..k - 1).rev() {
+            if cur == NONE || (cur >> 1) != m.edges[j] {
+                ok = false;
+                break;
+            }
+            if j > 0 {
+                let l = f[cur as usize];
+                if l.stamp != gen {
+                    ok = false;
+                    break;
+                }
+                cur = l.par;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let to = m.edges[k - 1];
+        if (m.only && e2 != to) || (!m.only && e2 == to) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Backward step: would putting `s0` before `s` start a forbidden via-way sequence that the
+/// backward parent chain of `s` completes?
+fn multi_forbidden_bwd(g: &Graph, prof: &Profile, bl: &[Label], gen: u32, s0: u32, s: u32) -> bool {
+    let Some(list) = g.multi_by_first.get(&(s >> 1)) else { return false };
+    let e0 = s0 >> 1;
+    for &i in list {
+        let m = &g.multi[i as usize];
+        if !prof.multi_applies(m.mask) || m.edges[0] != e0 {
+            continue;
+        }
+        let k = m.edges.len();
+        let mut cur = s;
+        let mut matched = true;
+        // via edges 1..k-1 must follow along the backward chain
+        for j in 1..k - 1 {
+            if cur == NONE || (cur >> 1) != m.edges[j] {
+                matched = false;
+                break;
+            }
+            let l = bl[cur as usize];
+            if l.stamp != gen {
+                matched = false;
+                break;
+            }
+            cur = l.par;
+        }
+        if !matched {
+            continue;
+        }
+        if cur == NONE {
+            continue; // the destination lies inside the sequence
+        }
+        let next = cur >> 1;
+        if (m.only && next != m.edges[k - 1]) || (!m.only && next == m.edges[k - 1]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Does joining the forward chain ending at `s` with the backward chain starting at `s` complete
+/// a via-way restriction that spans the meeting state? (Checked on a window of a few states.)
+fn multi_violated_at_meet(g: &Graph, prof: &Profile, b: &Bufs, s: u32) -> bool {
+    const K: usize = 8;
+    let mut back = vec![s];
+    let mut cur = s;
+    while back.len() < K {
+        let l = b.f[cur as usize];
+        if l.stamp != b.gen || l.par == NONE {
+            break;
+        }
+        cur = l.par;
+        back.push(cur);
+    }
+    back.reverse();
+    let meet_pos = back.len() - 1;
+    let mut seq = back;
+    let mut cur = s;
+    for _ in 0..K {
+        let l = b.b[cur as usize];
+        if l.stamp != b.gen || l.par == NONE {
+            break;
+        }
+        cur = l.par;
+        seq.push(cur);
+    }
+    let edges: Vec<u32> = seq.iter().map(|x| x >> 1).collect();
+    // every transition i-1 -> i at or after the meeting state
+    for i in meet_pos.max(1)..edges.len() {
+        let Some(list) = g.multi_by_last.get(&edges[i - 1]) else { continue };
+        for &mi in list {
+            let m = &g.multi[mi as usize];
+            if !prof.multi_applies(m.mask) {
+                continue;
+            }
+            let k = m.edges.len();
+            if i < k - 1 || edges[i - (k - 1)..i] != m.edges[..k - 1] {
+                continue;
+            }
+            // the sequence must reach back over the meeting point to matter here
+            if i - (k - 1) > meet_pos {
+                continue;
+            }
+            let to = m.edges[k - 1];
+            if (m.only && edges[i] != to) || (!m.only && edges[i] == to) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Result of a one-to-many search: cost (or real time) at the head of every reached state.
+pub struct Reach {
+    pub states: Vec<(u32, f32)>,
+}
+
+/// Forward Dijkstra from a snapped point over directed states. `time_only` uses the real travel
+/// time (no preferences) as the cost. Stops at `max`, or once every state in `targets` is
+/// settled. Via-way restrictions are not applied (approximate, used for matrices / isochrones).
+pub fn dijkstra_from(g: &Graph, prof: &Profile, from: &Snap, max: f32, time_only: bool, targets: Option<&rustc_hash::FxHashSet<u32>>) -> Reach {
+    let n = g.num_states();
+    let mut b = take_bufs(n);
+    let gen = b.next_gen();
+    let mut heap: BinaryHeap<Item> = BinaryHeap::with_capacity(4096);
+    let w = |s: u32| if time_only { prof.traverse_time(g, s) } else { prof.cost(g, s) };
+    for d in 0..2u32 {
+        let s = from.edge * 2 + d;
+        if prof.allowed(g, s) {
+            let c = w(s) * (1.0 - frac_dir(from, d));
+            b.f[s as usize] = Label { stamp: gen, dist: c, par: NONE };
+            heap.push(Item { key: c, s });
+        }
+    }
+    let mut left = targets.map(|t| t.len()).unwrap_or(usize::MAX);
+    let mut out = Vec::new();
+    while let Some(Item { key, s }) = heap.pop() {
+        let l = b.f[s as usize];
+        if key > l.dist + 1e-4 {
+            continue;
+        }
+        if key > max {
+            break;
+        }
+        out.push((s, key));
+        if let Some(t) = targets {
+            if t.contains(&s) {
+                left -= 1;
+                if left == 0 {
+                    break;
+                }
+            }
+        }
+        let v = g.head(s);
+        for &e2 in g.incident(v) {
+            let s2 = g.state_from(v, e2);
+            if !prof.allowed(g, s2) {
+                continue;
+            }
+            let turn = if time_only { prof.turn_time(g, s, s2) } else { prof.turn_cost(g, s, s2) };
+            let Some(turn) = turn else { continue };
+            let nd = key + turn + w(s2);
+            let lab = &mut b.f[s2 as usize];
+            if lab.stamp != gen || nd < lab.dist {
+                *lab = Label { stamp: gen, dist: nd, par: s };
+                heap.push(Item { key: nd, s: s2 });
+            }
+        }
+    }
+    give_bufs(b);
+    Reach { states: out }
 }
 
 /// Cut a polyline by fractions of its length.
@@ -414,7 +630,8 @@ pub fn details(g: &Graph, prof: &Profile, path: &PathResult) -> PathDetails {
         let pts = g.state_points(s);
         let part = if f0 > 0.0 || f1 < 1.0 { cut_polyline(&pts, f0, f1) } else { pts };
         let dist: f64 = part.windows(2).map(|w| haversine_m(w[0], w[1])).sum();
-        let mut dur = prof.traverse_time(g, e) as f64 * (f1 - f0).max(0.0);
+        let _ = e;
+        let mut dur = prof.traverse_time(g, s) as f64 * (f1 - f0).max(0.0);
         if let Some(ps) = prev_state {
             dur += prof.turn_time(g, ps, s).unwrap_or(0.0) as f64;
         }
@@ -446,7 +663,7 @@ pub fn walk_leg(g: &Graph, from: LonLat, to: LonLat) -> Option<Leg> {
     if sf.dist_m > 500.0 || st.dist_m > 500.0 {
         return None;
     }
-    let params = SearchParams { profile: &prof, penalty: None, max_cost: 3_600.0 };
+    let params = SearchParams { max_cost: 3_600.0, ..SearchParams::new(&prof) };
     let path = search(g, &params, &sf, &st)?;
     let det = details(g, &prof, &path);
     let mut geometry = Vec::with_capacity(det.geometry.len() + 2);

@@ -15,6 +15,8 @@ const PENALTY: f32 = 1.6;
 const MAX_SHARE: f64 = 0.70;
 const MAX_STRETCH: f64 = 1.4;
 const MAX_SNAP_M: f64 = 5_000.0;
+/// Most waypoints of one request (one route through all of them).
+pub const MAX_WAYPOINTS: usize = 100;
 
 /// Reusable dense per-edge penalty arrays (all 1.0 when idle).
 static PENALTY_POOL: parking_lot::Mutex<Vec<Vec<f32>>> = parking_lot::Mutex::new(Vec::new());
@@ -38,16 +40,16 @@ fn give_penalty(mut v: Vec<f32>, touched: &[u32]) {
     }
 }
 
-struct Candidate {
-    paths: Vec<PathResult>,
-    details: Vec<PathDetails>,
-    duration: f64,
-    distance: f64,
+pub(crate) struct Candidate {
+    pub paths: Vec<PathResult>,
+    pub details: Vec<PathDetails>,
+    pub duration: f64,
+    pub distance: f64,
 }
 
-fn leg_kind(mode: Mode) -> LegKind {
+pub fn leg_kind(mode: Mode) -> LegKind {
     match mode {
-        Mode::Car => LegKind::Drive,
+        Mode::Car | Mode::Truck => LegKind::Drive,
         Mode::Bike => LegKind::Bike,
         _ => LegKind::Walk,
     }
@@ -101,12 +103,12 @@ pub fn resolve_times(time: &TimeSpec, duration: f64) -> (Option<String>, Option<
     }
 }
 
-fn compute(g: &Graph, prof: &Profile, snaps: &[Snap], penalty: Option<&[f32]>) -> Option<Candidate> {
+pub(crate) fn compute(g: &Graph, prof: &Profile, snaps: &[Snap], penalty: Option<&[f32]>, max_cost: f32) -> Option<Candidate> {
     let mut paths = Vec::new();
     let mut details = Vec::new();
     let (mut duration, mut distance) = (0.0, 0.0);
     for w in snaps.windows(2) {
-        let params = SearchParams { profile: prof, penalty, max_cost: f32::INFINITY };
+        let params = SearchParams { penalty, max_cost, ..SearchParams::new(prof) };
         let p = astar::search(g, &params, &w[0], &w[1])?;
         let d = astar::details(g, prof, &p);
         duration += d.duration_sec;
@@ -124,7 +126,7 @@ fn compute_base(g: &Graph, prof: &Profile, cands: &[Vec<Snap>]) -> Option<(Candi
     let mut paths = Vec::new();
     let mut details = Vec::new();
     let (mut duration, mut distance) = (0.0, 0.0);
-    let params = SearchParams { profile: prof, penalty: None, max_cost: f32::INFINITY };
+    let params = SearchParams::new(prof);
     for i in 0..cands.len() - 1 {
         let starts: Vec<Snap> = if i == 0 { cands[0].clone() } else { vec![chosen[i]] };
         let mut found = None;
@@ -176,10 +178,11 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
     if req.waypoints.len() < 2 {
         anyhow::bail!("NEED_TWO_WAYPOINTS");
     }
-    if req.waypoints.len() > 7 {
+    // several waypoints are one route through all of them (alternatives only for 2 waypoints)
+    if req.waypoints.len() > MAX_WAYPOINTS {
         anyhow::bail!("TOO_MANY_WAYPOINTS");
     }
-    let prof = Profile::new(req.mode, req.avoid.clone());
+    let prof = Profile::for_request(g, req);
     let allowed = |e: u32| prof.allowed_edge_any(g, e);
     let mut snap_cands: Vec<Vec<Snap>> = Vec::with_capacity(req.waypoints.len());
     for w in &req.waypoints {
@@ -205,8 +208,20 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
     log::debug!("snap: {:?}", t0.elapsed());
     let k = if req.waypoints.len() == 2 { req.alternatives.clamp(1, 5) as usize } else { 1 };
     let mut cands: Vec<Candidate> = Vec::new();
-    let (base, snaps) = compute_base(g, &prof, &snap_cands)
-        .ok_or_else(|| anyhow::anyhow!(if prof.avoids_areas() { "NO_ROUTE_AVOID_AREAS" } else { "NO_ROUTE" }))?;
+    let (base, snaps) = match compute_base(g, &prof, &snap_cands) {
+        Some(x) => x,
+        None => {
+            // tell "the truck cannot get there" apart from "there is no road"
+            if req.mode == Mode::Truck {
+                let car = RouteRequest { mode: Mode::Car, vehicle: None, ..req.clone() };
+                if compute_base(g, &Profile::for_request(g, &car), &snap_cands).is_some() {
+                    anyhow::bail!("NO_ROUTE_TRUCK");
+                }
+            }
+            anyhow::bail!(if prof.avoids_areas() { "NO_ROUTE_AVOID_AREAS" } else { "NO_ROUTE" });
+        }
+    };
+    let base_cost: f32 = base.paths.iter().map(|p| p.cost).sum();
     let best_duration = base.duration;
     log::debug!("base: {:?}", t0.elapsed());
     cands.push(base);
@@ -222,7 +237,10 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
         let mut attempts = 0;
         while cands.len() < k && attempts < k * 2 {
             attempts += 1;
-            let Some(alt) = compute(g, &prof, &snaps, Some(&penalty)) else { break };
+            // an acceptable alternative costs at most MAX_STRETCH × the best, plus the penalty on
+            // the part it may share with earlier routes: searches beyond that are cut short
+            let bound = base_cost * MAX_STRETCH as f32 * PENALTY * PENALTY;
+            let Some(alt) = compute(g, &prof, &snaps, Some(&penalty), bound) else { break };
             let alt_set = edge_set(&alt);
             // penalize for next round regardless of acceptance (diversify)
             for e in &alt_set {
@@ -247,19 +265,14 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
     let shortest = cands.iter().enumerate().min_by(|a, b| a.1.distance.total_cmp(&b.1.distance)).map(|x| x.0);
 
     let kind = leg_kind(req.mode);
-    let mode_name = match req.mode {
-        Mode::Car => "car",
-        Mode::Bike => "bike",
-        Mode::Foot => "foot",
-        Mode::Transit => "transit",
-    };
+    let mode_name = req.mode.as_str();
     let mut routes = Vec::with_capacity(cands.len());
     for (i, c) in cands.iter().enumerate() {
         let (depart_iso, arrive_iso) = resolve_times(&req.time, c.duration);
         let mut legs = Vec::with_capacity(c.paths.len());
         let mut geometry: Vec<[f64; 2]> = Vec::new();
         for (p, d) in c.paths.iter().zip(c.details.iter()) {
-            let steps = instructions::build_steps(g, &prof, &p.states, d, if req.mode == Mode::Foot { 15 } else { 5 });
+            let steps = instructions::build_steps(g, &prof, &p.states, d, if req.mode.is_pedestrian() { 15 } else { 5 });
             if geometry.is_empty() {
                 geometry.extend_from_slice(&d.geometry);
             } else {
@@ -294,7 +307,7 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
             depart_iso,
             arrive_iso,
             transfers: 0,
-            walk_m: if req.mode == Mode::Foot { c.distance } else { 0.0 },
+            walk_m: if req.mode.is_pedestrian() { c.distance } else { 0.0 },
             fare_estimate_ils: None,
             fare_note: None,
             avoid_violations: avoid_violations(g, req, c.paths.iter().flat_map(|p| p.states.iter().map(|s| s >> 1))),

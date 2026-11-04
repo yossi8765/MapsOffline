@@ -200,7 +200,15 @@ impl Areas {
             return 0;
         }
         let b = self.band(py);
-        let mut odd = vec![false; self.kind.len()];
+        // ring parity as a bitset on the stack (heap only for > 512 rings)
+        let mut small = [0u64; 8];
+        let mut big: Vec<u64> = Vec::new();
+        let odd: &mut [u64] = if self.kind.len() <= 512 {
+            &mut small
+        } else {
+            big.resize(self.kind.len().div_ceil(64), 0);
+            &mut big
+        };
         for &s in &self.bands[b] {
             let (x1, y1) = self.pt(s as usize);
             let (x2, y2) = self.pt(s as usize + 1);
@@ -208,14 +216,17 @@ impl Areas {
                 let xi = x1 + (py - y1) * (x2 - x1) / (y2 - y1);
                 if xi > px {
                     let r = self.seg_ring[s as usize] as usize;
-                    odd[r] = !odd[r];
+                    odd[r >> 6] ^= 1u64 << (r & 63);
                 }
             }
         }
         let mut bits = 0u8;
-        for (r, &o) in odd.iter().enumerate() {
-            if o {
+        for (w, &word) in odd.iter().enumerate() {
+            let mut m = word;
+            while m != 0 {
+                let r = w * 64 + m.trailing_zeros() as usize;
                 bits |= self.kind[r];
+                m &= m - 1;
             }
         }
         if bits != 0 && tol_m > 0.0 && self.near_boundary(px, py, b, tol_m) {
