@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window and the second map window (label \"map\", opened from the main window for a second monitor)",
+  "windows": ["main", "map"],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
@@ -10,7 +10,14 @@
     "core:window:allow-maximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-theme",
+    "core:webview:allow-create-webview-window",
+    "core:event:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "window-state:default"
   ]
 }

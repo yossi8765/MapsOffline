@@ -407,9 +407,18 @@ pub struct Favorite {
     /// "address" | "stop" | "place" | "line" (rows from before this field are addresses).
     #[serde(default = "default_fav_kind")]
     pub kind: String,
-    /// Kind-specific extras: stop code; for lines routeShortName / agency / headsign / color.
+    /// Kind-specific extras: stop code; for lines routeShortName / agency / headsign / color;
+    /// for routes the RouteRequest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// Folder / list the favorite belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// "#rrggbb"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 fn default_fav_kind() -> String {
@@ -711,6 +720,28 @@ pub struct Settings {
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
+    /// How coordinates are shown and copied: "dd" | "dms" | "itm" | "utm".
+    #[serde(default = "default_coord_format")]
+    pub coord_format: String,
+    /// UI scale: "system" (Windows text scale, clamped 1..1.25) or 1 / 1.12 / 1.25.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: serde_json::Value,
+    /// User tile layers (XYZ / WMS online, PMTiles / MBTiles files), served by `mo-user`.
+    #[serde(default)]
+    pub custom_layers: Vec<CustomLayer>,
+    /// Components the user wants; `None` = all (update checks only offer these).
+    #[serde(default)]
+    pub wanted_components: Option<Vec<DataComponent>>,
+    /// Teaching tips already shown (ids).
+    #[serde(default)]
+    pub teaching_tips_seen: Vec<String>,
+}
+
+pub fn default_coord_format() -> String {
+    "dd".into()
+}
+pub fn default_ui_scale() -> serde_json::Value {
+    serde_json::Value::String("system".into())
 }
 
 pub fn default_avoid_areas() -> String {
@@ -775,7 +806,7 @@ impl Default for Settings {
             satellite_quality: "high".into(),
             satellite_source: default_sat_source(),
             remember_map_view: true,
-            accent: "blue".into(),
+            accent: "system".into(),
             avoid_tolls: true,
             avoid_areas: default_avoid_areas(),
             avoid_motorways: false,
@@ -786,6 +817,11 @@ impl Default for Settings {
             use_prebuilt_data: true,
             nav_voice: true,
             transit_reliability: true,
+            coord_format: default_coord_format(),
+            ui_scale: default_ui_scale(),
+            custom_layers: Vec::new(),
+            wanted_components: None,
+            teaching_tips_seen: Vec::new(),
         }
     }
 }
@@ -874,6 +910,101 @@ pub struct RegionLocate {
 }
 
 // ===== [R1] data / infra / security =====
+
+/// A user tile layer (Settings.customLayers).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomLayer {
+    pub id: String,
+    pub name: String,
+    /// "xyz" | "wms" | "pmtiles" | "mbtiles"
+    pub kind: String,
+    /// XYZ template, WMS base URL, or a local file path.
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wms_layers: Option<String>,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minzoom: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxzoom: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+}
+
+fn default_opacity() -> f64 {
+    1.0
+}
+
+/// An imported file, a drawing or a recorded track (`<data>/userlayers/<id>.geojson`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserLayer {
+    pub id: String,
+    pub name: String,
+    /// "import" | "drawing" | "track"
+    pub kind: String,
+    pub color: String,
+    pub visible: bool,
+    pub created_iso: String,
+    pub features: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<[f64; 4]>,
+}
+
+/// Changes to a user layer; absent fields stay.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UserLayerPatch {
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub visible: Option<bool>,
+    pub geojson: Option<String>,
+}
+
+/// Changes to a favorite. Absent keys stay; `null` clears the optional ones.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FavoritePatch {
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    #[serde(deserialize_with = "patch_field")]
+    pub group: Option<Option<String>>,
+    #[serde(deserialize_with = "patch_field")]
+    pub color: Option<Option<String>>,
+    #[serde(deserialize_with = "patch_field")]
+    pub note: Option<Option<String>>,
+    #[serde(deserialize_with = "patch_field")]
+    pub address: Option<Option<String>>,
+    pub data: Option<serde_json::Value>,
+}
+
+/// `Some(None)` for an explicit null, `Some(Some(v))` for a value; a missing key stays `None`
+/// through `#[serde(default)]`.
+fn patch_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Ok(Some(Option::<String>::deserialize(d)?))
+}
+
+/// Windows accent colours ("#rrggbb"), event `system-accent-changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemAccent {
+    pub accent: String,
+    pub light1: String,
+    pub light2: String,
+    pub dark1: String,
+}
+
+/// Size and version of the combined ready-made data package (first-run choice).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageInfo {
+    pub size_bytes: u64,
+    pub version: String,
+}
 
 // ===== [R2] routing + navigation =====
 

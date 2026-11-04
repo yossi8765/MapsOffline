@@ -369,41 +369,25 @@ pub(crate) fn update_extract(paths: &DataPaths, ex: &Extract, progress: Progress
     let src = format!("{BUILD_BASE}{key}");
     progress(ProgressPhase::Downloading, 0, 100, &format!("{}, גרסה {key}", ex.label));
 
-    let mut last_err = None;
-    let mut attempt = 0;
-    while attempt < 3 {
-        match run_extract(paths, &src, &tmp, &args, &ex.label, progress, cancel) {
-            Ok(()) => {
-                last_err = None;
-                break;
-            }
-            Err(e) => {
-                if cancel.is_cancelled() {
-                    return Err(e);
-                }
-                if e.to_string() == "paused" {
-                    continue;
-                }
-                attempt += 1;
-                log::warn!("pmtiles extract attempt {attempt} failed: {e:#}");
-                progress(ProgressPhase::Downloading, 0, 100, &format!("ההורדה נכשלה, ניסיון חוזר ({attempt}/3)"));
-                last_err = Some(e);
-                std::thread::sleep(Duration::from_secs(3));
-            }
-        }
-    }
-    if let Some(e) = last_err {
-        return Err(e);
-    }
+    run_extract_retry(paths, &src, &tmp, &args, &ex.label, progress, cancel)?;
     progress(ProgressPhase::Finalizing, 0, 0, "מאמת את קובץ המפה");
     if let Err(e) = verify_tiles(&tmp, ex.min_size) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    atomic_replace(&ex.file, &tmp)?;
+    // sidecar first (as a temp file), so archive and sidecar are swapped in back to back; a crash
+    // between the two still leaves the manifest, which `installed_build` falls back to
     let meta = TilesMeta { version: key.clone(), bbox: ex.meta_bbox(), maxzoom: ex.maxzoom };
-    std::fs::write(ex.sidecar(), serde_json::to_vec_pretty(&meta)?)?;
+    let side_tmp = ex.sidecar().with_extension("json.tmp");
+    std::fs::write(&side_tmp, serde_json::to_vec_pretty(&meta)?)?;
+    atomic_replace(&ex.file, &tmp)?;
+    atomic_replace(&ex.sidecar(), &side_tmp)?;
     Ok(Some(key))
+}
+
+/// `run_extract` with up to three attempts (a pause is not an attempt; cancel stops at once).
+pub(crate) fn run_extract_retry(paths: &DataPaths, src: &str, tmp: &std::path::Path, args: &[String], label: &str, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<()> {
+    download::retry(3, cancel, progress, label, || run_extract(paths, src, tmp, args, label, progress, cancel))
 }
 
 #[cfg(test)]

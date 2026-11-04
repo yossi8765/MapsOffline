@@ -9,7 +9,7 @@ use crate::history::History;
 use crate::paths::DataPaths;
 use crate::routing::Graph;
 use crate::transit::Transit;
-use crate::types::Settings;
+use crate::types::{DataComponent, Settings};
 
 pub struct AppState {
     pub paths: RwLock<DataPaths>,
@@ -26,9 +26,14 @@ pub struct AppState {
     pub region_jobs: Mutex<std::collections::HashMap<String, Cancel>>,
     /// The country graph used last (only one stays in memory: big countries are big).
     region_graph: Mutex<Option<(std::path::PathBuf, Arc<Graph>)>>,
+    /// Serialises country graph loads (held only while reading a file, never while routing).
+    region_graph_load: Mutex<()>,
     pub history: Mutex<Option<History>>,
     pub updating: std::sync::atomic::AtomicBool,
     pub cancel: Cancel,
+    /// A program (installer) download is running – separate from data updates.
+    pub app_updating: std::sync::atomic::AtomicBool,
+    pub app_cancel: Cancel,
     /// Held while the graph / transit model is being loaded from disk (one lock per data set,
     /// so a slow transit load never delays the first route).
     graph_lock: Mutex<()>,
@@ -77,9 +82,12 @@ impl AppState {
             region_geo: Mutex::new(Default::default()),
             region_jobs: Mutex::new(Default::default()),
             region_graph: Mutex::new(None),
+            region_graph_load: Mutex::new(()),
             history: Mutex::new(None),
             updating: std::sync::atomic::AtomicBool::new(false),
             cancel: Cancel::default(),
+            app_updating: std::sync::atomic::AtomicBool::new(false),
+            app_cancel: Cancel::default(),
             graph_lock: Mutex::new(()),
             transit_lock: Mutex::new(()),
             transit_loading: std::sync::atomic::AtomicBool::new(false),
@@ -92,15 +100,32 @@ impl AppState {
 
     /// Drop all loaded data (after an update) so it is reloaded lazily.
     pub fn unload_all(&self) {
-        *self.graph.write() = None;
-        *self.transit.write() = None;
-        let mut pool = self.geocoder.lock();
-        pool.gen += 1;
-        pool.idle.clear();
-        pool.cache = None;
-        drop(pool);
+        self.unload(&DataComponent::ALL);
         self.unload_regions();
-        self.refresh_map_files();
+    }
+
+    /// Drop only what `changed` components replaced: an update of the prayer times no longer
+    /// throws away the routing graph and the transit model (which take seconds to load again).
+    pub fn unload(&self, changed: &[DataComponent]) {
+        if changed.contains(&DataComponent::Routing) {
+            *self.graph.write() = None;
+        }
+        if changed.contains(&DataComponent::Transit) {
+            *self.transit.write() = None;
+        }
+        if changed.contains(&DataComponent::Geocode) {
+            self.release_geocoder();
+        }
+        if changed.iter().any(|c| matches!(c, DataComponent::Tiles | DataComponent::World)) {
+            self.refresh_map_files();
+        }
+    }
+
+    /// Flush what must not be lost when the program exits (history WAL).
+    pub fn on_exit(&self) {
+        if let Some(h) = self.history.lock().as_ref() {
+            h.checkpoint();
+        }
     }
 
     /// Close every pooled connection to the Israel index now (before its file is replaced).
@@ -133,16 +158,19 @@ impl AppState {
             area(&a.2).total_cmp(&area(&b.2))
         });
         let Some((_, path, _)) = cands.into_iter().next() else { anyhow::bail!("NO_ROUTING_DATA_REGION") };
-        // one load at a time; a second request for the same country waits for it
-        let mut g = self.region_graph.lock();
-        if let Some((p, graph)) = g.as_ref() {
-            if *p == path {
-                return Ok(graph.clone());
-            }
+        let cached = |g: &Option<(std::path::PathBuf, Arc<Graph>)>| g.as_ref().filter(|(p, _)| *p == path).map(|(_, g)| g.clone());
+        if let Some(g) = cached(&self.region_graph.lock()) {
+            return Ok(g);
         }
-        *g = None; // free the previous country first
+        // one load at a time; a second request for the same country waits for it, while routes
+        // in the already loaded country (or Israel) never wait behind a load
+        let _load = self.region_graph_load.lock();
+        if let Some(g) = cached(&self.region_graph.lock()) {
+            return Ok(g);
+        }
+        *self.region_graph.lock() = None; // free the previous country first
         let graph = Arc::new(crate::routing::load_graph(&path).map_err(|e| anyhow::anyhow!("NO_ROUTING_DATA_REGION: {e:#}"))?);
-        *g = Some((path, graph.clone()));
+        *self.region_graph.lock() = Some((path, graph.clone()));
         Ok(graph)
     }
 
@@ -252,15 +280,16 @@ impl AppState {
             return;
         }
         let st = self.clone();
-        std::thread::Builder::new()
-            .name("transit-load".into())
-            .spawn(move || {
-                if let Err(e) = st.transit() {
-                    log::debug!("background transit load: {e:#}");
-                }
-                st.transit_loading.store(false, Ordering::Release);
-            })
-            .ok();
+        let spawned = std::thread::Builder::new().name("transit-load".into()).spawn(move || {
+            if let Err(e) = st.transit() {
+                log::debug!("background transit load: {e:#}");
+            }
+            st.transit_loading.store(false, Ordering::Release);
+        });
+        if spawned.is_err() {
+            // no thread, no load: let the next search try again
+            self.transit_loading.store(false, Ordering::Release);
+        }
     }
 
     /// Run `f` with a geocoder connection (opened lazily). No lock is held while `f` runs.
@@ -329,9 +358,17 @@ impl AppState {
     }
 }
 
+/// settings.json, or the defaults. A file that cannot be read as settings is kept as
+/// `settings.json.bad` (instead of being overwritten by the defaults at the next save) and logged.
 pub fn load_settings(paths: &DataPaths) -> Settings {
-    std::fs::read(paths.settings_file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let file = paths.settings_file();
+    let Ok(bytes) = std::fs::read(&file) else { return Settings::default() };
+    match serde_json::from_slice(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("settings.json is damaged ({e}); kept as settings.json.bad, using defaults");
+            let _ = std::fs::copy(&file, file.with_extension("json.bad"));
+            Settings::default()
+        }
+    }
 }

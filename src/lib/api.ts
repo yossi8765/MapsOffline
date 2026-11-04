@@ -948,6 +948,20 @@ export const apiX = {
 // ===== [F2] =====
 
 // ===== [R1] =====
+/** Size / version of the combined ready-made data package (first-run choice); null offline. */
+export interface PackageInfo {
+  sizeBytes: number;
+  version: string;
+}
+export const apiR1 = {
+  packageInfo: () => invoke<PackageInfo | null>("package_info"),
+  /** Stop a running program (installer) download – separate from data updates now. */
+  appUpdateCancel: () => invoke<void>("app_update_cancel"),
+  /** Forget the disk cache of an online custom layer (URL changed / layer removed). */
+  customLayerClearCache: (id: string) => invoke<void>("custom_layer_clear_cache", { id }),
+  /** Tile URL template of a custom layer for MapLibre (scheme `mo-user`). */
+  customLayerTiles: (id: string) => `http://mo-user.localhost/${id}/{z}/{x}/{y}`,
+};
 
 // ===== [R2] =====
 

@@ -98,8 +98,19 @@ impl DataPaths {
     pub fn regions_dir(&self) -> PathBuf {
         self.root.join("regions")
     }
+    /// Folder of a country. Every character outside `[A-Za-z0-9_-]` becomes `_`, so no id (even
+    /// an invalid one that slipped past `regions::valid_region_id`) can name `..` or a drive.
     pub fn region_dir(&self, id: &str) -> PathBuf {
-        self.regions_dir().join(id.replace(['/', '\\', ':'], "_"))
+        let safe: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        self.regions_dir().join(if safe.is_empty() { "_".to_string() } else { safe })
+    }
+    /// Imported files, drawings and recorded tracks (`<id>.geojson` + `index.json`).
+    pub fn userlayers_dir(&self) -> PathBuf {
+        self.root.join("userlayers")
+    }
+    /// Disk cache of online custom tile layers (`usercache/<layer id>/z/x/y`).
+    pub fn usercache_dir(&self) -> PathBuf {
+        self.root.join("usercache")
     }
     pub fn downloads_dir(&self) -> PathBuf {
         self.root.join("downloads")
@@ -170,17 +181,8 @@ impl DataPaths {
     }
 
     pub fn component_file(&self, c: DataComponent) -> PathBuf {
-        match c {
-            DataComponent::Tiles => self.tiles_file(),
-            DataComponent::World => self.world_file(),
-            DataComponent::Satellite => self.satellite_file(),
-            DataComponent::Terrain => self.terrain_file(),
-            DataComponent::Routing => self.graph_file(),
-            DataComponent::Geocode => self.geocode_file(),
-            DataComponent::Transit => self.transit_file(),
-            DataComponent::Trails => self.trails_file(),
-            DataComponent::Minyanim => self.minyanim_file(),
-        }
+        let s = crate::data::components::spec(c);
+        self.root.join(s.dir).join(s.file)
     }
 }
 
@@ -190,6 +192,51 @@ impl DataPaths {
 /// the process stopped in between.
 /// On Windows a file that is open without delete sharing (a map tile being read, an index being
 /// searched) cannot be replaced; such holds are short, so retry for a few seconds.
+/// A folder chosen as the data folder: it must exist or be creatable, and be writable.
+/// Errors carry the code `INVALID_DATA_DIR`.
+pub fn check_data_dir(dir: &Path) -> anyhow::Result<()> {
+    if dir.as_os_str().is_empty() || dir.is_relative() {
+        anyhow::bail!("INVALID_DATA_DIR: not an absolute folder: {}", dir.display());
+    }
+    if dir.exists() && !dir.is_dir() {
+        anyhow::bail!("INVALID_DATA_DIR: {} is a file", dir.display());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("INVALID_DATA_DIR: cannot create {}: {e}", dir.display()))?;
+    let probe = dir.join(format!(".write-test-{}", std::process::id()));
+    std::fs::write(&probe, b"ok").map_err(|e| anyhow::anyhow!("INVALID_DATA_DIR: cannot write in {}: {e}", dir.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Is `p` inside `dir` (after resolving `..` and links where the paths exist)? Used to keep
+/// webview-supplied save paths out of the data and program folders.
+pub fn is_inside(p: &Path, dir: &Path) -> bool {
+    fn norm(p: &Path) -> PathBuf {
+        // canonicalize the longest existing ancestor, then append the rest
+        let mut cur = p.to_path_buf();
+        let mut tail = Vec::new();
+        loop {
+            if let Ok(c) = std::fs::canonicalize(&cur) {
+                let mut out = c;
+                for t in tail.iter().rev() {
+                    out.push(t);
+                }
+                return out;
+            }
+            match (cur.file_name().map(|f| f.to_os_string()), cur.parent()) {
+                (Some(f), Some(parent)) => {
+                    tail.push(f);
+                    cur = parent.to_path_buf();
+                }
+                _ => return p.to_path_buf(),
+            }
+        }
+    }
+    let lower = |p: PathBuf| PathBuf::from(p.to_string_lossy().to_lowercase());
+    let (a, b) = (lower(norm(p)), lower(norm(dir)));
+    a.starts_with(&b)
+}
+
 pub fn atomic_replace(dest: &Path, tmp: &Path) -> std::io::Result<()> {
     let mut attempt = 0;
     loop {
@@ -201,5 +248,33 @@ pub fn atomic_replace(dest: &Path, tmp: &Path) -> std::io::Result<()> {
             }
             r => return r,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn region_dir_never_escapes() {
+        let p = DataPaths::new("C:/data");
+        for id in ["..", "../..", "a/../../b", "C:\\Windows", "europe/germany"] {
+            let d = p.region_dir(id);
+            assert_eq!(d.parent(), Some(p.regions_dir().as_path()), "{id}");
+            assert!(!d.file_name().unwrap().to_string_lossy().contains(".."));
+        }
+        assert_eq!(p.region_dir("europe/germany"), p.regions_dir().join("europe_germany"));
+    }
+
+    #[test]
+    fn inside_checks() {
+        let dir = std::env::temp_dir().join(format!("mo-inside-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        assert!(is_inside(&dir.join("a").join("x.json"), &dir));
+        assert!(is_inside(&dir.join("a").join("..").join("y.gpx"), &dir));
+        assert!(!is_inside(&dir.join("..").join("z.gpx"), &dir));
+        assert!(check_data_dir(&dir.join("new")).is_ok());
+        assert!(check_data_dir(Path::new("relative/dir")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

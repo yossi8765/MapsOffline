@@ -732,6 +732,8 @@ pub fn update_pbf(dest: &Path, progress: ProgressFn, cancel: &Cancel) -> anyhow:
 
 fn full_download(dest: &Path, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
     let v = download::ensure_fresh(PBF_URL, dest, progress, cancel)?;
+    progress(ProgressPhase::Downloading, 1, 1, "מאמת את הקובץ שהורד");
+    download::verify_md5_sidecar(PBF_URL, dest)?;
     let state = header_info(dest).ok().and_then(|(s, _)| s);
     if let (Some(st), Some(mut m)) = (state, download::load_meta(dest)) {
         if m.full_sequence != Some(st.sequence) {

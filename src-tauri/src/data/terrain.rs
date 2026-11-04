@@ -13,7 +13,7 @@ use anyhow::{anyhow, bail, Context};
 use reqwest::blocking::Client;
 
 use super::download::{self, http_client};
-use super::satellite::{read_tile, verify};
+use super::satellite::verify;
 use super::Cancel;
 use crate::paths::{atomic_replace, DataPaths, BBOX_ISRAEL};
 use crate::types::{DataComponent, LonLat, ProgressFn, ProgressPhase};
@@ -53,32 +53,7 @@ pub fn update_terrain(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) 
     let args = vec![format!("--bbox={},{},{},{}", b[0], b[1], b[2], b[3]), format!("--maxzoom={MAX_ZOOM}")];
     let label = "נתוני גובה (Mapterhorn)";
     progress(ProgressPhase::Downloading, 0, 100, label);
-    let mut last_err = None;
-    let mut attempt = 0;
-    while attempt < 3 {
-        match super::tiles::run_extract(paths, SOURCE, &tmp, &args, label, progress, cancel) {
-            Ok(()) => {
-                last_err = None;
-                break;
-            }
-            Err(e) => {
-                if cancel.is_cancelled() {
-                    return Err(e);
-                }
-                if e.to_string() == "paused" {
-                    continue;
-                }
-                attempt += 1;
-                log::warn!("terrain extract attempt {attempt} failed: {e:#}");
-                progress(ProgressPhase::Downloading, 0, 100, &format!("ההורדה נכשלה, ניסיון חוזר ({attempt}/3)"));
-                last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_secs(3));
-            }
-        }
-    }
-    if let Some(e) = last_err {
-        return Err(e);
-    }
+    super::tiles::run_extract_retry(paths, SOURCE, &tmp, &args, label, progress, cancel)?;
     progress(ProgressPhase::Finalizing, 0, 0, "מאמת את נתוני הגובה");
     let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     if size < MIN_SIZE {
@@ -159,13 +134,13 @@ fn decode_tile(bytes: &[u8]) -> anyhow::Result<DemTile> {
 /// Elevation (m) at each point from the installed DEM, bilinear within the top-zoom tile.
 /// Points outside the archive get `None`. Works for 256 and 512 px tiles.
 pub fn elevations(archive: &Path, points: &[LonLat]) -> anyhow::Result<Vec<Option<f32>>> {
-    let z = archive_max_zoom(archive).unwrap_or(MAX_ZOOM);
-    let mut cache: HashMap<(u32, u32), Option<DemTile>> = HashMap::new();
+    let z = crate::map_tiles::archive_max_zoom(archive).unwrap_or(MAX_ZOOM);
+    let mut cache: HashMap<(u32, u32), Option<std::sync::Arc<DemTile>>> = HashMap::new();
     let mut out = Vec::with_capacity(points.len());
     for &[lon, lat] in points {
         // tile x/y do not depend on the tile size
         let (tx, ty) = (lon_to_px(lon, z, 1).floor() as u32, lat_to_px(lat, z, 1).floor() as u32);
-        let tile = cache.entry((tx, ty)).or_insert_with(|| read_tile(archive, z, tx, ty).ok().flatten().and_then(|b| decode_tile(&b).ok()));
+        let tile = cache.entry((tx, ty)).or_insert_with(|| dem_tile(archive, z, tx, ty));
         let Some(t) = tile else {
             out.push(None);
             continue;
@@ -181,12 +156,26 @@ pub fn elevations(archive: &Path, points: &[LonLat]) -> anyhow::Result<Vec<Optio
     Ok(out)
 }
 
-/// Highest zoom stored in a PMTiles archive (header byte 101).
-fn archive_max_zoom(p: &Path) -> Option<u8> {
-    use std::io::Read;
-    let mut h = [0u8; 127];
-    std::fs::File::open(p).ok()?.read_exact(&mut h).ok()?;
-    (&h[..7] == b"PMTiles").then_some(h[101])
+/// Decoded DEM tiles kept across calls (elevation profiles of consecutive routes and the
+/// graph build ask for the same tiles again; a 512 px tile decodes in a few ms).
+const DEM_CACHE: usize = 48;
+
+fn dem_tile(archive: &Path, z: u8, x: u32, y: u32) -> Option<std::sync::Arc<DemTile>> {
+    type Key = (std::path::PathBuf, u64, u8, u32, u32);
+    static CACHE: parking_lot::Mutex<std::collections::VecDeque<(Key, std::sync::Arc<DemTile>)>> = parking_lot::Mutex::new(std::collections::VecDeque::new());
+    let len = std::fs::metadata(archive).ok()?.len();
+    let key: Key = (archive.to_path_buf(), len, z, x, y);
+    if let Some(t) = CACHE.lock().iter().find(|(k, _)| *k == key).map(|(_, t)| t.clone()) {
+        return Some(t);
+    }
+    // directories cached by map_tiles; the decode happens outside the lock
+    let t = std::sync::Arc::new(decode_tile(&crate::map_tiles::archive_tile(archive, z, x, y)?).ok()?);
+    let mut c = CACHE.lock();
+    if c.len() >= DEM_CACHE {
+        c.pop_front();
+    }
+    c.push_back((key, t.clone()));
+    Some(t)
 }
 
 #[cfg(test)]

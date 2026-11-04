@@ -19,6 +19,11 @@ use crate::paths::{atomic_replace, DataPaths};
 use crate::types::{DataComponent, ProgressPhase};
 
 pub const PACKAGE_EXT: &str = "mapsdata";
+/// One file of a package may not unpack to more than this (the largest real one, govmap
+/// imagery at the highest detail, is ~40 GB); together with the free-space check it stops a
+/// crafted archive ("zip bomb") from filling the disk.
+const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
 const PACKAGE_FORMAT: u32 = 1;
 const CHUNK: usize = 4 * 1024 * 1024;
 
@@ -46,21 +51,19 @@ fn rel(paths: &DataPaths, p: &Path) -> anyhow::Result<String> {
     Ok(r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
 }
 
+/// Files a package may install for `c` (its current files plus the former terrain archive name).
+fn allowed_files(paths: &DataPaths, c: DataComponent) -> Vec<PathBuf> {
+    let mut v = component_files(paths, c);
+    v.push(super::download::meta_path(&paths.component_file(c)));
+    if c == DataComponent::Terrain {
+        v.push(paths.legacy_terrain_file());
+    }
+    v
+}
+
 /// Which component an archive entry belongs to; `None` for files we do not accept.
 fn component_of(name: &str) -> Option<DataComponent> {
-    let dir = name.split('/').next()?;
-    match dir {
-        "tiles" => Some(DataComponent::Tiles),
-        "world" => Some(DataComponent::World),
-        "satellite" => Some(DataComponent::Satellite),
-        "terrain" => Some(DataComponent::Terrain),
-        "routing" => Some(DataComponent::Routing),
-        "geocode" => Some(DataComponent::Geocode),
-        "transit" => Some(DataComponent::Transit),
-        "trails" => Some(DataComponent::Trails),
-        "minyanim" => Some(DataComponent::Minyanim),
-        _ => None,
-    }
+    super::components::by_dir(name.split('/').next()?)
 }
 
 fn copy_with_progress<R: Read, W: Write>(
@@ -89,9 +92,10 @@ fn copy_with_progress<R: Read, W: Write>(
 /// Deflate helps the binary components (graph ~50 %, address index ~45 %, transit ~35 %); the
 /// PMTiles archives are already compressed inside (vector tiles gzip, imagery JPEG) and go in stored.
 fn compression_for(c: DataComponent) -> CompressionMethod {
-    match c {
-        DataComponent::Tiles | DataComponent::World | DataComponent::Satellite | DataComponent::Terrain => CompressionMethod::Stored,
-        DataComponent::Routing | DataComponent::Geocode | DataComponent::Transit | DataComponent::Trails | DataComponent::Minyanim => CompressionMethod::Deflated,
+    if super::components::spec(c).deflate {
+        CompressionMethod::Deflated
+    } else {
+        CompressionMethod::Stored
     }
 }
 
@@ -115,11 +119,18 @@ pub fn export(
     }
     if let Some(p) = dest.parent() {
         std::fs::create_dir_all(p)?;
+        let bytes: u64 = present.iter().flat_map(|&c| component_files(paths, c)).filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+        super::disk::ensure_free(p, bytes)?;
     }
     let tmp = dest.with_extension(format!("{PACKAGE_EXT}.tmp"));
     let result = (|| -> anyhow::Result<()> {
         let mut zip = ZipWriter::new(io::BufWriter::new(File::create(&tmp)?));
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored).large_file(true);
+        // the manifest first: an import records each component's version as soon as its file is in
+        if paths.manifest_file().exists() {
+            zip.start_file("manifest.json", opts)?;
+            zip.write_all(&std::fs::read(paths.manifest_file())?)?;
+        }
         for &c in &present {
             let copts = opts.compression_method(compression_for(c));
             let files = component_files(paths, c);
@@ -137,10 +148,6 @@ pub fn export(
                 })?;
             }
             progress(c, ProgressPhase::Done, 1, 1, "נארז");
-        }
-        if paths.manifest_file().exists() {
-            zip.start_file("manifest.json", opts)?;
-            zip.write_all(&std::fs::read(paths.manifest_file())?)?;
         }
         let info = PackageInfo {
             format: PACKAGE_FORMAT,
@@ -210,9 +217,16 @@ pub fn import(
             totals[c as usize] += e.size();
         }
     }
+    let wanted_bytes: u64 = DataComponent::ALL.iter().filter(|c| only.is_empty() || only.contains(c)).map(|&c| totals[c as usize]).sum();
+    super::disk::ensure_free(&paths.root, wanted_bytes)?;
     let mut done: [u64; DataComponent::ALL.len()] = [0; DataComponent::ALL.len()];
     let mut installed: Vec<DataComponent> = Vec::new();
-    let mut pkg_manifest: Option<Manifest> = None;
+    // versions of the packed components (read up front: older packages store it last)
+    let pkg_manifest: Option<Manifest> = zip.by_name("manifest.json").ok().and_then(|mut f| {
+        let mut s = String::new();
+        f.read_to_string(&mut s).ok()?;
+        serde_json::from_str(&s).ok()
+    });
     for i in 0..zip.len() {
         if cancel.is_cancelled() {
             bail!("cancelled");
@@ -222,13 +236,7 @@ pub fn import(
         if e.is_dir() {
             continue;
         }
-        if name == "manifest.json" {
-            let mut s = String::new();
-            e.read_to_string(&mut s)?;
-            pkg_manifest = serde_json::from_str(&s).ok();
-            continue;
-        }
-        if name == "package.json" {
+        if name == "manifest.json" || name == "package.json" {
             continue;
         }
         let Some(c) = component_of(&name) else { continue };
@@ -241,6 +249,15 @@ pub fn import(
             bail!("שם קובץ לא חוקי בחבילה: {name}");
         }
         let dest = paths.root.join(&relp);
+        // ... and only the very files this component consists of (no `geocode/other.sqlite`)
+        if !allowed_files(paths, c).contains(&dest) {
+            log::warn!("package entry {name} is not a file of {c:?}; skipped");
+            continue;
+        }
+        if e.size() > MAX_ENTRY_BYTES {
+            bail!("UPDATE_FILE_INVALID: the package entry {name} is implausibly large");
+        }
+        let declared = e.size();
         let tmp = dest.with_extension("import.tmp");
         if let Some(p) = dest.parent() {
             std::fs::create_dir_all(p)?;
@@ -250,12 +267,17 @@ pub fn import(
         progress(c, ProgressPhase::Processing, base, total, "מתקין מהחבילה");
         {
             let mut out = io::BufWriter::new(File::create(&tmp)?);
-            let r = copy_with_progress(&mut e, &mut out, cancel, |n| {
+            // never more than the entry declares (the free-space check trusted that size)
+            let r = copy_with_progress((&mut e).take(declared + 1), &mut out, cancel, |n| {
                 progress(c, ProgressPhase::Processing, base + n, total, "מתקין מהחבילה");
             });
             out.flush()?;
             drop(out);
             match r {
+                Ok(n) if n > declared => {
+                    let _ = std::fs::remove_file(&tmp);
+                    bail!("UPDATE_FILE_INVALID: the package entry {name} is larger than it declares");
+                }
                 Ok(n) => done[c as usize] += n,
                 Err(err) => {
                     let _ = std::fs::remove_file(&tmp);
@@ -269,18 +291,18 @@ pub fn import(
         } else {
             atomic_replace(&dest, &tmp)?;
         }
+        // Record the version as soon as the file is in place: a cancel or failure later in the
+        // package must not leave a new file described by the old version (manifest.json comes
+        // first in exported packages; a package without it records "unknown").
+        let v = pkg_manifest.as_ref().and_then(|pm| pm.entry(c)).and_then(|e| e.version.clone());
+        Manifest::record(paths, c, v)?;
         if !installed.contains(&c) {
             installed.push(c);
         }
     }
-    // Carry the versions over so the update check compares against the right thing.
-    let mut m = Manifest::load(paths);
     for &c in &installed {
-        let v = pkg_manifest.as_ref().and_then(|pm| pm.entry(c)).and_then(|e| e.version.clone());
-        m.set(c, v);
         progress(c, ProgressPhase::Done, 1, 1, "הותקן מהחבילה");
     }
-    m.save(paths)?;
     log::info!("imported data package {} ({} components, app {})", src.display(), installed.len(), info.app_version);
     Ok(installed)
 }

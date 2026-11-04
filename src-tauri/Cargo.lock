@@ -2472,6 +2472,7 @@ dependencies = [
  "jpeg-decoder",
  "jpeg-encoder",
  "log",
+ "md-5",
  "opening-hours",
  "osmpbf",
  "parking_lot",
@@ -2492,6 +2493,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
  "tokio",
  "unicode-normalization",
  "windows 0.58.0",
@@ -2507,6 +2509,16 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
 ]
 
 [[package]]
@@ -4662,6 +4674,21 @@ dependencies = [
  "tracing",
  "windows-sys 0.61.2",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-window-state"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6815cab7b212f9cfe16a9d79d8d22f9e14159e4a9460f7dec1467167a008e3"
+dependencies = [
+ "bitflags 2.13.2",
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

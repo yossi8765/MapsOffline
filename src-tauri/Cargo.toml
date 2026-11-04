@@ -83,6 +83,10 @@ unicode-normalization = "0.1"
 parking_lot = "0.12"
 smallvec = "1"
 # [R1] deps
+# Remembers size, position and maximised state of the windows.
+tauri-plugin-window-state = "2"
+# MD5 of the Geofabrik extract (Geofabrik publishes <file>.md5 next to it); same digest traits as sha2.
+md-5 = "0.10"
 # [R2] deps
 # [R3] deps
 # [R4] deps
@@ -93,7 +97,7 @@ smallvec = "1"
 [target.'cfg(windows)'.dependencies]
 # WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
 # Navigation: text-to-speech (SpeechSynthesis) played through MediaPlayer, WinRT init per thread.
-windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation", "Foundation_Collections", "Media_SpeechSynthesis", "Media_Playback", "Media_Core", "Storage_Streams", "Win32_System_WinRT"] }
+windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation", "Foundation_Collections", "Media_SpeechSynthesis", "Media_Playback", "Media_Core", "Storage_Streams", "Win32_System_WinRT", "UI", "UI_ViewManagement", "Win32_Storage_FileSystem"] }
 
 # Size/speed tuned, see docs/SIZE.md. opt-level "s" was measured equal to 3 for routing
 # (A*, alternatives) and graph load; only SQLite (FTS5 search) lost ~15-50 % at -Os,

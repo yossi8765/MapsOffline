@@ -1,5 +1,7 @@
 //! Data update pipeline: download sources, build derived files, report progress.
 
+pub mod components;
+pub mod disk;
 pub mod download;
 pub mod manifest;
 pub mod minyanim;
@@ -100,13 +102,7 @@ pub type Emit = Arc<dyn Fn(DataProgress) + Send + Sync>;
 /// Manifest version of a built component: the source's version plus the builder revision, so a
 /// changed build rule (e.g. pedestrian access) shows up as an available update.
 pub fn build_tag(c: DataComponent, source_version: &str) -> String {
-    match c {
-        DataComponent::Routing => format!("{source_version} g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV),
-        DataComponent::Geocode => format!("{source_version} s{}.{}", crate::geocode::SCHEMA_VERSION, crate::geocode::BUILD_REV),
-        DataComponent::Transit => format!("{source_version} t{}", crate::transit::model::VERSION),
-        DataComponent::Trails => format!("{source_version} r{}", trails::BUILD_REV),
-        _ => source_version.to_string(),
-    }
+    format!("{source_version}{}", components::format_suffix(c).unwrap_or_default())
 }
 
 /// Status of files on disk (does not know about in-memory state).
@@ -170,18 +166,19 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             .collect()
     };
     let (tiles, world, sat, dem, osm, gtfs) = std::thread::scope(|s| {
-        let t = s.spawn(|| match download::http_client().and_then(|c| tiles::latest_build_key(&c)) {
-            Ok(key) => UpdateCheck { available: tiles::build_is_stale(tiles::installed_build(paths).as_deref(), &key), remote_version: Some(key), error: None },
-            Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
-        });
-        let world = s.spawn(|| match download::http_client().and_then(|c| tiles::latest_build_key(&c)) {
-            Ok(key) => UpdateCheck { available: tiles::build_is_stale(tiles::Extract::world(paths).installed_build().as_deref(), &key), remote_version: Some(key), error: None },
-            Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
+        // one request for the newest Protomaps build serves both the map and the world basemap
+        let t = s.spawn(|| {
+            let key = download::http_client().and_then(|c| tiles::latest_build_key(&c)).map_err(|e| format!("{e:#}"));
+            let check = |installed: Option<String>| match &key {
+                Ok(k) => UpdateCheck { available: tiles::build_is_stale(installed.as_deref(), k), remote_version: Some(k.clone()), error: None },
+                Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(e.clone()) },
+            };
+            (check(tiles::installed_build(paths)), check(tiles::Extract::world(paths).installed_build()))
         });
         let sat = s.spawn(|| {
             let settings = crate::state::load_settings(paths);
             // an archive full of content-filter placeholders counts as not installed
-            let damaged = || paths.satellite_file().exists() && satellite::verify(&paths.satellite_file(), true).is_err();
+            let damaged = || paths.satellite_file().exists() && !satellite::verify_cached(&paths.satellite_file(), true);
             if settings.satellite_source != "sentinel" {
                 // the orthophoto cache is fixed; only reachability is worth a probe
                 let expected = orthophoto::archive_version(&settings.satellite_quality);
@@ -201,7 +198,7 @@ pub fn check(paths: &DataPaths) -> DataCheck {
         });
         let dem = s.spawn(|| match download::http_client().and_then(|c| terrain::remote_version(&c)) {
             Ok(v) => {
-                let damaged = paths.terrain_file().exists() && satellite::verify(&paths.terrain_file(), false).is_err();
+                let damaged = paths.terrain_file().exists() && !satellite::verify_cached(&paths.terrain_file(), false);
                 UpdateCheck { available: damaged || local(DataComponent::Terrain).as_deref() != Some(v.as_str()), remote_version: Some(v), error: None }
             }
             Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(format!("{e:#}")) },
@@ -222,10 +219,11 @@ pub fn check(paths: &DataPaths) -> DataCheck {
                 .collect::<Vec<_>>()
         });
         let g = s.spawn(|| source_check(GTFS_URL, &[DataComponent::Transit]));
-        (t.join().unwrap_or_default(), world.join().unwrap_or_default(), sat.join().unwrap_or_default(), dem.join().unwrap_or_default(), o.join().unwrap_or_default(), g.join().unwrap_or_default())
+        let (tiles, world) = t.join().unwrap_or_default();
+        (tiles, world, sat.join().unwrap_or_default(), dem.join().unwrap_or_default(), o.join().unwrap_or_default(), g.join().unwrap_or_default())
     });
     let mut osm = osm.into_iter();
-    DataCheck {
+    let mut out = DataCheck {
         checked_iso: chrono::Local::now().to_rfc3339(),
         tiles,
         world,
@@ -241,7 +239,26 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             remote_version: None,
             error: None,
         },
+    };
+    // components the user does not want are never offered (Settings.wantedComponents)
+    if let Some(wanted) = crate::state::load_settings(paths).wanted_components {
+        for (c, u) in [
+            (DataComponent::Tiles, &mut out.tiles),
+            (DataComponent::World, &mut out.world),
+            (DataComponent::Satellite, &mut out.satellite),
+            (DataComponent::Terrain, &mut out.terrain),
+            (DataComponent::Routing, &mut out.routing),
+            (DataComponent::Geocode, &mut out.geocode),
+            (DataComponent::Transit, &mut out.transit),
+            (DataComponent::Trails, &mut out.trails),
+            (DataComponent::Minyanim, &mut out.minyanim),
+        ] {
+            if !wanted.contains(&c) {
+                u.available = false;
+            }
+        }
     }
+    out
 }
 
 /// Progress reporter for one job: emits to every component the job serves, blocks while paused,
@@ -286,9 +303,7 @@ impl Finisher<'_> {
         match res {
             Ok(version) => {
                 let _g = self.manifest_lock.lock();
-                let mut m = manifest::Manifest::load(self.paths);
-                m.set(c, version);
-                match m.save(self.paths) {
+                match manifest::Manifest::record(self.paths, c, version) {
                     Ok(()) => ev(ProgressPhase::Done, 1, 1, "הושלם".into()),
                     Err(e) => {
                         ev(ProgressPhase::Failed, 0, 0, format!("{e:#}"));
@@ -361,15 +376,54 @@ pub fn update(
     for &c in components {
         emit(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: String::new() });
     }
-    // ready-made components from the weekly GitLab build first; the rest is built here
-    let ready = if crate::state::load_settings(paths).use_prebuilt_data { prebuilt::install(paths, components, &emit, cancel) } else { Vec::new() };
-    let rest: Vec<DataComponent> = components.iter().copied().filter(|c| !ready.contains(c)).collect();
-    let components = rest.as_slice();
-    if components.is_empty() {
-        return Ok(());
-    }
-    let wants = |c: DataComponent| components.contains(&c);
+    let settings = crate::state::load_settings(paths);
     let fin = Finisher { paths, emit: &emit, cancel, manifest_lock: parking_lot::Mutex::new(()), errors: parking_lot::Mutex::new(Vec::new()) };
+    type Job = fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>;
+    let run_job = |c: DataComponent, job: Job| {
+        let rep = Reporter::new(&emit, &[c], cancel);
+        if rep.cancel.is_cancelled() {
+            return fin.skipped(c);
+        }
+        let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
+        fin.finish(c, job(paths, &progress, &rep.cancel));
+    };
+
+    std::thread::scope(|outer| {
+        // The govmap orthophoto never comes from the package (it may not be redistributed) and its
+        // server is the slowest part of an update: start it now, next to the package downloads.
+        let sat_now = components.contains(&DataComponent::Satellite) && (settings.satellite_source != "sentinel" || !settings.use_prebuilt_data);
+        if sat_now {
+            let run_job = &run_job;
+            outer.spawn(move || run_job(DataComponent::Satellite, satellite::update_satellite as Job));
+        }
+        // ready-made components from the weekly GitLab build first; the rest is built here
+        let ready = if settings.use_prebuilt_data { prebuilt::install(paths, components, &emit, cancel) } else { Vec::new() };
+        let rest: Vec<DataComponent> = components.iter().copied().filter(|c| !ready.contains(c) && !(sat_now && *c == DataComponent::Satellite)).collect();
+        if rest.is_empty() {
+            return;
+        }
+        update_rest(&rest, paths, &emit, cancel, &fin, &run_job);
+    });
+
+    let mut errors = fin.errors.into_inner();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.remove(0))
+    }
+}
+
+/// The part of [`update`] after the ready-made package: parallel downloads, sequential builds.
+fn update_rest(
+    components: &[DataComponent],
+    paths: &DataPaths,
+    emit: &Emit,
+    cancel: &Cancel,
+    fin: &Finisher<'_>,
+    run_job: &(dyn Fn(DataComponent, fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>) + Sync),
+) {
+    let emit = emit.clone();
+    let wants = |c: DataComponent| components.contains(&c);
 
     std::thread::scope(|s| {
         // --- self-contained jobs: download + finalize in one go
@@ -378,15 +432,7 @@ pub fn update(
             if !wants(c) {
                 continue;
             }
-            let (fin, emit) = (&fin, &emit);
-            s.spawn(move || {
-                let rep = Reporter::new(emit, &[c], cancel);
-                if rep.cancel.is_cancelled() {
-                    return fin.skipped(c);
-                }
-                let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
-                fin.finish(c, job(paths, &progress, &rep.cancel));
-            });
+            s.spawn(move || run_job(c, job));
         }
 
         // --- shared source downloads
@@ -491,13 +537,6 @@ pub fn update(
             }
         }
     });
-
-    let mut errors = fin.errors.into_inner();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.remove(0))
-    }
 }
 
 #[cfg(test)]
