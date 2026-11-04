@@ -607,6 +607,8 @@ const he = {
 
   // ===== [F1] =====
   searchNoIndex: "אינדקס הכתובות לא מותקן",
+  worksOnline: "פועל ברשת",
+  worksOnlineHint: "בחיבור לאינטרנט הרכיב פועל גם בלי הורדה. ההורדה נדרשת רק לשימוש בלי אינטרנט.",
   searchOnlineNote: "התוצאות מהרשת (OpenStreetMap). לחיפוש בלי אינטרנט יש להוריד את רכיב \"כתובות\" במסך הנתונים.",
   searchNoIndexHint: "כדי לחפש כתובות ומקומות יש להוריד את רכיב \"כתובות\" במסך הנתונים.",
   updateAlsoRest: "עדכן גם את שאר הרכיבים",
@@ -1567,6 +1569,8 @@ const en: Record<I18nKey, string> = {
 
   // ===== [F1] =====
   searchNoIndex: "The address index is not installed",
+  worksOnline: "Works online",
+  worksOnlineHint: "With an internet connection this works without a download. Download it only for use without internet.",
   searchOnlineNote: "Results from the internet (OpenStreetMap). To search offline, download the \"Addresses\" component in the Data panel.",
   searchNoIndexHint: "To search addresses and places, download the \"Addresses\" component in the Data panel.",
   updateAlsoRest: "Update the other components too",

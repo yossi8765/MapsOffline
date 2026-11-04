@@ -44,7 +44,9 @@ export function LayersPanel() {
   const customCount = useStore((s) => (s.settings.customLayers ?? []).filter((c) => c.visible).length);
   const recording = useStore((s) => s.track.recording);
   const compare = useStore((s) => s.compare);
-  const noTerrain = !terrainUrl;
+  // without the data, the online stand-ins (AWS elevation tiles, Waymarked Trails) serve them
+  const onlineOk = useStore((s) => s.online && s.settings.routingMode !== "offline");
+  const noTerrain = !terrainUrl && !onlineOk;
   const st = useStore.getState();
   const tool = (run: () => void) => () => {
     st.setMapPopover(null);
@@ -63,7 +65,7 @@ export function LayersPanel() {
           <LayerToggle label={t("layerTransit")} checked={layers.transitStops} missing={!transitInstalled} onChange={(v) => setLayers({ transitStops: v })} />
           <LayerToggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
           <LayerToggle label={t("contours")} checked={layers.contours} missing={noTerrain} onChange={(v) => setLayers({ contours: v })} />
-          <LayerToggle label={t("trails")} checked={layers.trails} missing={!trailsInstalled} onChange={(v) => setLayers({ trails: v })} />
+          <LayerToggle label={t("trails")} checked={layers.trails} missing={!trailsInstalled && !onlineOk} onChange={(v) => setLayers({ trails: v })} />
         </div>
         {layers.satellite && satelliteUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerSatelliteHint")}</p>}
         {(layers.hillshade || layers.terrain3d) && terrainUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerTerrainHint")}</p>}

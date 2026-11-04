@@ -236,6 +236,10 @@ pub async fn match_track(state: State<'_, Arc<AppState>>, points: Vec<LonLat>, m
 pub async fn elevation_profile(state: State<'_, Arc<AppState>>, points: Vec<LonLat>) -> R<Vec<Option<f32>>> {
     let archive = state.paths().terrain_file_in_use();
     if !archive.exists() {
+        // no elevation data installed: the public Terrarium tiles when the internet may be used
+        if state.settings.read().routing_mode != "offline" {
+            return tauri::async_runtime::spawn_blocking(move || crate::data::terrain::elevations_online(&points).map_err(err)).await.map_err(err)?;
+        }
         return Err("NO_TERRAIN_DATA".into());
     }
     tauri::async_runtime::spawn_blocking(move || crate::data::terrain::elevations(&archive, &points).map_err(err)).await.map_err(err)?

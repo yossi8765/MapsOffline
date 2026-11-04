@@ -42,6 +42,10 @@ export interface StyleOptions {
   /** Marked trails (GeoJSON written by the data update) – drawn when `trails` or topo. */
   trailsUrl?: string | null;
   trails?: boolean;
+  /** Online elevation (AWS Terrain Tiles) when no DEM is installed and the internet may be used. */
+  onlineTerrain?: boolean;
+  /** Online trail tiles (Waymarked Trails) when the trails file is not installed and online is allowed. */
+  onlineTrails?: boolean;
   /** User tile layers (Settings.customLayers), served by the backend at mo-user.localhost. */
   customLayers?: CustomLayer[];
 }
@@ -238,6 +242,17 @@ function origin(): string {
 
 export const WORLD_MAX_ZOOM = 6;
 export const TERRAIN_MAX_ZOOM = 12;
+
+/** Public AWS Terrain Tiles (Terrarium PNG, 256 px): the online stand-in for the elevation
+ *  component (hillshade, 3D terrain, contours) when it is not installed. */
+export const ONLINE_TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+export const ONLINE_TERRAIN_MAX_ZOOM = 15;
+const ONLINE_TERRAIN_ATTRIBUTION = "Terrain Tiles: Mapzen / AWS Open Data (various sources incl. SRTM)";
+/** Waymarked Trails raster overlay: the online stand-in for the marked-trails component. */
+export function onlineTrailsUrl(theme?: MapTheme): string {
+  return `https://tile.waymarkedtrails.org/${theme === "cycle" ? "cycling" : "hiking"}/{z}/{x}/{y}.png`;
+}
+const ONLINE_TRAILS_ATTRIBUTION = '© <a href="https://waymarkedtrails.org">waymarkedtrails.org</a>, <a href="https://openstreetmap.org">OpenStreetMap</a>';
 /** The previous DEM (256 px PNG), still in use until the terrain data is updated. */
 const OLD_TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Mapzen terrain tiles</a>';
 const TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://mapterhorn.com">Mapterhorn</a> – 10 m DEM of Israel (ASTER GDEM, METI/NASA, processed by 4cast), Copernicus GLO-30 (© DLR/Airbus, provided under COPERNICUS by the EU and ESA)';
@@ -336,9 +351,13 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   }
   const topo = o.theme === "topo";
   const hillshade = o.hillshade || topo;
-  const dem = !!o.terrainUrl && (hillshade || o.terrain3d);
+  const demOnline = !o.terrainUrl && !!o.onlineTerrain;
+  const dem = (!!o.terrainUrl || demOnline) && (hillshade || o.terrain3d);
+  const demAttribution = demOnline ? ONLINE_TERRAIN_ATTRIBUTION : o.terrainUrl?.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION;
   if (dem) {
-    base.sources.dem = { type: "raster-dem", url: `pmtiles://${o.terrainUrl}`, tileSize: o.terrainUrl!.includes("mapterhorn") ? 512 : 256, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, attribution: o.terrainUrl!.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION };
+    base.sources.dem = demOnline
+      ? { type: "raster-dem", tiles: [ONLINE_TERRAIN_URL], tileSize: 256, encoding: "terrarium", maxzoom: ONLINE_TERRAIN_MAX_ZOOM, attribution: demAttribution }
+      : { type: "raster-dem", url: `pmtiles://${o.terrainUrl}`, tileSize: o.terrainUrl!.includes("mapterhorn") ? 512 : 256, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, attribution: demAttribution };
     if (o.terrain3d) base.terrain = { source: "dem", exaggeration: 1.2 };
   }
   const hillshadeLayer = (): LayerSpecification => ({
@@ -463,13 +482,17 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     ls.push(...labels);
   };
   if (o.contourTiles && (o.contours || topo)) {
-    base.sources.contours = { type: "vector", tiles: [o.contourTiles], maxzoom: 15, attribution: o.terrainUrl?.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION };
+    base.sources.contours = { type: "vector", tiles: [o.contourTiles], maxzoom: 15, attribution: demAttribution };
     putOverlay(contourLayers(o.flavor === "dark", o.lang));
   }
   if (o.trailsUrl && (o.trails || topo)) {
     // coarser tiling of the 5–6 MB file: fewer vertices per tile, no tiles beyond zoom 14
     base.sources.trails = { type: "geojson", data: o.trailsUrl, tolerance: 0.6, buffer: 32, maxzoom: 14, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>' };
     putOverlay(trailLayers());
+  } else if (o.onlineTrails && (o.trails || topo)) {
+    // no trails file installed: the Waymarked Trails raster overlay where the trail lines go
+    base.sources["trails-online"] = { type: "raster", tiles: [onlineTrailsUrl(o.theme)], tileSize: 256, maxzoom: 18, attribution: ONLINE_TRAILS_ATTRIBUTION };
+    putOverlay([{ id: "trails-online", type: "raster", source: "trails-online", minzoom: 8, paint: { "raster-opacity": 0.85 } }]);
   }
   // User tile layers: over the imagery and the land, under the roads and labels, in list order
   const custom = (o.customLayers ?? []).filter((c) => c.visible);

@@ -13,9 +13,16 @@
 import * as maplibregl from "maplibre-gl";
 import mlcontour from "maplibre-contour";
 import { PMTiles } from "pmtiles";
-import { TERRAIN_MAX_ZOOM } from "./mapStyle";
+import { ONLINE_TERRAIN_MAX_ZOOM, TERRAIN_MAX_ZOOM } from "./mapStyle";
 
 const PATTERN = "pmdem://{z}/{x}/{y}";
+const CONTOUR_OPTIONS = {
+  // [minor, major] interval in metres by zoom
+  thresholds: { 10: [100, 500], 11: [50, 250], 12: [20, 100], 13: [10, 50], 15: [5, 25] },
+  elevationKey: "ele",
+  levelKey: "level",
+  contourLayer: "contours",
+};
 
 let current: { terrainUrl: string; tiles: string } | null = null;
 let seq = 0;
@@ -37,11 +44,20 @@ function flatTile(): Promise<Blob> {
   return flat;
 }
 
-/** Contour vector-tile URL template for the archive at `terrainUrl` (registered once per file). */
+/** Contour vector-tile URL template for the archive at `terrainUrl` (registered once per file), or
+ *  for an online Terrarium tile template (`https://…/{z}/{x}/{y}.png`) when no DEM is installed. */
 export function contourTilesUrl(terrainUrl: string): string {
   if (current?.terrainUrl === terrainUrl) return current.tiles;
-  const archive = new PMTiles(terrainUrl);
   const id = `contour${++seq}`;
+  if (/^https:\/\/.*\{z\}/.test(terrainUrl)) {
+    // online tiles: maplibre-contour fetches them itself (main thread, small cache)
+    const online = new mlcontour.DemSource({ url: terrainUrl, encoding: "terrarium", maxzoom: ONLINE_TERRAIN_MAX_ZOOM - 1, worker: false, id, cacheSize: 32 });
+    online.setupMaplibre(maplibregl);
+    const tiles = online.contourProtocolUrl(CONTOUR_OPTIONS);
+    current = { terrainUrl, tiles };
+    return tiles;
+  }
+  const archive = new PMTiles(terrainUrl);
   const source = new mlcontour.DemSource({ url: PATTERN, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, worker: false, id });
   source.manager = new mlcontour.LocalDemManager({
     demUrlPattern: PATTERN,
@@ -62,13 +78,7 @@ export function contourTilesUrl(terrainUrl: string): string {
     },
   });
   source.setupMaplibre(maplibregl);
-  const tiles = source.contourProtocolUrl({
-    // [minor, major] interval in metres by zoom
-    thresholds: { 10: [100, 500], 11: [50, 250], 12: [20, 100], 13: [10, 50], 15: [5, 25] },
-    elevationKey: "ele",
-    levelKey: "level",
-    contourLayer: "contours",
-  });
+  const tiles = source.contourProtocolUrl(CONTOUR_OPTIONS);
   current = { terrainUrl, tiles };
   return tiles;
 }

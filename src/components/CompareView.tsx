@@ -51,6 +51,7 @@ export function CompareView({ mainRef }: { mainRef: RefObject<maplibregl.Map | n
       poi: st.layers.poi,
       buildings3d: false,
       theme: look === "topo" ? "topo" : "standard",
+      onlineTerrain: st.online && st.settings.routingMode !== "offline",
     };
     const map = new maplibregl.Map({
       container: hostRef.current,

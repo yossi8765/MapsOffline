@@ -5,7 +5,7 @@ import type { FeatureCollection } from "geojson";
 import { InfoBar } from "./InfoBar";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { buildStyle, firstSymbolLayer, MAX_BOUNDS, isMergedTiles, type FlavorName, type StyleOptions } from "../lib/mapStyle";
+import { buildStyle, firstSymbolLayer, MAX_BOUNDS, isMergedTiles, ONLINE_TERRAIN_URL, type FlavorName, type StyleOptions } from "../lib/mapStyle";
 import { POI_CATEGORIES } from "../lib/poiCategories";
 import { CategoryPicker, LayersButton, LocateButton } from "./CategoryPicker";
 import { fmtCoords, fmtDistance } from "../lib/format";
@@ -71,6 +71,8 @@ export function MapView() {
   const lang = useStore((s) => s.settings.language);
   const units = useStore((s) => s.settings.units);
   const navigating = useStore((s) => !!s.navigation);
+  // online stand-ins for elevation and trails when their data is not installed
+  const onlineOk = useStore((s) => s.online && s.settings.routingMode !== "offline");
 
   const flavor: FlavorName = layers.flavor === "auto" ? resolveTheme(theme) : layers.flavor;
   const topo = layers.theme === "topo";
@@ -78,16 +80,17 @@ export function MapView() {
   // with maplibre-contour only once contours or the topo theme are switched on)
   const [contourTiles, setContourTiles] = useState<string | null>(null);
   useEffect(() => {
-    if (!terrainUrl || !(layers.contours || topo)) {
+    const demUrl = terrainUrl ?? (onlineOk ? ONLINE_TERRAIN_URL : null);
+    if (!demUrl || !(layers.contours || topo)) {
       setContourTiles(null);
       return;
     }
     let dead = false;
-    void import("../lib/contours").then((m) => !dead && setContourTiles(m.contourTilesUrl(terrainUrl)));
+    void import("../lib/contours").then((m) => !dead && setContourTiles(m.contourTilesUrl(demUrl)));
     return () => {
       dead = true;
     };
-  }, [terrainUrl, layers.contours, topo]);
+  }, [terrainUrl, onlineOk, layers.contours, topo]);
   // marked trails file (built by the data update; absent until installed). Asked for only when the
   // trails or the topo map are on: the 5–6 MB GeoJSON is not parsed otherwise.
   const trailsOn = layers.trails || topo;
@@ -104,7 +107,7 @@ export function MapView() {
   flavorRef.current = flavor;
 
   const styleOptions = (): StyleOptions => {
-    return { tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles, trails: layers.trails, trailsUrl, customLayers };
+    return { tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles, trails: layers.trails, trailsUrl, customLayers, onlineTerrain: onlineOk, onlineTrails: onlineOk };
   };
 
   /** Show a bubble on the map (one at a time). */
@@ -172,7 +175,7 @@ export function MapView() {
     lastStyle.current = key;
     map.setStyle(next, { diff: true, transformStyle: (prev, nextStyle) => keepOverlays(prev as StyleSpecification | undefined, nextStyle) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapRef.current, tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme, layers.contours, layers.trails, contourTiles, trailsUrl, customLayers]);
+  }, [mapRef.current, tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme, layers.contours, layers.trails, contourTiles, trailsUrl, customLayers, onlineOk]);
 
   // ---- colour scheme / theme / map flavour: the overlays take their colours from the CSS tokens,
   // which change without a style rebuild. Re-read them after App has set data-accent / data-theme.

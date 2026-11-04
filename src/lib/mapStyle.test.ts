@@ -60,3 +60,39 @@ describe("buildStyle", () => {
     expect(Object.keys(s["font-faces"])).toContain("Noto Sans Regular");
   });
 });
+
+describe("online stand-ins for elevation and trails", () => {
+  const noData: StyleOptions = { ...base, terrainUrl: null, trailsUrl: null, hillshade: true, trails: true };
+
+  it("uses AWS elevation tiles and Waymarked Trails when online", () => {
+    const s = buildStyle({ ...noData, onlineTerrain: true, onlineTrails: true });
+    const dem = s.sources.dem as { tiles?: string[] };
+    expect(dem.tiles?.[0]).toContain("elevation-tiles-prod/terrarium");
+    expect(s.layers.some((l) => l.id === "hillshade")).toBe(true);
+    const trails = s.sources["trails-online"] as { tiles?: string[] };
+    expect(trails.tiles?.[0]).toContain("tile.waymarkedtrails.org/hiking");
+    // the trail overlay stays under the first label layer
+    const iTrail = s.layers.findIndex((l) => l.id === "trails-online");
+    const iLabel = s.layers.findIndex((l) => l.type === "symbol");
+    expect(iTrail).toBeGreaterThan(0);
+    expect(iTrail).toBeLessThan(iLabel);
+  });
+
+  it("cycling map takes the cycling trails", () => {
+    const s = buildStyle({ ...noData, onlineTrails: true, theme: "cycle" });
+    expect((s.sources["trails-online"] as { tiles: string[] }).tiles[0]).toContain("/cycling/");
+  });
+
+  it("offline: no online sources", () => {
+    const s = buildStyle(noData);
+    expect(s.sources.dem).toBeUndefined();
+    expect(s.sources["trails-online"]).toBeUndefined();
+  });
+
+  it("installed data wins over the online tiles", () => {
+    const s = buildStyle({ ...noData, terrainUrl: "http://asset.localhost/dem.pmtiles", trailsUrl: "http://asset.localhost/trails.geojson", onlineTerrain: true, onlineTrails: true });
+    expect((s.sources.dem as { url?: string }).url).toContain("pmtiles://");
+    expect(s.sources["trails-online"]).toBeUndefined();
+    expect(s.sources.trails).toBeDefined();
+  });
+});

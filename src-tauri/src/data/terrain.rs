@@ -135,12 +135,50 @@ fn decode_tile(bytes: &[u8]) -> anyhow::Result<DemTile> {
 /// Points outside the archive get `None`. Works for 256 and 512 px tiles.
 pub fn elevations(archive: &Path, points: &[LonLat]) -> anyhow::Result<Vec<Option<f32>>> {
     let z = crate::map_tiles::archive_max_zoom(archive).unwrap_or(MAX_ZOOM);
+    Ok(elevations_with(points, z, |z, x, y| dem_tile(archive, z, x, y)))
+}
+
+/// Public AWS Terrain Tiles (Terrarium PNG, 256 px): the elevation profile's online stand-in when
+/// no DEM is installed (same tiles as the map's online hillshade).
+const ONLINE_URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+const ONLINE_ZOOM: u8 = 12;
+
+/// Elevation (m) at each point from the online Terrarium tiles (zoom 12, ~30 m pixels).
+/// Tiles that cannot be fetched give `None`; decoded tiles are kept for later profiles.
+pub fn elevations_online(points: &[LonLat]) -> anyhow::Result<Vec<Option<f32>>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(download::USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(8))
+        .build()?;
+    Ok(elevations_with(points, ONLINE_ZOOM, |z, x, y| online_tile(&client, z, x, y)))
+}
+
+fn online_tile(client: &Client, z: u8, x: u32, y: u32) -> Option<std::sync::Arc<DemTile>> {
+    type Key = (u8, u32, u32);
+    static CACHE: parking_lot::Mutex<std::collections::VecDeque<(Key, std::sync::Arc<DemTile>)>> = parking_lot::Mutex::new(std::collections::VecDeque::new());
+    let key: Key = (z, x, y);
+    if let Some(t) = CACHE.lock().iter().find(|(k, _)| *k == key).map(|(_, t)| t.clone()) {
+        return Some(t);
+    }
+    let r = client.get(format!("{ONLINE_URL}/{z}/{x}/{y}.png")).send().ok()?.error_for_status().ok()?;
+    let t = std::sync::Arc::new(decode_tile(&r.bytes().ok()?).ok()?);
+    let mut c = CACHE.lock();
+    if c.len() >= DEM_CACHE {
+        c.pop_front();
+    }
+    c.push_back((key, t.clone()));
+    Some(t)
+}
+
+/// Bilinear elevations from Terrarium tiles at zoom `z`, whatever their source.
+fn elevations_with(points: &[LonLat], z: u8, mut tile_at: impl FnMut(u8, u32, u32) -> Option<std::sync::Arc<DemTile>>) -> Vec<Option<f32>> {
     let mut cache: HashMap<(u32, u32), Option<std::sync::Arc<DemTile>>> = HashMap::new();
     let mut out = Vec::with_capacity(points.len());
     for &[lon, lat] in points {
         // tile x/y do not depend on the tile size
         let (tx, ty) = (lon_to_px(lon, z, 1).floor() as u32, lat_to_px(lat, z, 1).floor() as u32);
-        let tile = cache.entry((tx, ty)).or_insert_with(|| dem_tile(archive, z, tx, ty));
+        let tile = cache.entry((tx, ty)).or_insert_with(|| tile_at(z, tx, ty));
         let Some(t) = tile else {
             out.push(None);
             continue;
@@ -153,7 +191,7 @@ pub fn elevations(archive: &Path, points: &[LonLat]) -> anyhow::Result<Vec<Optio
         let h = t.height(x0, y0) * (1.0 - ax) * (1.0 - ay) + t.height(x0 + 1, y0) * ax * (1.0 - ay) + t.height(x0, y0 + 1) * (1.0 - ax) * ay + t.height(x0 + 1, y0 + 1) * ax * ay;
         out.push(Some(h));
     }
-    Ok(out)
+    out
 }
 
 /// Decoded DEM tiles kept across calls (elevation profiles of consecutive routes and the

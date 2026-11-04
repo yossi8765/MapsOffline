@@ -77,6 +77,9 @@ export function isWanted(c: DataComponent, wanted: DataComponent[] | null | unde
   return !wanted || wanted.includes(c);
 }
 
+/** Components the program can do without while online (each has an online stand-in). */
+const ONLINE_CAPABLE: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit", "trails", "minyanim"];
+
 export function DataPanel() {
   const t = useT();
   const status = useStore((s) => s.dataStatus);
@@ -550,6 +553,9 @@ function ComponentCard({
   const t = useT();
   const m = META[id];
   const [showExtra, setShowExtra] = useState(false);
+  // not installed but served online right now (online map, live imagery, OSRM / Transitous,
+  // Photon search, AWS elevation tiles, Waymarked Trails, live prayer times)
+  const worksOnline = useStore((s) => s.online && s.settings.routingMode !== "offline") && !st?.present && ONLINE_CAPABLE.includes(id);
   const active = prog && !["done", "failed", "cancelled"].includes(prog.phase);
   const running = active && prog!.phase !== "queued";
   const showPaused = !!running && paused;
@@ -565,6 +571,8 @@ function ComponentCard({
             <span className="font-semibold">{t(m.label)}</span>
             {active ? (
               <span className={clsx("pill", showPaused ? "" : "pill-accent")}>{showPaused ? t("phasePaused") : waiting ? t("phaseWaitingShared") : t(PHASE_KEY[prog!.phase])}</span>
+            ) : worksOnline ? (
+              <span className="pill">{t("worksOnline")}</span>
             ) : !st?.present ? (
               <span className="pill">{t("missing")}</span>
             ) : chk?.available && wanted ? (
@@ -576,6 +584,7 @@ function ComponentCard({
             )}
           </div>
           <div className="text-xs text-muted mt-0.5">{t(m.desc)}</div>
+          {worksOnline && !active && <div className="text-xs text-subtle mt-0.5">{t("worksOnlineHint")}</div>}
           {extra && (
             <button className="text-xs text-accent hover:underline underline-offset-2 mt-1" aria-expanded={showExtra} onClick={() => setShowExtra((v) => !v)}>
               {showExtra ? t("hideOptions") : t("showOptions")}
