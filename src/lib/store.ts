@@ -27,7 +27,7 @@ import {
   type TransitPreference,
 } from "./api";
 import { translate, type I18nKey } from "./i18n";
-import { POI_CATEGORIES } from "./poiCategories";
+import { categoryOf, POI_CATEGORIES } from "./poiCategories";
 
 export type Panel = "route" | "search" | "favorites" | "history" | "layers" | "data" | "settings";
 
@@ -142,8 +142,9 @@ interface State {
   northUpTick: number;
   /** Keyboard-shortcut table dialog (App). */
   shortcutsOpen: boolean;
-  /** "What's nearby" list (context menu): places within 600 m of a point, nearest first. */
-  nearby: { lon: number; lat: number; items: GeoResult[]; loading: boolean } | null;
+  /** "What's nearby" list (context menu): places within `radius` m of a point, nearest first,
+   *  optionally of one picker category (`cat`, POI_CATEGORIES id). */
+  nearby: { lon: number; lat: number; items: GeoResult[]; loading: boolean; radius: number; cat: string } | null;
   /** A place to show in the search panel's card, set from outside the panel (links, nearby list). */
   searchPick: { lon: number; lat: number; label: string; result?: GeoResult; tick: number } | null;
 
@@ -213,7 +214,7 @@ interface Actions {
   pickPlace: (p: { lon: number; lat: number; label: string; result?: GeoResult }, zoom?: number) => void;
   /** Handle a `mapsoffline://map=<z>/<lat>/<lon>&q=<label>` link (also `geo:<lat>,<lon>`). */
   openLink: (url: string) => boolean;
-  showNearby: (lon: number, lat: number) => Promise<void>;
+  showNearby: (lon: number, lat: number, opts?: { radius?: number; cat?: string }) => Promise<void>;
   closeNearby: () => void;
   setContextMenu: (c: ContextMenuState | null) => void;
   toast: (kind: Toast["kind"], text: string) => void;
@@ -480,20 +481,35 @@ export const useStore = create<State & Actions>((set, get) => ({
     get().pickPlace({ lon: parsed.lon, lat: parsed.lat, label: parsed.label || fmtCoordsShort(parsed.lon, parsed.lat) }, parsed.zoom);
     return true;
   },
-  showNearby: async (lon, lat) => {
-    set({ nearby: { lon, lat, items: [], loading: true }, layersOpen: false });
-    // 600 m box around the point; every category the map knows
-    const dLat = 600 / 111_320;
-    const dLon = 600 / (111_320 * Math.cos((lat * Math.PI) / 180));
-    const cats = [...new Set(POI_CATEGORIES.flatMap((c) => c.cats))];
+  showNearby: async (lon, lat, opts) => {
+    // radius and category are remembered for the next time (per user, localStorage)
+    let saved: { radius?: number; cat?: string } = {};
     try {
-      const res = await api.poiLayer(cats, [lon - dLon, lat - dLat, lon + dLon, lat + dLat], 400);
+      saved = JSON.parse(localStorage.getItem("mapsoffline.nearby") || "{}");
+    } catch {
+      /* ignore */
+    }
+    const radius = opts?.radius ?? saved.radius ?? 600;
+    const cat = opts?.cat ?? saved.cat ?? "";
+    try {
+      localStorage.setItem("mapsoffline.nearby", JSON.stringify({ radius, cat }));
+    } catch {
+      /* ignore */
+    }
+    set((s) => ({ nearby: { lon, lat, items: s.nearby?.lon === lon && s.nearby?.lat === lat ? s.nearby.items : [], loading: true, radius, cat }, layersOpen: false }));
+    const dLat = radius / 111_320;
+    const dLon = radius / (111_320 * Math.cos((lat * Math.PI) / 180));
+    const picked = POI_CATEGORIES.find((c) => c.id === cat);
+    const cats = picked ? picked.cats : [...new Set(POI_CATEGORIES.flatMap((c) => c.cats))];
+    try {
+      const res = await api.poiLayer(cats, [lon - dLon, lat - dLat, lon + dLon, lat + dLat], 1000);
       const dist = (r: GeoResult) => Math.hypot((r.lon - lon) * Math.cos((lat * Math.PI) / 180), r.lat - lat);
       const items = res
-        .filter((r) => r.name && dist(r) * 111_320 <= 600)
+        .filter((r) => r.name && dist(r) * 111_320 <= radius && (!picked || categoryOf(r.category ?? "", r.name, [picked])))
         .sort((a, b) => dist(a) - dist(b))
-        .slice(0, 30);
-      if (get().nearby?.lon === lon && get().nearby?.lat === lat) set({ nearby: { lon, lat, items, loading: false } });
+        .slice(0, 60);
+      const cur = get().nearby;
+      if (cur?.lon === lon && cur?.lat === lat && cur.radius === radius && cur.cat === cat) set({ nearby: { lon, lat, items, loading: false, radius, cat } });
     } catch (e) {
       set({ nearby: null });
       get().toastError(e);

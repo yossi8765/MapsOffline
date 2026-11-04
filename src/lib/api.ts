@@ -35,6 +35,8 @@ export interface GeoResult {
   nearHouseNumber?: string;
   /** How the query was read when not literally (first result only): "מציג תוצאות עבור: X". */
   interpretation?: string;
+  /** Hebrew name of a POI category ("בית כנסת") when `category` is the raw id (map layer, nearby) */
+  categoryLabel?: string;
 }
 
 // ------------------------------------------------------------- routing

@@ -81,6 +81,10 @@ pub struct GeoExtra {
     /// typo corrected, category + place): set on the first result only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpretation: Option<String>,
+    /// Hebrew name of a POI's category ("בית כנסת") where `category` carries the raw id (map layer,
+    /// nearby list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_label: Option<String>,
 }
 
 impl GeoExtra {

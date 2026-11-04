@@ -1144,7 +1144,11 @@ impl Geocoder {
                     house_number: None,
                     // the more important (lower minzoom) first when sorting on the client
                     score: -(r.minzoom as f64),
-                    extra: poi_extra(r.hours.as_deref(), r.kosher, now),
+                    extra: {
+                        let mut x = poi_extra(r.hours.as_deref(), r.kosher, now).unwrap_or_default();
+                        x.category_label = Some(category_he(&r.cat));
+                        Some(x)
+                    },
                     category: Some(r.cat),
                 },
             ));

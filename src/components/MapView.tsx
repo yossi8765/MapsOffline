@@ -358,7 +358,7 @@ function parseResult(json: unknown, label: string): GeoResult | undefined {
   if (typeof json !== "string") return undefined;
   try {
     const r = JSON.parse(json) as GeoResult;
-    return { ...r, category: label || r.category };
+    return { ...r, category: r.categoryLabel || label || r.category };
   } catch {
     return undefined;
   }
