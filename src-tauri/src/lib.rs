@@ -188,6 +188,12 @@ pub fn run() {
             commands::app::user_layer_delete,
             commands::app::custom_layer_clear_cache,
             commands::data::package_info,
+            commands::data::satellite_area_install,
+            commands::data::satellite_area_cancel,
+            commands::data::satellite_area_pause,
+            commands::data::satellite_area_delete,
+            commands::data::satellite_areas_status,
+            commands::data::satellite_area_estimate,
             // [R1] new commands above
             // ---- R2 routing + navigation (commands/route.rs, commands/nav.rs)
             commands::route::route,

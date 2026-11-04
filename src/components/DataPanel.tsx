@@ -7,6 +7,7 @@ import { Icon } from "./Icon";
 import { Tip } from "./Tip";
 import { InfoBar } from "./InfoBar";
 import { FirstRunCard } from "./FirstRunCard";
+import { SatelliteAreas } from "./SatelliteAreas";
 import { PackageProgress, packageActive, type PackageDl } from "./PackageProgress";
 import { apiX, DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -388,6 +389,8 @@ export function DataPanel() {
           </p>
         )}
       </div>
+
+      <SatelliteAreas />
 
       <RegionsSection />
 

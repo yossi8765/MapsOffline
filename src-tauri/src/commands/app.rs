@@ -211,6 +211,8 @@ fn sanitize_settings(mut s: Settings) -> Settings {
         l.opacity = l.opacity.clamp(0.0, 1.0);
     }
     s.teaching_tips_seen.truncate(200);
+    s.satellite_areas.retain(crate::data::sat_areas::valid);
+    s.satellite_areas.truncate(100);
     s
 }
 

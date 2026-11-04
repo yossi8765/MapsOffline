@@ -94,6 +94,10 @@ export interface MapSlice {
   userLayersTick: number;
   track: TrackState;
   compare: CompareMode;
+  /** A rectangle is being dragged on the map (sharp-imagery area); the callback gets its box. */
+  areaPick: { onPick: (bbox: [number, number, number, number]) => void } | null;
+  /** A sharp-imagery area started from the map (context menu): the Data panel opens its form here. */
+  satAreaDraft: { center: LonLat; tick: number } | null;
 
   setLayers: (patch: Partial<MapLayers>) => void;
   setTransitStopsUnavailable: (v: boolean) => void;
@@ -115,6 +119,11 @@ export interface MapSlice {
   undoMeasurePoint: () => void;
   setMeasureArea: (area: boolean) => void;
   stopMeasure: () => void;
+  /** Drag a rectangle on the map; `onPick` gets [w, s, e, n]. Escape cancels. */
+  pickArea: (onPick: (bbox: [number, number, number, number]) => void) => void;
+  cancelAreaPick: () => void;
+  /** Open the sharp-imagery form in the Data panel around a point. */
+  startSatAreaAt: (center: LonLat) => void;
   /** Drawing tools; `purpose: "avoid"` draws one area the route then avoids. */
   startDrawing: (purpose?: "draw" | "avoid") => void;
   setDrawMode: (m: DrawMode) => void;
@@ -220,6 +229,8 @@ export const createMapSlice: SliceCreator<MapSlice> = (set, get) => ({
   userLayersTick: 0,
   track: { recording: false, starting: false, update: null },
   compare: "off",
+  areaPick: null,
+  satAreaDraft: null,
 
   setLayers: (patch) => {
     const layers = { ...get().layers, ...patch };
@@ -272,7 +283,7 @@ export const createMapSlice: SliceCreator<MapSlice> = (set, get) => ({
 
   refreshTiles: async () => {
     try {
-      const [p, sp, tp, wp, merged, ds, regions] = await Promise.all([
+      const [p, sp, tp, wp, merged, ds, regions, satAreas] = await Promise.all([
         api.tilesPath(),
         api.satellitePath().catch(() => null),
         api.terrainPath().catch(() => null),
@@ -280,6 +291,7 @@ export const createMapSlice: SliceCreator<MapSlice> = (set, get) => ({
         api.mapTilesAvailable().catch(() => false),
         api.dataStatus().catch(() => null),
         api.regionsInstalled().catch(() => []),
+        apiX.satelliteAreasStatus().catch(() => []),
       ]);
       const online = get().online;
       // other countries installed: one merged source over every local map (see map_tiles.rs)
@@ -287,7 +299,7 @@ export const createMapSlice: SliceCreator<MapSlice> = (set, get) => ({
       const url = merged ? `http://mo-map.localhost/{z}/{x}/{y}.mvt?v=${mapTag}` : p ? `${convertFileSrc(p)}?v=${dataTag(compTag(ds, "tiles"))}` : null;
       // satellite layer through the backend: the downloaded archive, tiles seen before, or live
       // orthophoto when online (see online_sat.rs)
-      const satelliteUrl = sp || online ? `http://mo-sat.localhost/{z}/{x}/{y}?v=${dataTag(compTag(ds, "satellite"), get().settings.satelliteSource, sp ? 1 : 0)}` : null;
+      const satelliteUrl = sp || online ? `http://mo-sat.localhost/{z}/{x}/{y}?v=${dataTag(compTag(ds, "satellite"), get().settings.satelliteSource, sp ? 1 : 0, ...satAreas.map((a) => `${a.id}${a.updatedIso ?? ""}`))}` : null;
       const terrainUrl = tp ? `${convertFileSrc(tp)}?v=${dataTag(compTag(ds, "terrain"))}` : null;
       const worldUrl = wp ? `${convertFileSrc(wp)}?v=${dataTag(compTag(ds, "world"))}` : null;
       const s = get();
@@ -332,6 +344,12 @@ export const createMapSlice: SliceCreator<MapSlice> = (set, get) => ({
   undoMeasurePoint: () => set((s) => (s.measure ? { measure: { ...s.measure, points: s.measure.points.slice(0, -1) } } : {})),
   setMeasureArea: (area) => set((s) => (s.measure ? { measure: { ...s.measure, area } } : {})),
   stopMeasure: () => set({ measure: null }),
+  pickArea: (onPick) => set({ areaPick: { onPick }, measure: null, drawing: null, contextMenu: null }),
+  cancelAreaPick: () => set({ areaPick: null }),
+  startSatAreaAt: (center) => {
+    set((s) => ({ satAreaDraft: { center, tick: (s.satAreaDraft?.tick ?? 0) + 1 }, contextMenu: null }));
+    get().setPanel("data");
+  },
 
   // ---------------------------------------------------------------- drawing
   startDrawing: (purpose = "draw") =>

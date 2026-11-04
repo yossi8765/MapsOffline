@@ -24,6 +24,7 @@ import { toolActive, useHoverCard } from "../map/useHoverCard";
 import { useMapInstance } from "../map/useMapInstance";
 import { useViewportFetch } from "../map/useViewportFetch";
 import { useCamera } from "../map/useCamera";
+import { useAreaPick } from "../map/useAreaPick";
 import { keepOverlays } from "../map/styleDiff";
 import { CursorReadout, MapCredits } from "./MapFooter";
 import { DrawToolbar, IsochroneLegend, MeasureBar, TrackRecorder } from "./MapTools";
@@ -483,6 +484,8 @@ export function MapView() {
   }, [routes, selectedRouteId, navigating]);
 
   useCamera(mapRef, mapReady, lang);
+  useAreaPick(mapRef, mapReady);
+  const picking = useStore((s) => !!s.areaPick);
 
   // ---- keyboard: zoom, Escape, tool keys, full screen
   useEffect(() => {
@@ -545,6 +548,14 @@ export function MapView() {
       <div ref={containerRef} className="absolute inset-0" />
       {!navigating && <CursorReadout mapRef={mapRef} ready={mapReady} />}
       {!navigating && !onlineMap && <MapCredits />}
+      {picking && (
+        <div className="absolute top-3 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-20 popover rounded-[var(--radius)] ps-3 pe-1.5 h-9 flex items-center gap-2 text-sm fade-in no-print" role="status">
+          <span>{t("areaPickHint")}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => useStore.getState().cancelAreaPick()}>
+            {t("cancel")}
+          </button>
+        </div>
+      )}
       {noTiles && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <InfoBar

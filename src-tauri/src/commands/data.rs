@@ -63,8 +63,80 @@ pub fn world_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
 /// Absolute path of the satellite imagery archive, if installed.
 #[tauri::command]
 pub fn satellite_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
-    let p = state.paths().satellite_file();
-    Ok(p.exists().then(|| p.display().to_string()))
+    let paths = state.paths();
+    let p = paths.satellite_file();
+    if p.exists() {
+        return Ok(Some(p.display().to_string()));
+    }
+    // sharp areas alone also make an offline satellite layer
+    let areas = state.settings.read().satellite_areas.clone();
+    Ok(crate::data::sat_areas::any_installed(&paths, &areas).then(|| crate::data::sat_areas::dir(&paths).display().to_string()))
+}
+
+// ---------------------------------------------------------------- sharp imagery areas
+
+fn find_area(state: &AppState, id: &str) -> R<SatelliteArea> {
+    state.settings.read().satellite_areas.iter().find(|a| a.id == id).cloned().ok_or_else(|| AppError::from("INVALID_AREA: unknown area"))
+}
+
+/// Download (or resume / update) a sharp-imagery area from Settings.satelliteAreas. Long running;
+/// progress: event `satellite-area-progress` {id, phase, done, total, message}; `data-updated`
+/// when it finished.
+#[tauri::command]
+pub async fn satellite_area_install(app: AppHandle, state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    let area = find_area(&state, &id)?;
+    let paths = state.paths();
+    let app2 = app.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let emit = move |p: SatelliteAreaProgress| {
+            let _ = app2.emit("satellite-area-progress", p);
+        };
+        crate::data::sat_areas::install(&paths, &area, &emit)
+    })
+    .await
+    .map_err(err)?;
+    let _ = app.emit("data-updated", ());
+    res.map_err(err)
+}
+
+#[tauri::command]
+pub fn satellite_area_cancel(id: String) -> R<()> {
+    crate::data::sat_areas::cancel(&id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn satellite_area_pause(id: String, paused: bool) -> R<()> {
+    crate::data::sat_areas::pause(&id, paused);
+    Ok(())
+}
+
+/// Delete an area's archive (the frontend removes it from Settings).
+#[tauri::command]
+pub async fn satellite_area_delete(app: AppHandle, state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::sat_areas::delete(&paths, &id)).await.map_err(err)?.map_err(err)?;
+    let _ = app.emit("data-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn satellite_areas_status(state: State<'_, Arc<AppState>>) -> R<Vec<SatelliteAreaStatus>> {
+    let areas = state.settings.read().satellite_areas.clone();
+    Ok(crate::data::sat_areas::status(&state.paths(), &areas))
+}
+
+/// Tiles, size and time of an area before downloading it.
+#[tauri::command]
+pub async fn satellite_area_estimate(state: State<'_, Arc<AppState>>, bbox: [f64; 4], zoom: u8) -> R<SatelliteAreaEstimate> {
+    let paths = state.paths();
+    let zoom = zoom.clamp(crate::data::sat_areas::MIN_AREA_ZOOM, crate::data::sat_areas::MAX_AREA_ZOOM);
+    tauri::async_runtime::spawn_blocking(move || {
+        let min = crate::data::sat_areas::min_zoom(&paths, zoom);
+        crate::data::sat_areas::estimate(bbox, min, zoom)
+    })
+    .await
+    .map_err(err)
 }
 
 /// Absolute path of the elevation archive, if installed.

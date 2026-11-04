@@ -919,6 +919,9 @@ pub struct RasterSpec<'a> {
     pub filter: Option<&'a (dyn Fn(u8, u32, u32) -> bool + Sync)>,
     /// Parallel requests (EOX throttles above ~12).
     pub workers: usize,
+    /// Zooms below this one are not part of the archive (sharp areas start above the country
+    /// archive's zoom).
+    pub min_zoom: u8,
     pub max_zoom: u8,
     pub skip_sea: bool,
     /// PMTiles tile type: 2 = png, 3 = jpeg
@@ -949,6 +952,7 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
     std::fs::write(&layer_tmp, version)?;
     let mut writer = Writer::open(&data_tmp)?;
     let mut all = tiles_for_bbox(spec.bbox, spec.max_zoom, spec.skip_sea);
+    all.retain(|&(z, _, _)| z >= spec.min_zoom);
     if let Some(keep) = spec.filter {
         all.retain(|&(z, x, y)| keep(z, x, y));
     }
@@ -1041,7 +1045,7 @@ pub fn download_raster(dest: &Path, version: &str, spec: &RasterSpec, client: &C
             Ok(())
         })?;
         progress(ProgressPhase::Finalizing, 0, 0, &format!("בונה את קובץ {label}"));
-        let meta = ArchiveMeta { name: spec.name.clone(), attribution: spec.attribution.clone(), bbox: spec.bbox, min_zoom: 0, max_zoom: spec.max_zoom, tile_type: spec.tile_type };
+        let meta = ArchiveMeta { name: spec.name.clone(), attribution: spec.attribution.clone(), bbox: spec.bbox, min_zoom: spec.min_zoom, max_zoom: spec.max_zoom, tile_type: spec.tile_type };
         if skipped > 0 {
             progress(ProgressPhase::Finalizing, 0, 0, &format!("בונה את קובץ {label} ({skipped} אריחים חסרים בגלל סינון – יושלמו בעדכון הבא)"));
         }
@@ -1108,6 +1112,7 @@ pub fn update_satellite(
         fetch: None,
         filter: None,
         workers: WORKERS,
+        min_zoom: 0,
         max_zoom: quality_zoom(&quality),
         skip_sea: true,
         tile_type: 3,
@@ -1134,6 +1139,8 @@ fn update_orthophoto(paths: &DataPaths, settings: &crate::types::Settings, progr
         progress(ProgressPhase::Processing, 1, 1, "תצלומי האוויר כבר מעודכנים");
         return Ok(Some(version));
     }
+    // one govmap download at a time (country archive and sharp areas share the CDN's pacing)
+    let _govmap = super::sat_areas::govmap_turn(&|| { progress(ProgressPhase::Queued, 0, 0, "ממתין להורדת תצלומי אוויר אחרת שתסתיים"); }, cancel)?;
     let src = ortho::Source::new(client.clone());
     src.probe(cancel)?;
     // low zooms from Sentinel-2 when reachable (they cover the neighbours and the sea too)
@@ -1152,6 +1159,7 @@ fn update_orthophoto(paths: &DataPaths, settings: &crate::types::Settings, progr
         fetch: Some(&fetch),
         filter: Some(&ortho::wanted),
         workers: ortho::WORKERS,
+        min_zoom: 0,
         max_zoom: ortho::quality_zoom(&settings.satellite_quality),
         skip_sea: false,
         tile_type: 3,

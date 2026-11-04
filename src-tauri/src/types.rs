@@ -884,6 +884,10 @@ pub struct Settings {
     /// User tile layers (XYZ / WMS online, PMTiles / MBTiles files), served by `mo-user`.
     #[serde(default)]
     pub custom_layers: Vec<CustomLayer>,
+    /// Areas with sharp aerial imagery downloaded on top of the country archive
+    /// (`satellite/areas/<id>.pmtiles`, see `data/sat_areas.rs`).
+    #[serde(default)]
+    pub satellite_areas: Vec<SatelliteArea>,
     /// Components the user wants; `None` = all (update checks only offer these).
     #[serde(default)]
     pub wanted_components: Option<Vec<DataComponent>>,
@@ -992,6 +996,7 @@ impl Default for Settings {
             color_scheme: default_color_scheme(),
             ui_scale: default_ui_scale(),
             custom_layers: Vec::new(),
+            satellite_areas: Vec::new(),
             wanted_components: None,
             teaching_tips_seen: Vec::new(),
         }
@@ -1283,4 +1288,56 @@ pub struct WikiSummary {
     pub url: String,
     /// "he" | "en"
     pub lang: String,
+}
+
+/// One area of sharp aerial imagery (Settings → satellite → sharp areas).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteArea {
+    pub id: String,
+    pub name: String,
+    /// west, south, east, north
+    pub bbox: [f64; 4],
+    /// deepest zoom: 16 sharp · 17 very sharp · 18 sharpest
+    pub zoom: u8,
+}
+
+/// Installed state of a sharp-imagery area.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteAreaStatus {
+    pub id: String,
+    pub present: bool,
+    /// a download was started and can be resumed
+    pub partial: bool,
+    pub size_bytes: u64,
+    pub zoom: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_iso: Option<String>,
+    /// downloading now
+    pub busy: bool,
+}
+
+/// Size and time of a sharp-imagery area before it is downloaded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteAreaEstimate {
+    pub tiles: u64,
+    pub bytes: u64,
+    /// at the govmap pacing (8–12 requests / s)
+    pub minutes: f64,
+    pub km2: f64,
+    /// within the limits (inside the orthophoto coverage, not too large)
+    pub ok: bool,
+}
+
+/// Event `satellite-area-progress`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteAreaProgress {
+    pub id: String,
+    pub phase: ProgressPhase,
+    pub done: u64,
+    pub total: u64,
+    pub message: String,
 }

@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   colorScheme: "white",
   uiScale: "system",
   customLayers: [],
+  satelliteAreas: [],
   wantedComponents: null,
   teachingTipsSeen: [],
 };

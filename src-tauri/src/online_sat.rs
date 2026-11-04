@@ -1,6 +1,7 @@
 //! The satellite layer of the map: `http://mo-sat.localhost/{z}/{x}/{y}`.
 //!
 //! Each tile comes from, in order:
+//! 0. a downloaded sharp area (`satellite/areas/<id>.pmtiles`, the smallest one holding it);
 //! 1. the downloaded archive (`satellite/israel-s2.pmtiles`) when it covers that zoom;
 //! 2. the live cache (`satellite/live/<z>/<x>/<y>.jpg|png|none`): tiles rendered earlier;
 //! 3. when online: rendered now from the govmap orthophoto (zoom 10–19 inside Israel, ~0.13 m)
@@ -216,6 +217,15 @@ fn live(govmap: bool, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> 
 
 fn tile(state: &AppState, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     let paths = state.paths();
+    // 0. a sharp area downloaded for this place (the smallest one that holds the tile)
+    {
+        let areas = state.settings.read().satellite_areas.clone();
+        if !areas.is_empty() {
+            if let Some(t) = crate::data::sat_areas::tile(&paths, &areas, z, x, y) {
+                return Some(t);
+            }
+        }
+    }
     let local = paths.satellite_file();
     let govmap = state.settings.read().satellite_source != "sentinel";
     // a downloaded Sentinel-2 archive is blurry next to the orthophoto: with govmap chosen it

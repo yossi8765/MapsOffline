@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Ban, Copy, ExternalLink, FileUp, Flag, Info, MapPin, Navigation, Radar, Ruler, Star, Timer } from "lucide-react";
+import { Ban, Copy, ExternalLink, FileUp, Flag, ImageDown, Info, MapPin, Navigation, Radar, Ruler, Star, Timer } from "lucide-react";
 import { Icon } from "./Icon";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
@@ -136,6 +136,12 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
         s.startDrawing("avoid");
         s.addDrawPoint([state.lon, state.lat]);
       },
+    },
+    {
+      group: 2,
+      icon: <Icon as={ImageDown} size={16} />,
+      label: t("ctxSharpArea"),
+      run: async () => useStore.getState().startSatAreaAt([state.lon, state.lat]),
     },
     {
       group: 2,

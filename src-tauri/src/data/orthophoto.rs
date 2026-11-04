@@ -58,6 +58,18 @@ const CACHE_TILES: usize = 2048;
 const DECODED_TILES: usize = 192;
 const JPEG_QUALITY: u8 = 85;
 
+/// Resolution (m / px) of the source level the renderer reads for zoom `z` at latitude `lat`
+/// (the same choice as [`render`]); used to estimate the number of requests.
+pub(crate) fn source_res(z: u8, lat: f64) -> f64 {
+    let mpp = 156_543.033_928 * lat.to_radians().cos() / f64::from(1u32 << z);
+    RES[RES.iter().position(|&r| r <= mpp * 1.2).unwrap_or(RES.len() - 1)]
+}
+
+/// Inside the orthophoto coverage (the country outline)?
+pub(crate) fn covers(lon: f64, lat: f64) -> bool {
+    in_outline(lon, lat)
+}
+
 /// Max zoom for the quality setting.
 pub fn quality_zoom(q: &str) -> u8 {
     match q {

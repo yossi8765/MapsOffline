@@ -507,6 +507,8 @@ export interface Settings {
   /** "system" = Windows text scale (clamped 1..1.25) */
   uiScale: "system" | 1 | 1.12 | 1.25;
   customLayers: CustomLayer[];
+  /** Areas with sharp aerial imagery on top of the country archive. */
+  satelliteAreas: SatelliteArea[];
   /** null = every component (old behaviour); update checks only offer these */
   wantedComponents: DataComponent[] | null;
   teachingTipsSeen: string[];
@@ -515,6 +517,41 @@ export interface Settings {
 export type CoordFormat = "dd" | "dms" | "itm" | "utm";
 export type ColorScheme = "white" | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua";
 export const COLOR_SCHEMES: ColorScheme[] = ["white", "sky", "mint", "lavender", "peach", "rose", "sand", "aqua"];
+
+export interface SatelliteArea {
+  id: string;
+  name: string;
+  /** west, south, east, north */
+  bbox: [number, number, number, number];
+  /** 16 sharp · 17 very sharp · 18 sharpest */
+  zoom: number;
+}
+
+export interface SatelliteAreaStatus {
+  id: string;
+  present: boolean;
+  partial: boolean;
+  sizeBytes: number;
+  zoom?: number | null;
+  updatedIso?: string;
+  busy: boolean;
+}
+
+export interface SatelliteAreaEstimate {
+  tiles: number;
+  bytes: number;
+  minutes: number;
+  km2: number;
+  ok: boolean;
+}
+
+export interface SatelliteAreaProgress {
+  id: string;
+  phase: ProgressPhase;
+  done: number;
+  total: number;
+  message: string;
+}
 
 export interface CustomLayer {
   id: string;
@@ -931,6 +968,13 @@ export const apiX = {
   logsDir: () => invoke<string>("logs_dir"),
   /** Size / version of the combined ready-made data package (first-run choice); null offline. */
   packageInfo: () => invoke<PackageInfo | null>("package_info"),
+  // sharp aerial imagery by area (src-tauri/src/data/sat_areas.rs)
+  satelliteAreaInstall: (id: string) => invoke<void>("satellite_area_install", { id }),
+  satelliteAreaCancel: (id: string) => invoke<void>("satellite_area_cancel", { id }),
+  satelliteAreaPause: (id: string, paused: boolean) => invoke<void>("satellite_area_pause", { id, paused }),
+  satelliteAreaDelete: (id: string) => invoke<void>("satellite_area_delete", { id }),
+  satelliteAreasStatus: () => invoke<SatelliteAreaStatus[]>("satellite_areas_status"),
+  satelliteAreaEstimate: (bbox: [number, number, number, number], zoom: number) => invoke<SatelliteAreaEstimate>("satellite_area_estimate", { bbox, zoom }),
   /** Stop a running program (installer) download – separate from data updates. */
   appUpdateCancel: () => invoke<void>("app_update_cancel"),
   /** Forget the disk cache of an online custom layer (URL changed / layer removed). */

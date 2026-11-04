@@ -7,7 +7,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 
 dayjs.extend(relativeTime);
 
-type T = (k: I18nKey) => string;
+export type T = (k: I18nKey) => string;
 
 export function fmtDuration(sec: number, t: T): string {
   const min = Math.round(sec / 60);

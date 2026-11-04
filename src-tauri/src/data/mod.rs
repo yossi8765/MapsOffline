@@ -11,6 +11,7 @@ pub mod osmdiff;
 pub mod prebuilt;
 pub mod regions;
 pub mod package;
+pub mod sat_areas;
 pub mod satellite;
 pub mod terrain;
 pub mod tiles;
