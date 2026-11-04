@@ -3,33 +3,44 @@ import {
   Banknote,
   BatteryCharging,
   BedDouble,
+  Binoculars,
   BookOpen,
+  Church,
+  Clapperboard,
   Building2,
   Bus,
   Coffee,
   CreditCard,
   Croissant,
   Dog,
+  Droplet,
   Droplets,
   Dumbbell,
   Flame,
   Fuel,
+  GlassWater,
   GraduationCap,
   Hammer,
+  HeartPulse,
   Hospital,
   Landmark,
   Mail,
+  MoonStar,
   ParkingSquare,
   Pill,
   School,
   Scissors,
   Shield,
+  ShieldAlert,
   Shirt,
   ShoppingBag,
   ShoppingCart,
   Stethoscope,
   Store,
+  Tent,
+  Toilet,
   Trees,
+  FerrisWheel as PlaygroundIcon,
   Utensils,
   Waves,
   Wrench,
@@ -43,7 +54,7 @@ const Synagogue = `${SVG_HEAD}<path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/>
 /** A headstone. */
 const Tombstone = `${SVG_HEAD}<path d="M4 21h16"/><path d="M7 21V9a5 5 0 0 1 10 0v12"/><path d="M9.5 13h5"/><path d="M9.5 16.5h5"/></svg>`;
 
-export type PoiGroup = "religion" | "health" | "shopping" | "food" | "services" | "transport" | "education" | "leisure";
+export type PoiGroup = "religion" | "health" | "shopping" | "food" | "services" | "transport" | "education" | "leisure" | "nature" | "emergency";
 export const POI_GROUPS: { id: PoiGroup; label: I18nKey }[] = [
   { id: "religion", label: "grpReligion" },
   { id: "transport", label: "grpTransport" },
@@ -53,6 +64,8 @@ export const POI_GROUPS: { id: PoiGroup; label: I18nKey }[] = [
   { id: "services", label: "grpServices" },
   { id: "education", label: "grpEducation" },
   { id: "leisure", label: "grpLeisure" },
+  { id: "nature", label: "grpNature" },
+  { id: "emergency", label: "grpEmergency" },
 ];
 
 /** A map-layer category: geocoder category ids, optional name filter, label, colour, glyph. */
@@ -76,6 +89,8 @@ const C = {
   transport: "#d97706",
   education: "#0369a1",
   leisure: "#9333ea",
+  nature: "#15803d",
+  emergency: "#b91c1c",
 };
 
 export const POI_CATEGORIES: PoiCategory[] = [
@@ -84,6 +99,8 @@ export const POI_CATEGORIES: PoiCategory[] = [
   { id: "yeshiva", group: "religion", cats: ["place_of_worship:jewish", "college", "school"], nameMatch: /(?:^|[^\u05d0-\u05ea])(?:ישיב|מדרש|ביהמ|כולל(?![\u05d0-\u05ea]))/, label: "catYeshiva", color: "#6d28d9", svg: BookOpen },
   { id: "mikveh", group: "religion", cats: ["mikveh", "mikvah", "public_bath"], label: "catMikveh", color: "#0284c7", svg: Droplets },
   { id: "cemetery", group: "religion", cats: ["grave_yard", "cemetery"], label: "catCemetery", color: "#52525b", svg: Tombstone },
+  { id: "mosque", group: "religion", cats: ["place_of_worship:muslim"], label: "catMosque", color: "#047857", svg: MoonStar },
+  { id: "church", group: "religion", cats: ["place_of_worship:christian"], label: "catChurch", color: "#7c2d12", svg: Church },
   // transport
   { id: "fuel", group: "transport", cats: ["fuel"], label: "catFuel", color: C.transport, svg: Fuel },
   { id: "parking", group: "transport", cats: ["parking"], label: "catParking", color: "#2563eb", svg: ParkingSquare },
@@ -115,16 +132,27 @@ export const POI_CATEGORIES: PoiCategory[] = [
   { id: "municipal", group: "services", cats: ["townhall", "community_centre"], label: "catMunicipal", color: "#0f766e", svg: Building2 },
   { id: "library", group: "services", cats: ["library"], label: "catLibrary", color: "#4338ca", svg: BookOpen },
   { id: "hairdresser", group: "services", cats: ["hairdresser", "beauty"], label: "catHairdresser", color: "#a21caf", svg: Scissors },
+  { id: "toilets", group: "services", cats: ["toilets"], label: "catToilets", color: "#0e7490", svg: Toilet },
+  { id: "drinkingwater", group: "services", cats: ["drinking_water"], label: "catDrinkingWater", color: "#0284c7", svg: GlassWater },
   // education
   { id: "school", group: "education", cats: ["school"], label: "catSchool", color: C.education, svg: School },
   { id: "kindergarten", group: "education", cats: ["kindergarten", "childcare"], label: "catKindergarten", color: "#0284c7", svg: Baby },
   { id: "university", group: "education", cats: ["university", "college"], label: "catUniversity", color: "#1e40af", svg: GraduationCap },
   // leisure & tourism
   { id: "hotel", group: "leisure", cats: ["hotel", "guest_house", "hostel", "motel"], label: "catHotel", color: C.leisure, svg: BedDouble },
-  { id: "sights", group: "leisure", cats: ["attraction", "museum", "viewpoint", "monument", "artwork"], label: "catSights", color: "#7e22ce", svg: Landmark },
-  { id: "park", group: "leisure", cats: ["park", "garden", "playground"], label: "catPark", color: "#16a34a", svg: Trees },
+  { id: "sights", group: "leisure", cats: ["attraction", "museum", "monument", "artwork"], label: "catSights", color: "#7e22ce", svg: Landmark },
+  { id: "park", group: "leisure", cats: ["park", "garden"], label: "catPark", color: "#16a34a", svg: Trees },
+  { id: "playground", group: "leisure", cats: ["playground"], label: "catPlayground", color: "#ca8a04", svg: PlaygroundIcon },
+  { id: "cinema", group: "leisure", cats: ["cinema", "theatre"], label: "catCinema", color: "#be123c", svg: Clapperboard },
   { id: "beach", group: "leisure", cats: ["beach_resort", "beach", "swimming_pool", "water_park"], label: "catBeach", color: "#0ea5e9", svg: Waves },
   { id: "gym", group: "leisure", cats: ["fitness_centre", "sports_centre", "gym"], label: "catGym", color: "#ea580c", svg: Dumbbell },
+  // nature & hiking
+  { id: "spring", group: "nature", cats: ["spring"], label: "catSpring", color: "#0369a1", svg: Droplet },
+  { id: "viewpoint", group: "nature", cats: ["viewpoint"], label: "catViewpoint", color: "#4d7c0f", svg: Binoculars },
+  { id: "campsite", group: "nature", cats: ["camp_site"], label: "catCampSite", color: "#15803d", svg: Tent },
+  // emergency & safety
+  { id: "shelter", group: "emergency", cats: ["shelter"], label: "catShelter", color: "#7f1d1d", svg: ShieldAlert },
+  { id: "defibrillator", group: "emergency", cats: ["defibrillator"], label: "catDefibrillator", color: "#dc2626", svg: HeartPulse },
 ];
 
 /** The three categories pinned at the top of the picker. */

@@ -4,11 +4,15 @@
 //! * `open` opens it read-only; `search` and `reverse` answer queries.
 mod builder;
 pub mod datagov;
+#[cfg(test)]
+mod golden;
 pub use builder::{BUILD_REV, SCHEMA_VERSION};
 pub mod categories;
 pub mod hours;
+pub mod info;
 pub mod norm;
 mod thin;
+pub mod wiki;
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -18,7 +22,8 @@ use rusqlite::{params, Connection, OpenFlags};
 use rustc_hash::FxHashMap;
 
 use crate::geo::haversine_m;
-use crate::types::{GeoExtra, GeoKind, GeoPrecision, GeoResult, LonLat, ProgressFn};
+use crate::types::{GeoExtra, GeoKind, GeoPrecision, GeoResult, LonLat, ProgressFn, WikiSummary};
+use info::PoiInfo;
 use norm::{
     address_candidates, allowed_edits2, canon, canon_tokens, expand_abbreviations, from_latin_keyboard, is_type_word, levenshtein2, norm, prefix_variants, spell_fold,
     strip_he, tokens, tri_key, trigram_query, AddrCand,
@@ -31,7 +36,7 @@ pub fn build(pbf: &Path, out: &Path, progress: ProgressFn) -> Result<()> {
     };
     let extra = datagov::fetch_all(&report);
     let syn = datagov::fetch_street_synonyms(&report);
-    builder::build_at(pbf, out, 31.5, &extra, &syn, progress)
+    builder::build_at(pbf, out, 31.5, &extra, &syn, true, progress)
 }
 
 /// While true the app opens no connection to the Israel index (it is being replaced); bumping
@@ -71,7 +76,7 @@ pub fn replace_index(dest: &Path, tmp: &Path) -> std::io::Result<()> {
 
 /// Index of another country (`ref_lat` = middle latitude of its bbox).
 pub fn build_region(pbf: &Path, out: &Path, ref_lat: f64, progress: ProgressFn) -> Result<()> {
-    builder::build_at(pbf, out, ref_lat, &[], &[], progress)
+    builder::build_at(pbf, out, ref_lat, &[], &[], false, progress)
 }
 
 struct PlaceMem {
@@ -83,6 +88,8 @@ struct PlaceMem {
     city: String,
     canon: String,
     id: i64,
+    /// landmarks: wikipedia link (builder revision 4)
+    info: Option<Box<PoiInfo>>,
 }
 
 /// Settlement / neighbourhood table kept in memory (≈4k rows). Built lazily on first use so
@@ -92,6 +99,9 @@ struct Places {
     list: Vec<PlaceMem>,
     /// settlement name -> population (for ranking streets/POIs by their city).
     city_pop: FxHashMap<String, i64>,
+    /// settlements by English name: (canonical English name, canonical Hebrew name, population),
+    /// so an address typed in English ("Herzl 12 Tel Aviv") finds the Hebrew town of the index.
+    en_names: Vec<(String, String, i64)>,
 }
 
 /// One street of the index, kept in memory for typo matching (the trigram index finds no
@@ -127,14 +137,26 @@ struct Caps {
     syn: bool,
     /// streets_tri (trigram index of street keys)
     tri: bool,
+    /// pois.info / places.info (details: phone, website, brand, wikipedia …), revision 4
+    poi_info: bool,
+    place_info: bool,
+    /// addresses.src (interpolation-way addresses), revision 4
+    addr_src: bool,
+    /// wiki / wiki_qid (offline Wikipedia summaries), revision 4
+    wiki: bool,
 }
 
 fn caps_of(conn: &Connection) -> Caps {
     let table = |t: &str| conn.query_row("SELECT 1 FROM sqlite_master WHERE name = ?1", [t], |_| Ok(())).is_ok();
+    let col = |sql: &str| conn.prepare(sql).is_ok();
     Caps {
-        poi_cols: conn.prepare("SELECT hours, flags, minzoom FROM pois LIMIT 0").is_ok(),
+        poi_cols: col("SELECT hours, flags, minzoom FROM pois LIMIT 0"),
         syn: table("street_syn"),
         tri: table("streets_tri"),
+        poi_info: col("SELECT info FROM pois LIMIT 0"),
+        place_info: col("SELECT info FROM places LIMIT 0"),
+        addr_src: col("SELECT src FROM addresses LIMIT 0"),
+        wiki: table("wiki") && table("wiki_qid"),
     }
 }
 
@@ -164,39 +186,52 @@ pub fn open_with_cache(path: &Path, cache: SharedCache) -> Result<Geocoder> {
     Ok(Geocoder { conn, cache, caps })
 }
 
-fn load_places(conn: &Connection) -> Result<Places> {
+fn load_places(conn: &Connection, caps: Caps) -> Result<Places> {
     let mut places = Vec::new();
     let mut city_pop: FxHashMap<String, i64> = FxHashMap::default();
-    let mut st = conn.prepare("SELECT id,name_he,name_en,kind,lon,lat,population,city FROM places")?;
+    let mut en_names: Vec<(String, String, i64)> = Vec::new();
+    let mut st = conn.prepare(&format!(
+        "SELECT id,name_he,name_en,kind,lon,lat,population,city,{} FROM places",
+        if caps.place_info { "info" } else { "NULL" }
+    ))?;
     let rows = st.query_map([], |r| {
         let name: String = r.get(1)?;
         let en: String = r.get(2)?;
-        Ok(PlaceMem {
-            id: r.get(0)?,
-            canon: canon(if name.is_empty() { &en } else { &name }),
-            name: if name.is_empty() { en } else { name },
-            kind: r.get(3)?,
-            lon: r.get(4)?,
-            lat: r.get(5)?,
-            pop: r.get(6)?,
-            city: r.get(7)?,
-        })
+        let info: Option<String> = r.get(8)?;
+        Ok((
+            PlaceMem {
+                id: r.get(0)?,
+                canon: canon(if name.is_empty() { &en } else { &name }),
+                name: if name.is_empty() { en.clone() } else { name },
+                kind: r.get(3)?,
+                lon: r.get(4)?,
+                lat: r.get(5)?,
+                pop: r.get(6)?,
+                city: r.get(7)?,
+                info: PoiInfo::from_json(info.as_deref()).map(Box::new),
+            },
+            en,
+        ))
     })?;
     for p in rows {
-        let p = p?;
+        let (p, en) = p?;
         if matches!(p.kind.as_str(), "city" | "town" | "village" | "hamlet") {
             let e = city_pop.entry(p.name.clone()).or_insert(0);
             *e = (*e).max(p.pop);
+            let ek = canon(&en);
+            if !ek.is_empty() && ek != p.canon {
+                en_names.push((ek, p.canon.clone(), p.pop));
+            }
         }
         places.push(p);
     }
-    Ok(Places { list: places, city_pop })
+    Ok(Places { list: places, city_pop, en_names })
 }
 
 impl Geocoder {
     fn places(&self) -> &Places {
         self.cache.0.places.get_or_init(|| {
-            load_places(&self.conn).unwrap_or_else(|e| {
+            load_places(&self.conn, self.caps).unwrap_or_else(|e| {
                 log::warn!("geocoder: loading places failed: {e:#}");
                 Places::default()
             })
@@ -301,9 +336,12 @@ fn keep_first_interpretation(v: &mut [GeoResult]) {
     }
 }
 
-/// Opening hours / kosher details of a point of interest, evaluated now.
-fn poi_extra(hours: Option<&str>, kosher: bool, now: chrono::NaiveDateTime) -> Option<Box<GeoExtra>> {
+/// Opening hours / kosher flag / stored details of a point of interest, evaluated now.
+fn poi_extra(hours: Option<&str>, kosher: bool, info: Option<&str>, now: chrono::NaiveDateTime) -> Option<Box<GeoExtra>> {
     let mut e = GeoExtra::default();
+    if let Some(i) = PoiInfo::from_json(info) {
+        i.apply(&mut e);
+    }
     if let Some(h) = hours.filter(|h| !h.trim().is_empty()) {
         let v = hours::eval(h, now);
         e.opening_hours = Some(h.to_string());
@@ -317,36 +355,39 @@ fn poi_extra(hours: Option<&str>, kosher: bool, now: chrono::NaiveDateTime) -> O
     (!e.is_empty()).then(|| Box::new(e))
 }
 
-fn parse_coord(q: &str) -> Option<GeoResult> {
-    let parts: Vec<&str> = q.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let a: f64 = parts[0].parse().ok()?;
-    let b: f64 = parts[1].parse().ok()?;
-    let in_lat = |v: f64| (29.0..=34.5).contains(&v);
-    let in_lon = |v: f64| (33.5..=36.5).contains(&v);
-    let (lat, lon) = if in_lat(a) && in_lon(b) {
-        (a, b)
-    } else if in_lat(b) && in_lon(a) {
-        (b, a)
+/// A typed coordinate (any of the formats of [`crate::coords`]) as a search result.
+pub fn coord_result(c: &crate::coords::ParsedCoord) -> GeoResult {
+    let decimal = format!("{:.5}, {:.5}", c.lat, c.lon);
+    let mut extra = None;
+    let name = if c.format == crate::coords::CoordFormat::Dd {
+        decimal
     } else {
-        return None;
+        // "ITM 178500 663500", shown with the decimal reading
+        extra = Some(Box::new(GeoExtra { interpretation: Some(decimal), ..Default::default() }));
+        c.label.clone()
     };
-    Some(GeoResult {
-        id: format!("coord:{lon:.6},{lat:.6}"),
-        name: format!("{lat:.5}, {lon:.5}"),
+    GeoResult {
+        id: format!("coord:{:.6},{:.6}", c.lon, c.lat),
+        name,
         kind: GeoKind::Coord,
         precision: GeoPrecision::Exact,
-        lon,
-        lat,
+        lon: c.lon,
+        lat: c.lat,
         city: None,
         street: None,
         house_number: None,
         category: None,
         score: 1000.0,
-        extra: None,
-    })
+        extra,
+    }
+}
+
+fn parse_coord(q: &str, near: Option<LonLat>) -> Option<GeoResult> {
+    let israel = |lon: f64, lat: f64| {
+        let b = crate::paths::BBOX_ISRAEL;
+        lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3]
+    };
+    crate::coords::parse(q, near, &israel).map(|c| coord_result(&c))
 }
 
 fn city_matches(db_city: &str, q: &str, cache: &mut FxHashMap<String, bool>) -> bool {
@@ -378,6 +419,8 @@ struct Cand {
     /// Points of interest: OSM opening_hours and the kosher flag.
     hours: Option<String>,
     kosher: bool,
+    /// stored details (JSON, `PoiInfo`) of a POI or landmark
+    info: Option<String>,
 }
 
 fn name_quality(nt: &[String], city_t: &[String], qt: &[String]) -> f64 {
@@ -408,8 +451,17 @@ impl Geocoder {
             return Ok(vec![]);
         }
         let limit = limit.clamp(1, 50);
-        if let Some(c) = parse_coord(q) {
+        if let Some(c) = parse_coord(q, near) {
             return Ok(vec![c]);
+        }
+        // a phone number ("03-6123456", "+972 3 612 3456"): the places that have it
+        if q.chars().all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '+' | '(' | ')')) {
+            if let Some(k) = info::phone_key(q).filter(|k| k.len() >= 9) {
+                let v = self.search_phone(&k, near, limit)?;
+                if !v.is_empty() {
+                    return Ok(v);
+                }
+            }
         }
         if let Some(n) = road_number(q) {
             let roads = self.search_road(&n, near, limit)?;
@@ -419,8 +471,10 @@ impl Geocoder {
         }
         let r = dedupe_addresses(self.search_rewritten(q, near, limit)?);
         // Keyboard left in English ("shzbdu; 50" -> "דיזנגוף 50"): try the Hebrew reading too and
-        // keep whichever answers better (a city-only hit for the Hebrew part must not win).
-        if let Some(h) = from_latin_keyboard(q) {
+        // keep whichever answers better (a city-only hit for the Hebrew part must not win). Not
+        // when the Latin reading already found the exact address ("Dizengoff 50").
+        let exact = r.first().is_some_and(|g| g.precision == GeoPrecision::Exact && matches!(g.kind, GeoKind::Address | GeoKind::Poi));
+        if let Some(h) = from_latin_keyboard(q).filter(|_| !exact) {
             let mut r2 = dedupe_addresses(self.search_rewritten(&h, near, limit)?);
             let best = |v: &[GeoResult]| v.first().map_or(f64::MIN, |g| g.score);
             if best(&r2) > best(&r) {
@@ -432,6 +486,75 @@ impl Geocoder {
             }
         }
         Ok(r)
+    }
+
+    /// POIs whose phone number is `key` (national digits, indexed by builder revision 4).
+    fn search_phone(&self, key: &str, near: Option<LonLat>, limit: usize) -> Result<Vec<GeoResult>> {
+        if !self.caps.poi_info {
+            return Ok(vec![]);
+        }
+        let mut st = self.conn.prepare_cached(&format!(
+            "SELECT s.id,s.name,s.category,s.city,s.lon,s.lat,{}
+             FROM pois_fts JOIN pois s ON s.id = pois_fts.rowid
+             WHERE pois_fts MATCH ?1 ORDER BY pois_fts.rowid LIMIT 50",
+            self.poi_cols("s")
+        ))?;
+        let now = hours::now_il();
+        let mut out: Vec<GeoResult> = Vec::new();
+        for row in st.query_map(params![format!("\"{key}\"")], poi_row)? {
+            let r = row?;
+            // the token matched; keep only places whose stored phone really is this number
+            let phone_ok = PoiInfo::from_json(r.info.as_deref()).and_then(|i| i.phone).and_then(|p| info::phone_key(&p)).is_some_and(|p| p == key);
+            if !phone_ok {
+                continue;
+            }
+            let score = 200.0 - near_penalty(near, r.lon, r.lat);
+            out.push(GeoResult {
+                id: format!("poi:{}", r.id),
+                name: with_city(&if r.name.is_empty() { category_he(&r.cat) } else { r.name.clone() }, &r.city),
+                kind: GeoKind::Poi,
+                precision: GeoPrecision::Exact,
+                lon: r.lon,
+                lat: r.lat,
+                city: if r.city.is_empty() { None } else { Some(r.city.clone()) },
+                street: None,
+                house_number: None,
+                category: Some(category_he(&r.cat)),
+                score,
+                extra: poi_extra(r.hours.as_deref(), r.kosher, r.info.as_deref(), now),
+            });
+        }
+        out.sort_by(|a, b| b.score.total_cmp(&a.score));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Offline Wikipedia summary of an OSM `wikipedia` tag ("he:Title") or a Wikidata id ("Q123").
+    pub fn wiki(&self, tag: &str) -> Result<Option<WikiSummary>> {
+        if !self.caps.wiki {
+            return Ok(None);
+        }
+        let t = tag.trim();
+        let key = if t.starts_with('Q') && t[1..].chars().all(|c| c.is_ascii_digit()) {
+            match self.conn.query_row("SELECT tag FROM wiki_qid WHERE qid = ?1", [t], |r| r.get::<_, String>(0)) {
+                Ok(k) => k,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            match wiki::key(t) {
+                Some(k) => k,
+                None => return Ok(None),
+            }
+        };
+        let r = self.conn.query_row("SELECT title, extract, url, lang FROM wiki WHERE tag = ?1", [&key], |r| {
+            Ok(WikiSummary { title: r.get(0)?, extract: r.get(1)?, url: r.get(2)?, lang: r.get(3)? })
+        });
+        match r {
+            Ok(w) => Ok(Some(w)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// "כביש 6": the stretches of road N, one per nearby town (the builder indexes numbered roads
@@ -513,7 +636,32 @@ impl Geocoder {
         }
     }
 
+    /// Address candidates whose city was typed in English get the Hebrew name of that town too
+    /// ("tel aviv" → "תל אביב יפו"), largest town first when several start with the words.
+    fn hebrew_city_cands(&self, cands: &[AddrCand]) -> Vec<AddrCand> {
+        let en = &self.places().en_names;
+        let mut out: Vec<AddrCand> = cands.to_vec();
+        for c in cands {
+            let Some(qc) = c.city.as_deref().filter(|q| q.chars().any(|ch| ch.is_ascii_alphabetic())) else { continue };
+            let best = en
+                .iter()
+                .filter(|(e, _, _)| e == qc || e.starts_with(&format!("{qc} ")))
+                .max_by_key(|(e, _, pop)| (e == qc, *pop));
+            if let Some((_, he, _)) = best {
+                out.push(AddrCand { street: c.street.clone(), city: Some(he.clone()), hn: c.hn.clone(), num: c.num });
+            }
+        }
+        out
+    }
+
     fn search_address(&self, cands: &[AddrCand], near: Option<LonLat>, limit: usize) -> Result<Vec<GeoResult>> {
+        let translated;
+        let cands = if self.places().en_names.is_empty() {
+            cands
+        } else {
+            translated = self.hebrew_city_cands(cands);
+            &translated[..]
+        };
         // Readings that take the trailing words as a city come first; readings without a city
         // (the "city" words were part of the street name) rank below anything found in the
         // typed city, even a street-level hit there.
@@ -649,6 +797,8 @@ impl Geocoder {
         for (id, name, city, ckey, lon, lat) in self.trigram_streets(&qf)? {
             street_hit(id, &name, &city, &spell_fold(&ckey), lon, lat, &mut out);
         }
+        // the in-memory scan of every street key when no trigram candidate was close enough
+        // (a typo in a short name shares no trigram with it)
         if out.len() == before {
             for k in self.street_keys() {
                 street_hit(k.id, &k.name, &k.city, &k.fold, k.lon, k.lat, &mut out);
@@ -780,23 +930,35 @@ impl Geocoder {
         let mut res: Vec<GeoResult> = Vec::new();
 
         // 1. exact house number
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT id,street,housenumber,city,lon,lat FROM addresses WHERE street_key=?1 AND hn_key=?2")?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT id,street,housenumber,city,lon,lat,{} FROM addresses WHERE street_key=?1 AND hn_key=?2",
+            if self.caps.addr_src { "src" } else { "0" }
+        ))?;
         for c in cands {
             let mut cache = FxHashMap::default();
             let rows = stmt.query_map(params![c.street, c.hn], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, f64>(4)?, r.get::<_, f64>(5)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, f64>(5)?,
+                    r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                ))
             })?;
             let mut by_city: FxHashMap<String, GeoResult> = FxHashMap::default();
             for row in rows {
-                let (id, street, hn, city, lon, lat) = row?;
+                let (id, street, hn, city, lon, lat, src) = row?;
                 if let Some(qc) = &c.city {
                     if !city_matches(&city, qc, &mut cache) {
                         continue;
                     }
                 }
-                let g = self.addr_result(format!("addr:{id}"), &street, &hn, &city, lon, lat, GeoPrecision::Exact, 200.0 - penalty, near);
+                // numbers placed along an OSM interpolation way: right street side and order,
+                // but not a mapped building
+                let (prec, base) = if src == 1 { (GeoPrecision::Interpolated, 160.0) } else { (GeoPrecision::Exact, 200.0) };
+                let g = self.addr_result(format!("addr:{id}"), &street, &hn, &city, lon, lat, prec, base - penalty, near);
                 match by_city.get(&city) {
                     Some(old) if old.score >= g.score => {}
                     _ => {
@@ -964,7 +1126,11 @@ impl Geocoder {
             house_number: None,
             category: Some(p.kind.clone()),
             score,
-            extra: None,
+            extra: p.info.as_ref().map(|i| {
+                let mut e = GeoExtra::default();
+                i.apply(&mut e);
+                Box::new(e)
+            }),
         }
     }
 
@@ -973,11 +1139,12 @@ impl Geocoder {
     fn fetch_cands(&self, fts: &str, per_table: [usize; 3]) -> Result<Vec<Cand>> {
         let mut out = Vec::new();
         {
-            let mut st = self.conn.prepare_cached(
-                "SELECT p.id,p.name_he,p.name_en,p.name_ar,p.kind,p.lon,p.lat,p.population,p.city
+            let mut st = self.conn.prepare_cached(&format!(
+                "SELECT p.id,p.name_he,p.name_en,p.name_ar,p.kind,p.lon,p.lat,p.population,p.city,{}
                  FROM places_fts JOIN places p ON p.id = places_fts.rowid
                  WHERE places_fts MATCH ?1 ORDER BY places_fts.rowid LIMIT ?2",
-            )?;
+                if self.caps.place_info { "p.info" } else { "NULL" }
+            ))?;
             let rows = st.query_map(params![fts, per_table[0] as i64], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -989,10 +1156,11 @@ impl Geocoder {
                     r.get::<_, f64>(6)?,
                     r.get::<_, i64>(7)?,
                     r.get::<_, String>(8)?,
+                    r.get::<_, Option<String>>(9)?,
                 ))
             })?;
             for row in rows {
-                let (id, he, en, ar, kind, lon, lat, pop, city) = row?;
+                let (id, he, en, ar, kind, lon, lat, pop, city, info) = row?;
                 let name = if he.is_empty() { en.clone() } else { he.clone() };
                 out.push(Cand {
                     kind: GeoKind::Place,
@@ -1007,6 +1175,7 @@ impl Geocoder {
                     pop,
                     hours: None,
                     kosher: false,
+                    info,
                 });
             }
         }
@@ -1034,6 +1203,7 @@ impl Geocoder {
                     lat,
                     hours: None,
                     kosher: false,
+                    info: None,
                 });
             }
         }
@@ -1054,10 +1224,11 @@ impl Geocoder {
     }
 
     fn poi_cand(&self, r: PoiRow) -> Cand {
+        let name = if r.name.is_empty() { category_he(&r.cat) } else { r.name.clone() };
         Cand {
             kind: GeoKind::Poi,
             id: format!("poi:{}", r.id),
-            display: with_city(&r.name, &r.city),
+            display: with_city(&name, &r.city),
             names: [r.name, String::new(), String::new()],
             pop: self.places().city_pop.get(&r.city).copied().unwrap_or(0),
             city: r.city,
@@ -1067,16 +1238,15 @@ impl Geocoder {
             lat: r.lat,
             hours: r.hours,
             kosher: r.kosher,
+            info: r.info,
         }
     }
 
-    /// The extra POI columns of this index for a SELECT ("hours, flags, minzoom" or NULLs).
+    /// The extra POI columns of this index for a SELECT ("hours, flags, minzoom, info" or NULLs).
     fn poi_cols(&self, alias: &str) -> String {
-        if self.caps.poi_cols {
-            format!("{alias}.hours,{alias}.flags,{alias}.minzoom")
-        } else {
-            "NULL,0,0".to_string()
-        }
+        let base = if self.caps.poi_cols { format!("{alias}.hours,{alias}.flags,{alias}.minzoom") } else { "NULL,0,0".to_string() };
+        let info = if self.caps.poi_info { format!("{alias}.info") } else { "NULL".to_string() };
+        format!("{base},{info}")
     }
 
     /// POIs of the given categories inside `bbox` = [min_lon, min_lat, max_lon, max_lat] (map
@@ -1145,7 +1315,7 @@ impl Geocoder {
                     // the more important (lower minzoom) first when sorting on the client
                     score: -(r.minzoom as f64),
                     extra: {
-                        let mut x = poi_extra(r.hours.as_deref(), r.kosher, now).unwrap_or_default();
+                        let mut x = poi_extra(r.hours.as_deref(), r.kosher, r.info.as_deref(), now).unwrap_or_default();
                         x.category_label = Some(category_he(&r.cat));
                         Some(x)
                     },
@@ -1211,7 +1381,7 @@ impl Geocoder {
                 if !categories::matches(&r.cat, cats) || (f.kosher && kosher_known && !r.kosher) {
                     continue;
                 }
-                let extra = poi_extra(r.hours.as_deref(), r.kosher, now);
+                let extra = poi_extra(r.hours.as_deref(), r.kosher, r.info.as_deref(), now);
                 let open = extra.as_ref().and_then(|e| e.open_now);
                 if f.open && open == Some(false) {
                     continue;
@@ -1219,7 +1389,7 @@ impl Geocoder {
                 let d = haversine_m([lon, lat], [r.lon, r.lat]);
                 let g = GeoResult {
                     id: format!("poi:{}", r.id),
-                    name: with_city(&r.name, &r.city),
+                    name: with_city(&if r.name.is_empty() { category_he(&r.cat) } else { r.name.clone() }, &r.city),
                     kind: GeoKind::Poi,
                     precision: GeoPrecision::Exact,
                     lon: r.lon,
@@ -1437,10 +1607,20 @@ impl Geocoder {
         let mut seen = rustc_hash::FxHashSet::default();
         let mut out = Vec::new();
         for (s, c) in scored {
-            if !seen.insert((c.kind as u8, c.display.clone())) {
+            // a landmark place and the same attraction as a POI are one result
+            let k = if matches!(c.kind, GeoKind::Place | GeoKind::Poi) { 255 } else { c.kind as u8 };
+            if !seen.insert((k, c.display.clone())) {
                 continue;
             }
-            let extra = if c.kind == GeoKind::Poi { poi_extra(c.hours.as_deref(), c.kosher, now) } else { None };
+            let extra = match c.kind {
+                GeoKind::Poi => poi_extra(c.hours.as_deref(), c.kosher, c.info.as_deref(), now),
+                GeoKind::Place => PoiInfo::from_json(c.info.as_deref()).map(|i| {
+                    let mut e = GeoExtra::default();
+                    i.apply(&mut e);
+                    Box::new(e)
+                }),
+                _ => None,
+            };
             out.push(GeoResult {
                 id: c.id,
                 name: c.display,
@@ -1504,7 +1684,7 @@ impl Geocoder {
                     street: None,
                     house_number: None,
                     score: 0.0,
-                    extra: poi_extra(p.hours.as_deref(), p.kosher, hours::now_il()),
+                    extra: poi_extra(p.hours.as_deref(), p.kosher, p.info.as_deref(), hours::now_il()),
                     category: Some(category_he(&p.cat)),
                 }));
             }
@@ -1656,6 +1836,7 @@ struct PoiRow {
     hours: Option<String>,
     kosher: bool,
     minzoom: i64,
+    info: Option<String>,
 }
 
 fn poi_row(r: &rusqlite::Row) -> rusqlite::Result<PoiRow> {
@@ -1669,6 +1850,7 @@ fn poi_row(r: &rusqlite::Row) -> rusqlite::Result<PoiRow> {
         hours: r.get(6)?,
         kosher: r.get::<_, Option<i64>>(7)?.unwrap_or(0) & 1 == 1,
         minzoom: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
+        info: r.get(9)?,
     })
 }
 
@@ -1835,10 +2017,10 @@ mod tests {
 
     #[test]
     fn coord_parse() {
-        let r = parse_coord("32.0853, 34.7818").unwrap();
+        let r = parse_coord("32.0853, 34.7818", None).unwrap();
         assert_eq!(r.kind, GeoKind::Coord);
         assert!((r.lon - 34.7818).abs() < 1e-9);
-        assert!(parse_coord("הרצל 12").is_none());
+        assert!(parse_coord("הרצל 12", None).is_none());
     }
 
     fn addr(city: &str, street: &str, hn: &str, lon: f64, lat: f64, score: f64) -> GeoResult {
@@ -1953,7 +2135,7 @@ mod tests {
         let syn = datagov::fetch_street_synonyms(&|_| {});
         writeln!(rep, "synonym groups fetched: {}", syn.len()).unwrap();
         let t = Instant::now();
-        builder::build_at(&pbf, &out, 31.5, &[], &syn, &|_, _, _, _| true).unwrap();
+        builder::build_at(&pbf, &out, 31.5, &[], &syn, false, &|_, _, _, _| true).unwrap();
         writeln!(rep, "build: {:?}, size {} MB", t.elapsed(), std::fs::metadata(&out).unwrap().len() / 1_000_000).unwrap();
         let g = open(&out).unwrap();
         let tri_bytes: i64 = g.conn.query_row("SELECT coalesce(sum(length(block)),0) FROM streets_tri_data", [], |r| r.get(0)).unwrap_or(-1);

@@ -9,6 +9,7 @@ use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use rusqlite::{params, Connection};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
+use super::info::{charging_line, first_value, phone_key, PoiInfo};
 use super::norm::{canon, housenumber_key, index_tokens, spell_fold, tri_key};
 use crate::types::{ProgressFn, ProgressPhase};
 
@@ -18,7 +19,12 @@ pub const SCHEMA_VERSION: &str = "3";
 /// street synonyms (data.gov.il) and the trigram index of street keys. Part of the manifest
 /// version so a new revision shows up as an available update. Additions only: an app of an
 /// older revision still reads the file, and this app still reads older files (see `Caps`).
-pub const BUILD_REV: u32 = 3;
+/// 4 = POI details (`pois.info`: phone, website, address, brand, operator, wikipedia, charging
+/// details), unnamed POIs of useful kinds (springs, toilets, defibrillators …), landmarks
+/// (squares, attractions) as places, alternative / brand names and phones in the search index,
+/// OSM `addr:interpolation` ways (`addresses.src` = 1), the energy ministry fuel register and
+/// offline Wikipedia summaries (`wiki`, `wiki_qid`).
+pub const BUILD_REV: u32 = 4;
 thread_local! {
     /// cos(reference latitude) for the flat-earth distances of one build (the build runs on one
     /// thread; countries are built concurrently on different threads). Israel: cos(31.5°).
@@ -68,6 +74,10 @@ struct Roles {
     /// Route numbers of a numbered road ("6", "1;20" -> ["1", "20"]): indexed as streets named
     /// "כביש N" so "כביש 6" can be searched (most stretches of national roads have no name).
     road_refs: Vec<String>,
+    /// Details of a POI / landmark (phone, website, brand, wikipedia …).
+    info: PoiInfo,
+    /// Other names to index (official / alternative / old / short names, brand, operator, phone).
+    alt: String,
 }
 
 fn road_highway(v: &str) -> bool {
@@ -91,7 +101,7 @@ fn has_latin(s: &str) -> bool {
     s.chars().any(|c| c.is_ascii_alphabetic())
 }
 
-const POI_KEYS: [&str; 11] = [
+const POI_KEYS: [&str; 12] = [
     "amenity",
     "shop",
     "tourism",
@@ -103,18 +113,39 @@ const POI_KEYS: [&str; 11] = [
     "natural",
     "office",
     "healthcare",
+    "emergency",
+];
+
+/// Categories worth keeping without a name: found by category ("ברזייה", "דפיברילטור") and shown
+/// on the map layer.
+const NAMELESS_OK: &[&str] = &["spring", "viewpoint", "toilets", "drinking_water", "shelter", "defibrillator", "playground", "camp_site", "charging_station", "atm"];
+
+/// `amenity=shelter` kinds that are not a protected space (bus stops, picnic roofs …).
+const SHELTER_SKIP: &[&str] = &[
+    "public_transport",
+    "picnic_shelter",
+    "weather_shelter",
+    "lean_to",
+    "basic_hut",
+    "sun_shelter",
+    "field_shelter",
+    "rock_shelter",
+    "changing_rooms",
+    "gazebo",
+    "pavilion",
 ];
 
 fn poi_ok(idx: usize, v: &str) -> bool {
     match idx {
         0 => !matches!(
             v,
-            "bench" | "waste_basket" | "parking_space" | "bicycle_parking" | "shelter" | "post_box" | "recycling" | "vending_machine" | "parking_entrance" | "waste_disposal" | "bbq" | "drinking_water" | "clock" | "grave_yard_x"
+            "bench" | "waste_basket" | "parking_space" | "bicycle_parking" | "post_box" | "recycling" | "vending_machine" | "parking_entrance" | "waste_disposal" | "bbq" | "clock" | "grave_yard_x"
         ),
         3 => !matches!(v, "pitch_x"),
         4 | 5 => v == "station" || v == "halt",
         6 => !matches!(v, "runway" | "taxiway" | "taxilane" | "apron" | "gate" | "holding_position" | "parking_position"),
         8 => !matches!(v, "tree" | "tree_row" | "wood" | "scrub" | "grassland" | "heath" | "bare_rock" | "scree" | "cliff" | "coastline" | "valley" | "sand" | "wetland" | "fell" | "shingle" | "mud"),
+        11 => v == "defibrillator",
         _ => !v.is_empty() && v != "no" && v != "yes_x",
     }
 }
@@ -128,6 +159,8 @@ fn place_kind(v: &str) -> Option<&'static str> {
         "suburb" => "suburb",
         "neighbourhood" => "neighbourhood",
         "quarter" => "quarter",
+        // named squares ("כיכר רבין") are places to search for, ranked by their town
+        "square" => "landmark",
         _ => return None,
     })
 }
@@ -147,7 +180,11 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
     let mut hours = "";
     let mut kosher = false;
     let mut pop = 0i64;
-    let mut pc: [&str; 11] = [""; 11];
+    let mut pc: [&str; 12] = [""; 12];
+    let (mut phone, mut website, mut brand, mut brand_he, mut operator, mut wikipedia, mut wikidata) = ("", "", "", "", "", "", "");
+    let (mut capacity, mut shelter_type, mut area) = ("", "", "");
+    let mut sockets: Vec<&str> = Vec::new();
+    let mut alt: Vec<&str> = Vec::new();
     for (k, v) in tags {
         match k {
             "name" => name = v,
@@ -165,8 +202,23 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
             "opening_hours" => hours = v,
             "diet:kosher" | "kosher" => kosher = matches!(v, "yes" | "only"),
             "population" => pop = v.trim().replace(',', "").parse().unwrap_or(0),
+            "phone" | "contact:phone" | "contact:mobile" if phone.is_empty() => phone = v,
+            "website" | "contact:website" | "url" if website.is_empty() => website = v,
+            "brand" => brand = v,
+            "brand:he" => brand_he = v,
+            "operator" | "operator:he" if operator.is_empty() || k == "operator:he" => operator = v,
+            "wikipedia" => wikipedia = v,
+            "wikidata" => wikidata = v,
+            "official_name" | "official_name:he" | "alt_name" | "alt_name:he" | "old_name" | "old_name:he" | "short_name" | "short_name:he" | "official_name:en" | "alt_name:en" => alt.push(v),
+            "capacity" => capacity = v,
+            "shelter_type" => shelter_type = v,
+            "area" => area = v,
             _ => {
-                if let Some(i) = POI_KEYS.iter().position(|x| *x == k) {
+                if let Some(s) = k.strip_prefix("socket:") {
+                    if !s.contains(':') && v != "no" && v != "0" {
+                        sockets.push(s);
+                    }
+                } else if let Some(i) = POI_KEYS.iter().position(|x| *x == k) {
                     pc[i] = v;
                 }
             }
@@ -174,7 +226,28 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
     }
     let primary = if !name_he.is_empty() { name_he } else { name };
     let road_refs = if road_highway(highway) { numeric_refs(road_ref) } else { Vec::new() };
-    if primary.is_empty() && hn.is_empty() && road_refs.is_empty() {
+    // point of interest: named, or of a kind that is useful without a name
+    let mut poi = None;
+    let mut poi_val = String::new();
+    for i in 0..POI_KEYS.len() {
+        if pc[i].is_empty() || !poi_ok(i, pc[i]) {
+            continue;
+        }
+        let mut val = pc[i].to_string();
+        if val == "place_of_worship" && matches!(religion, "jewish" | "muslim" | "christian") {
+            val = format!("place_of_worship:{religion}");
+        }
+        if val == "shelter" && SHELTER_SKIP.contains(&shelter_type) {
+            continue;
+        }
+        if primary.is_empty() && !NAMELESS_OK.contains(&val.as_str()) {
+            continue;
+        }
+        poi = Some(POI_KEYS[i]);
+        poi_val = val;
+        break;
+    }
+    if primary.is_empty() && hn.is_empty() && road_refs.is_empty() && poi.is_none() {
         return None;
     }
     let mut names = Names { he: primary.to_string(), en: name_en.to_string(), ar: name_ar.to_string() };
@@ -185,26 +258,50 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
             names.ar = name.to_string();
         }
     }
-    let place = if primary.is_empty() { None } else { place_kind(place).map(|k| (k, pop)) };
+    let mut place = if primary.is_empty() { None } else { place_kind(place).map(|k| (k, pop)) };
+    // named tourist attractions are also searchable as places (they stay map POIs too)
+    if place.is_none() && !primary.is_empty() && pc[2] == "attraction" {
+        place = Some(("landmark", 0));
+    }
+    // a named pedestrian area is a square ("כיכר רבין" is mapped this way, not as place=square)
+    if place.is_none() && !primary.is_empty() && highway == "pedestrian" && area == "yes" {
+        place = Some(("landmark", 0));
+    }
     let street_role = !primary.is_empty() && street_highway(highway);
     let st = if !street.is_empty() { street } else { addr_place };
     let addr = if !hn.is_empty() && !st.is_empty() { Some((hn.to_string(), st.to_string())) } else { None };
-    let mut poi = None;
-    let mut poi_val = String::new();
-    if !primary.is_empty() {
-        for i in 0..POI_KEYS.len() {
-            if !pc[i].is_empty() && poi_ok(i, pc[i]) {
-                poi = Some(POI_KEYS[i]);
-                poi_val = pc[i].to_string();
-                if poi_val == "place_of_worship" && matches!(religion, "jewish" | "muslim" | "christian") {
-                    poi_val = format!("place_of_worship:{religion}");
-                }
-                break;
-            }
-        }
-    }
     if place.is_none() && !street_role && addr.is_none() && poi.is_none() && road_refs.is_empty() {
         return None;
+    }
+    let mut info = PoiInfo::default();
+    let mut alt_names: Vec<String> = alt.iter().filter(|a| **a != primary).map(|a| a.to_string()).collect();
+    if poi.is_some() || place.is_some() {
+        info.wikipedia = first_value(wikipedia, 200).filter(|w| w.contains(':'));
+        info.wikidata = first_value(wikidata, 24).filter(|q| q.starts_with('Q'));
+    }
+    if poi.is_some() {
+        info.phone = first_value(phone, 40);
+        info.website = first_value(website, 200).filter(|w| w.contains('.'));
+        info.brand = first_value(if brand_he.is_empty() { brand } else { brand_he }, 80);
+        info.operator = first_value(operator, 80);
+        if poi_val == "charging_station" {
+            info.extra = charging_line(capacity, &sockets);
+        }
+        if let Some((h, s)) = &addr {
+            // the city is added at insert time when not tagged
+            info.address = Some(if city.is_empty() { format!("{s} {h}") } else { format!("{s} {h}, {city}") });
+        }
+        for v in [&info.brand, &info.operator].into_iter().flatten() {
+            if v != primary {
+                alt_names.push(v.clone());
+            }
+        }
+        if !brand.is_empty() && brand != brand_he && brand != primary {
+            alt_names.push(brand.to_string());
+        }
+        if let Some(k) = info.phone.as_deref().and_then(phone_key) {
+            alt_names.push(k);
+        }
     }
     Some(Roles {
         names,
@@ -217,6 +314,8 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Roles>
         poi,
         poi_val,
         road_refs,
+        info,
+        alt: alt_names.join(" "),
     })
 }
 
@@ -248,6 +347,8 @@ struct PlaceRaw {
     pop: i64,
     pos: Pos,
     refs: Span,
+    info: PoiInfo,
+    alt: String,
 }
 struct StreetRaw {
     names: Names,
@@ -259,6 +360,8 @@ struct AddrRaw {
     city: Option<u32>,
     pos: Pos,
     refs: Span,
+    /// 0 = an address point / building, 1 = placed along an `addr:interpolation` way
+    src: u8,
 }
 struct PoiRaw {
     names: Names,
@@ -266,6 +369,13 @@ struct PoiRaw {
     hours: Option<Box<str>>,
     kosher: bool,
     pos: Pos,
+    refs: Span,
+    info: PoiInfo,
+    alt: String,
+}
+/// An OSM `addr:interpolation` way: numbers between its address nodes, `step` 2 (even / odd) or 1.
+struct InterpRaw {
+    step: u8,
     refs: Span,
 }
 
@@ -278,10 +388,22 @@ struct State {
     pois: Vec<PoiRaw>,
     strs: Interner,
     nodes_seen: u64,
+    /// node id -> index in `addrs` (address nodes; the ends of interpolation ways)
+    addr_nodes: FxHashMap<i64, u32>,
+    interps: Vec<InterpRaw>,
 }
 
 impl State {
-    fn add(&mut self, r: Roles, pos: Pos, refs: &[i64]) {
+    fn add_interp(&mut self, step: u8, refs: &[i64]) {
+        if refs.len() < 2 {
+            return;
+        }
+        let s = self.arena.len() as u32;
+        self.arena.extend_from_slice(refs);
+        self.interps.push(InterpRaw { step, refs: (s, refs.len() as u32) });
+    }
+
+    fn add(&mut self, r: Roles, pos: Pos, refs: &[i64], node_id: Option<i64>) {
         let span = if refs.is_empty() {
             (0, 0)
         } else {
@@ -290,7 +412,7 @@ impl State {
             (s, refs.len() as u32)
         };
         if let Some((kind, pop)) = r.place {
-            self.places.push(PlaceRaw { names: r.names.clone(), kind, pop, pos, refs: span });
+            self.places.push(PlaceRaw { names: r.names.clone(), kind, pop, pos, refs: span, info: r.info.clone(), alt: r.alt.clone() });
         }
         if r.street && pos.is_none() {
             self.streets.push(StreetRaw { names: r.names.clone(), refs: span });
@@ -304,19 +426,22 @@ impl State {
         if let Some((hn, st)) = r.addr {
             let street = self.strs.id(&st);
             let city = r.addr_city.as_deref().map(|c| self.strs.id(c));
-            self.addrs.push(AddrRaw { street, hn: hn.into_boxed_str(), city, pos, refs: span });
+            if let Some(id) = node_id {
+                self.addr_nodes.insert(id, self.addrs.len() as u32);
+            }
+            self.addrs.push(AddrRaw { street, hn: hn.into_boxed_str(), city, pos, refs: span, src: 0 });
         }
         if r.poi.is_some() {
             let cat = self.strs.id(&r.poi_val);
             let hours = (!r.hours.is_empty()).then(|| r.hours.into_boxed_str());
-            self.pois.push(PoiRaw { names: r.names, cat, hours, kosher: r.kosher, pos, refs: span });
+            self.pois.push(PoiRaw { names: r.names, cat, hours, kosher: r.kosher, pos, refs: span, info: r.info, alt: r.alt });
         }
     }
 
-    fn node<'a>(&mut self, tags: impl Iterator<Item = (&'a str, &'a str)>, lon: f64, lat: f64) {
+    fn node<'a>(&mut self, id: i64, tags: impl Iterator<Item = (&'a str, &'a str)>, lon: f64, lat: f64) {
         self.nodes_seen += 1;
         if let Some(r) = classify(tags) {
-            self.add(r, Some((lon, lat)), &[]);
+            self.add(r, Some((lon, lat)), &[], Some(id));
         }
     }
 }
@@ -471,18 +596,77 @@ fn name_of(n: &Names) -> String {
     n.primary().to_string()
 }
 
+// ------------------------------------------------------------------ interpolation ways
+
+/// Addresses along OSM `addr:interpolation` ways: between two consecutive address nodes of the
+/// way (same street, numbers of the way's parity), every missing number is placed at its share
+/// of the way's length. Numbers that exist as real address points are skipped.
+fn interpolate(st: &State, needed: &[i64], coords: &[(i32, i32)]) -> Vec<AddrRaw> {
+    let coord = |id: i64| -> Option<(i32, i32)> { needed.binary_search(&id).ok().map(|i| coords[i]).filter(|c| c.0 != i32::MIN) };
+    let real: FxHashSet<(u32, String)> = st.addrs.iter().map(|a| (a.street, housenumber_key(&a.hn).0)).collect();
+    let mut out = Vec::new();
+    for ip in &st.interps {
+        let ids = &st.arena[ip.refs.0 as usize..(ip.refs.0 + ip.refs.1) as usize];
+        let anchors: Vec<(usize, u32)> = ids.iter().enumerate().filter_map(|(k, id)| st.addr_nodes.get(id).map(|&a| (k, a))).collect();
+        for w in anchors.windows(2) {
+            let ((k1, a1), (k2, a2)) = (w[0], w[1]);
+            let (r1, r2) = (&st.addrs[a1 as usize], &st.addrs[a2 as usize]);
+            if r1.street != r2.street {
+                continue;
+            }
+            let (Some(n1), Some(n2)) = (housenumber_key(&r1.hn).1, housenumber_key(&r2.hn).1) else { continue };
+            let step = i64::from(ip.step);
+            let span = (n2 - n1).abs();
+            if span <= step || span > 600 || span % step != 0 {
+                continue;
+            }
+            let pts: Vec<(i32, i32)> = ids[k1..=k2].iter().filter_map(|&id| coord(id)).collect();
+            if pts.len() < 2 {
+                continue;
+            }
+            let mut cum = vec![0.0f64];
+            for s in pts.windows(2) {
+                cum.push(cum.last().unwrap() + seg_len_m(s[0], s[1]));
+            }
+            let total = *cum.last().unwrap();
+            if total <= 0.5 || total > 5000.0 {
+                continue;
+            }
+            let dir = if n2 > n1 { step } else { -step };
+            let mut n = n1 + dir;
+            while n != n2 {
+                let target = (n - n1) as f64 / (n2 - n1) as f64 * total;
+                let j = cum.partition_point(|&c| c < target).clamp(1, pts.len() - 1);
+                let f = ((target - cum[j - 1]) / (cum[j] - cum[j - 1]).max(1e-9)).clamp(0.0, 1.0);
+                let (a, b) = (pts[j - 1], pts[j]);
+                let lon = (a.0 as f64 + (b.0 - a.0) as f64 * f) / E7;
+                let lat = (a.1 as f64 + (b.1 - a.1) as f64 * f) / E7;
+                let hn = n.to_string();
+                if !real.contains(&(r1.street, housenumber_key(&hn).0)) {
+                    out.push(AddrRaw { street: r1.street, hn: hn.into_boxed_str(), city: r1.city, pos: Some((lon, lat)), refs: (0, 0), src: 1 });
+                }
+                n += dir;
+            }
+        }
+    }
+    log::info!("geocode: {} interpolation ways → {} addresses", st.interps.len(), out.len());
+    out
+}
+
 // ------------------------------------------------------------------ build
 
 const SCHEMA: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE places(id INTEGER PRIMARY KEY, name_he TEXT, name_en TEXT, name_ar TEXT, kind TEXT,
-    lon REAL, lat REAL, population INTEGER, city TEXT);
+    lon REAL, lat REAL, population INTEGER, city TEXT, info TEXT);
 CREATE TABLE streets(id INTEGER PRIMARY KEY, name TEXT, city TEXT, ckey TEXT, city_key TEXT,
     lon REAL, lat REAL, minlon REAL, minlat REAL, maxlon REAL, maxlat REAL, geom BLOB);
 CREATE TABLE addresses(id INTEGER PRIMARY KEY, street TEXT, housenumber TEXT, housenumber_num INTEGER,
-    city TEXT, lon REAL, lat REAL, street_key TEXT, hn_key TEXT);
+    city TEXT, lon REAL, lat REAL, street_key TEXT, hn_key TEXT, src INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE pois(id INTEGER PRIMARY KEY, name TEXT, category TEXT, lon REAL, lat REAL, city TEXT,
-    hours TEXT, flags INTEGER NOT NULL DEFAULT 0, minzoom INTEGER NOT NULL DEFAULT 0);
+    hours TEXT, flags INTEGER NOT NULL DEFAULT 0, minzoom INTEGER NOT NULL DEFAULT 0, info TEXT);
+CREATE TABLE wiki(tag TEXT PRIMARY KEY, title TEXT, extract TEXT, url TEXT, lang TEXT);
+CREATE TABLE wiki_qid(qid TEXT PRIMARY KEY, tag TEXT);
 CREATE TABLE street_syn(city_key TEXT, alias TEXT, ckey TEXT);
 CREATE VIRTUAL TABLE places_fts USING fts5(search, content='', tokenize='unicode61 remove_diacritics 2', detail=none, prefix='2 3');
 CREATE VIRTUAL TABLE streets_fts USING fts5(search, content='', tokenize='unicode61 remove_diacritics 2', detail=none, prefix='2 3');
@@ -508,7 +692,15 @@ fn resolve(span: Span, arena: &[i64], needed: &[i64], coords: &[(i32, i32)]) -> 
 
 /// Build for a region centred around latitude `ref_lat` (degrees); `extra` points of interest
 /// (open-data sources) join the OSM ones unless OSM has the same category within ~100 m.
-pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::ExtPoi], syn: &[super::datagov::SynGroup], progress: ProgressFn) -> Result<()> {
+pub fn build_at(
+    pbf: &Path,
+    out: &Path,
+    ref_lat: f64,
+    extra: &[super::datagov::ExtPoi],
+    syn: &[super::datagov::SynGroup],
+    fetch_wiki: bool,
+    progress: ProgressFn,
+) -> Result<()> {
     COS_LAT_TL.with(|c| c.set(ref_lat.to_radians().cos().max(0.2)));
     let t0 = Instant::now();
     let p = |done: u64, msg: &str| progress(ProgressPhase::Processing, done, 100, msg);
@@ -521,12 +713,21 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
     {
         let reader = ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()))?;
         reader.for_each(|el| match el {
-            Element::Node(n) => st.node(n.tags(), n.lon(), n.lat()),
-            Element::DenseNode(n) => st.node(n.tags(), n.lon(), n.lat()),
+            Element::Node(n) => st.node(n.id(), n.tags(), n.lon(), n.lat()),
+            Element::DenseNode(n) => st.node(n.id(), n.tags(), n.lon(), n.lat()),
             Element::Way(w) => {
+                let step = w.tags().find(|(k, _)| *k == "addr:interpolation").map(|(_, v)| match v {
+                    "even" | "odd" => 2u8,
+                    "all" | "1" => 1,
+                    _ => 0,
+                });
+                if let Some(step) = step.filter(|s| *s > 0) {
+                    let refs: Vec<i64> = w.refs().collect();
+                    st.add_interp(step, &refs);
+                }
                 if let Some(r) = classify(w.tags()) {
                     let refs: Vec<i64> = w.refs().collect();
-                    st.add(r, None, &refs);
+                    st.add(r, None, &refs, None);
                 }
             }
             Element::Relation(_) => {}
@@ -590,6 +791,8 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
         pop: i64,
         lon: f64,
         lat: f64,
+        info: PoiInfo,
+        alt: String,
     }
     let mut pfs: Vec<PlaceFinal> = Vec::new();
     for pr in &st.places {
@@ -599,7 +802,7 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
         };
         if let Some((lon, lat)) = pos {
             let pop = if pr.pop > 0 { pr.pop } else { default_pop(pr.kind) };
-            pfs.push(PlaceFinal { names: pr.names.clone(), kind: pr.kind, pop, lon, lat });
+            pfs.push(PlaceFinal { names: pr.names.clone(), kind: pr.kind, pop, lon, lat, info: pr.info.clone(), alt: pr.alt.clone() });
         }
     }
     pfs.sort_by(|a, b| kind_rank(a.kind).cmp(&kind_rank(b.kind)).then(b.pop.cmp(&a.pop)));
@@ -632,6 +835,10 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
     }
     let city_name = |c: Option<usize>| -> String { c.map(|i| cities.names[i].clone()).unwrap_or_default() };
     let city_pop = |c: Option<usize>| -> i64 { c.map(|i| cities.pops[i]).unwrap_or(0) };
+    // landmarks rank by the size of their town ("כיכר רבין" in Tel Aviv before a street in Eilat)
+    for p in pfs.iter_mut().filter(|p| p.kind == "landmark") {
+        p.pop = city_pop(cities.nearest(p.lon, p.lat)).max(500);
+    }
 
     // ---- streets
     struct Acc {
@@ -702,10 +909,13 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
     conn.execute_batch(SCHEMA)?;
     let tx = conn.transaction()?;
 
+    // Wikipedia tags met on the way (fetched at the end when `fetch_wiki`)
+    let mut wiki_tags: Vec<(String, Option<String>)> = Vec::new();
+
     // places
     let mut n_places = 0u64;
     {
-        let mut ins = tx.prepare("INSERT INTO places(id,name_he,name_en,name_ar,kind,lon,lat,population,city) VALUES (?,?,?,?,?,?,?,?,?)")?;
+        let mut ins = tx.prepare("INSERT INTO places(id,name_he,name_en,name_ar,kind,lon,lat,population,city,info) VALUES (?,?,?,?,?,?,?,?,?,?)")?;
         let mut fts = tx.prepare("INSERT INTO places_fts(rowid, search) VALUES (?,?)")?;
         for (i, pl) in pfs.iter().enumerate() {
             let id = i as i64 + 1;
@@ -714,9 +924,12 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             } else {
                 city_name(cities.nearest(pl.lon, pl.lat))
             };
-            ins.execute(params![id, pl.names.he, pl.names.en, pl.names.ar, pl.kind, pl.lon, pl.lat, pl.pop, city])?;
+            ins.execute(params![id, pl.names.he, pl.names.en, pl.names.ar, pl.kind, pl.lon, pl.lat, pl.pop, city, pl.info.to_json()])?;
             let [a, b, c] = pl.names.all();
-            fts.execute(params![id, index_tokens(&[a, b, c, &city])])?;
+            fts.execute(params![id, index_tokens(&[a, b, c, &city, &pl.alt])])?;
+            if let Some(w) = &pl.info.wikipedia {
+                wiki_tags.push((w.clone(), pl.info.wikidata.clone()));
+            }
             n_places += 1;
         }
     }
@@ -794,13 +1007,15 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
         bail!("cancelled");
     }
 
-    // addresses
+    // addresses (+ the numbers of OSM interpolation ways between their address nodes)
     let mut n_addrs = 0u64;
+    let mut n_interp = 0u64;
     {
-        let mut ins = tx.prepare("INSERT INTO addresses(street,housenumber,housenumber_num,city,lon,lat,street_key,hn_key) VALUES (?,?,?,?,?,?,?,?)")?;
+        let generated = interpolate(&st, &needed, &coords);
+        let mut ins = tx.prepare("INSERT INTO addresses(street,housenumber,housenumber_num,city,lon,lat,street_key,hn_key,src) VALUES (?,?,?,?,?,?,?,?,?)")?;
         let mut seen: FxHashSet<u64> = FxHashSet::default();
         let mut canon_cache: FxHashMap<u32, String> = FxHashMap::default();
-        for ar in &st.addrs {
+        for ar in st.addrs.iter().chain(generated.iter()) {
             let pos = match ar.pos {
                 Some(p) => Some(p),
                 None => centroid(&resolve(ar.refs, &st.arena, &needed, &coords)),
@@ -823,8 +1038,9 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             if !seen.insert(h) {
                 continue;
             }
-            ins.execute(params![street, &*ar.hn, hnum, city, lon, lat, skey, hk])?;
+            ins.execute(params![street, &*ar.hn, hnum, city, lon, lat, skey, hk, ar.src])?;
             n_addrs += 1;
+            n_interp += u64::from(ar.src);
         }
     }
     if !p(80, "שמירת נקודות עניין") {
@@ -842,6 +1058,8 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             lon: f64,
             lat: f64,
             city: Option<usize>,
+            info: PoiInfo,
+            alt: String,
         }
         let mut list: Vec<PoiFinal> = Vec::new();
         let mut seen: FxHashSet<u64> = FxHashSet::default();
@@ -855,26 +1073,57 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             if !seen.insert(h) {
                 continue;
             }
-            list.push(PoiFinal { names: pr.names.clone(), cat: pr.cat, hours: pr.hours.clone(), kosher: pr.kosher, lon, lat, city: cities.nearest(lon, lat) });
+            list.push(PoiFinal {
+                names: pr.names.clone(),
+                cat: pr.cat,
+                hours: pr.hours.clone(),
+                kosher: pr.kosher,
+                lon,
+                lat,
+                city: cities.nearest(lon, lat),
+                info: pr.info.clone(),
+                alt: pr.alt.clone(),
+            });
         }
         // open-data points: skip those OSM already has (same category, neighbouring ~100 m cell)
         let cell = |lon: f64, lat: f64| ((lon * 1000.0).floor() as i64, (lat * 1000.0).floor() as i64);
-        let mut osm_cells: FxHashSet<(u32, i64, i64)> = FxHashSet::default();
-        for f in &list {
+        let mut osm_cells: FxHashMap<(u32, i64, i64), usize> = FxHashMap::default();
+        for (i, f) in list.iter().enumerate() {
             let (x, y) = cell(f.lon, f.lat);
-            osm_cells.insert((f.cat, x, y));
+            osm_cells.entry((f.cat, x, y)).or_insert(i);
         }
-        let mut n_extra = 0usize;
+        let (mut n_extra, mut n_enriched) = (0usize, 0usize);
         for e in extra {
             let cat = st.strs.id(e.cat);
             let (x, y) = cell(e.lon, e.lat);
-            if (-1..=1).any(|dx| (-1..=1).any(|dy| osm_cells.contains(&(cat, x + dx, y + dy)))) {
+            let near = (-1..=1).flat_map(|dx| (-1..=1).map(move |dy| (dx, dy))).find_map(|(dx, dy)| osm_cells.get(&(cat, x + dx, y + dy)).copied());
+            if let Some(i) = near {
+                // OSM has it: the register only fills in what OSM lacks (brand, phone, address)
+                if let Some(info) = &e.info {
+                    let before = list[i].info.clone();
+                    list[i].info.fill_from(info);
+                    if list[i].info != before {
+                        n_enriched += 1;
+                        if let Some(b) = info.brand.as_ref().filter(|b| !list[i].alt.contains(b.as_str())) {
+                            list[i].alt.push(' ');
+                            list[i].alt.push_str(b);
+                        }
+                    }
+                }
                 continue;
             }
-            osm_cells.insert((cat, x, y));
+            osm_cells.insert((cat, x, y), list.len());
             let names = Names { he: e.name.clone(), ..Default::default() };
-            list.push(PoiFinal { names, cat, hours: None, kosher: false, lon: e.lon, lat: e.lat, city: cities.nearest(e.lon, e.lat) });
+            let info = e.info.clone().unwrap_or_default();
+            let mut alt: Vec<String> = [&info.brand, &info.operator].into_iter().flatten().cloned().collect();
+            if let Some(k) = info.phone.as_deref().and_then(phone_key) {
+                alt.push(k);
+            }
+            list.push(PoiFinal { names, cat, hours: None, kosher: false, lon: e.lon, lat: e.lat, city: cities.nearest(e.lon, e.lat), info, alt: alt.join(" ") });
             n_extra += 1;
+        }
+        if n_enriched > 0 {
+            log::info!("geocode: {n_enriched} OSM points completed from open-data registers");
         }
         if !extra.is_empty() {
             log::info!("geocode: {n_extra} of {} open-data points added (the rest are in OSM)", extra.len());
@@ -892,7 +1141,7 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             .collect();
         let minzoom = super::thin::minzooms(&thin_pts);
         log::info!("geocode: POI thinning of {} points in {:?}", list.len(), t_thin.elapsed());
-        let mut ins = tx.prepare("INSERT INTO pois(id,name,category,lon,lat,city,hours,flags,minzoom) VALUES (?,?,?,?,?,?,?,?,?)")?;
+        let mut ins = tx.prepare("INSERT INTO pois(id,name,category,lon,lat,city,hours,flags,minzoom,info) VALUES (?,?,?,?,?,?,?,?,?,?)")?;
         let mut fts = tx.prepare("INSERT INTO pois_fts(rowid, search) VALUES (?,?)")?;
         let mut rt = tx.prepare("INSERT INTO pois_rt(id,minlon,maxlon,minlat,maxlat) VALUES (?,?,?,?,?)")?;
         for (i, f) in list.iter().enumerate() {
@@ -900,20 +1149,50 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             let city = city_name(f.city);
             let [h, e, r] = f.names.all();
             let cat = &st.strs.vec[f.cat as usize];
-            ins.execute(params![id, name_of(&f.names), cat, f.lon, f.lat, city, f.hours.as_deref(), i64::from(f.kosher), minzoom[i]])?;
-            // the Hebrew category label is searchable too ("בית כנסת הגדול" finds synagogues)
+            let mut info = f.info.clone();
+            if let Some(a) = info.address.as_mut() {
+                if !a.contains(',') && !city.is_empty() {
+                    a.push_str(", ");
+                    a.push_str(&city);
+                }
+            }
+            if let Some(w) = &info.wikipedia {
+                wiki_tags.push((w.clone(), info.wikidata.clone()));
+            }
+            ins.execute(params![id, name_of(&f.names), cat, f.lon, f.lat, city, f.hours.as_deref(), i64::from(f.kosher), minzoom[i], info.to_json()])?;
+            // the Hebrew category label is searchable too ("בית כנסת הגדול" finds synagogues), and
+            // the other names, brand, operator and phone of the place
             let label = super::categories::label(cat);
-            fts.execute(params![id, index_tokens(&[h, e, r, &city, &label])])?;
+            fts.execute(params![id, index_tokens(&[h, e, r, &city, &label, &f.alt])])?;
             rt.execute(params![id, f.lon, f.lon, f.lat, f.lat])?;
             n_pois += 1;
         }
+    }
+    // offline Wikipedia summaries of the tagged places (Israel build; skipped when offline)
+    let mut n_wiki = 0usize;
+    if fetch_wiki && !wiki_tags.is_empty() {
+        if !p(85, "תקצירי ויקיפדיה") {
+            bail!("cancelled");
+        }
+        let rows = super::wiki::fetch(&wiki_tags, &|m| {
+            progress(ProgressPhase::Processing, 86, 100, m);
+        });
+        let mut ins = tx.prepare("INSERT OR REPLACE INTO wiki(tag,title,extract,url,lang) VALUES (?,?,?,?,?)")?;
+        let mut qid = tx.prepare("INSERT OR REPLACE INTO wiki_qid(qid,tag) VALUES (?,?)")?;
+        for r in &rows {
+            ins.execute(params![r.tag, r.title, r.extract, r.url, r.lang])?;
+            if let Some(q) = &r.qid {
+                qid.execute(params![q, r.tag])?;
+            }
+        }
+        n_wiki = rows.len();
     }
     if !p(88, "יצירת אינדקסים לחיפוש") {
         bail!("cancelled");
     }
 
     tx.execute(
-        "INSERT INTO meta(key,value) VALUES ('version',?1),('built_iso',?2),('places',?3),('streets',?4),('addresses',?5),('pois',?6),('street_synonyms',?7)",
+        "INSERT INTO meta(key,value) VALUES ('version',?1),('built_iso',?2),('places',?3),('streets',?4),('addresses',?5),('pois',?6),('street_synonyms',?7),('build_rev',?8),('interpolated_addresses',?9),('wiki',?10)",
         params![
             SCHEMA_VERSION,
             chrono::Utc::now().to_rfc3339(),
@@ -921,7 +1200,10 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
             n_streets.to_string(),
             n_addrs.to_string(),
             n_pois.to_string(),
-            n_syn.to_string()
+            n_syn.to_string(),
+            BUILD_REV.to_string(),
+            n_interp.to_string(),
+            n_wiki.to_string()
         ],
     )?;
     tx.commit()?;
@@ -941,7 +1223,7 @@ pub fn build_at(pbf: &Path, out: &Path, ref_lat: f64, extra: &[super::datagov::E
     conn.execute_batch("VACUUM;")?;
     drop(conn);
     log::info!(
-        "geocode built in {:?}: places {n_places} streets {n_streets} (synonym links {n_syn}) addrs {n_addrs} pois {n_pois}",
+        "geocode built in {:?}: places {n_places} streets {n_streets} (synonym links {n_syn}) addrs {n_addrs} (interpolated {n_interp}) pois {n_pois} wiki {n_wiki}",
         t0.elapsed()
     );
     progress(ProgressPhase::Finalizing, 100, 100, "אינדקס הכתובות מוכן");
@@ -961,7 +1243,7 @@ mod real_data {
         let out = std::env::temp_dir().join("mo-geocode-test.sqlite");
         let syn = crate::geocode::datagov::fetch_street_synonyms(&|m| println!("{m}"));
         let t0 = std::time::Instant::now();
-        super::build_at(&pbf, &out, 31.5, &[], &syn, &|_, _, _, _| true).unwrap();
+        super::build_at(&pbf, &out, 31.5, &[], &syn, false, &|_, _, _, _| true).unwrap();
         println!("built in {:?}, {} MB", t0.elapsed(), std::fs::metadata(&out).unwrap().len() / 1_000_000);
         let g = crate::geocode::open(&out).unwrap();
         for q in ["כביש 6", "כביש 443", "דרך 1", "כביש 90", "הרצל 12 תל אביב"] {
