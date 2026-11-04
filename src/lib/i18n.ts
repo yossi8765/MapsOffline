@@ -937,10 +937,6 @@ const he = {
   // ===== [R2] =====
 
   // ===== [R3] =====
-  noticeShabbat: "אין תחבורה ציבורית בשבת.",
-  noticeHoliday: "אין תחבורה ציבורית ב{name}.",
-  noticeNoService: "אין שירות בשעה הזו.",
-  noticeLateNight: "אין שירות בשעות הלילה.",
   noticeNextService: "היציאה הראשונה: {time}",
   wheelchairAccessible: "נגיש לכיסא גלגלים",
   fareTicketTrain: "רכבת",
@@ -1879,10 +1875,6 @@ const en: Record<I18nKey, string> = {
   // ===== [R2] =====
 
   // ===== [R3] =====
-  noticeShabbat: "There is no public transport on Shabbat.",
-  noticeHoliday: "There is no public transport on {name}.",
-  noticeNoService: "There is no service at this time.",
-  noticeLateNight: "There is no service at night.",
   noticeNextService: "First departure: {time}",
   wheelchairAccessible: "Wheelchair accessible",
   fareTicketTrain: "Train",
