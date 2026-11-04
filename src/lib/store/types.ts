@@ -28,7 +28,24 @@ export interface Toast {
   id: number;
   kind: "info" | "success" | "error";
   text: string;
+  /** Developer text for errors: shown folded with a copy button. */
+  details?: string;
+  /** How many identical toasts were merged into this one. */
+  count?: number;
+  /** One action button ("בטל" after a delete). */
+  action?: { label: string; run: () => void };
+  /** ms; 0 = stays until closed (errors). */
+  duration?: number;
 }
+
+export interface ToastOptions {
+  details?: string;
+  action?: Toast["action"];
+  duration?: number;
+}
+
+/** What the share dialog shows: a place or the selected route. */
+export type ShareTarget = { kind: "place"; lon: number; lat: number; label: string } | { kind: "route"; routeId: string };
 
 export interface MapLayers {
   satellite: boolean;
@@ -57,6 +74,11 @@ export interface HighlightState {
   routeId: string;
   legIndex: number;
   stepIndex?: number;
+  /** The highlighted stretch spans this many steps from `stepIndex` (a merged roundabout entry +
+   *  exit counts 2). Default 1. */
+  stepCount?: number;
+  /** One point on the route (elevation-profile hover): drawn as a dot. */
+  point?: [number, number];
 }
 
 /** The whole store: one zustand store built from the slices in this folder. */

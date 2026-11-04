@@ -471,7 +471,7 @@ export interface Settings {
   /** Open the map where it was last left. */
   rememberMapView: boolean;
   /** Accent colour of the light theme. */
-  accent: "blue" | "green" | "purple" | "orange" | "teal" | "rose" | "slate" | "pastel";
+  accent: "system" | "blue" | "green" | "purple" | "orange" | "teal" | "rose" | "slate" | "pastel";
   /** Default for the route panel: avoid toll roads. */
   avoidTolls: boolean;
   /** Default for the route panel: which PA areas are forbidden. */

@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bus, Download, Footprints, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
+import { BookOpen, Bus, ChevronDown, Download, FileText, Footprints, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, SlidersHorizontal, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
+import { Icon } from "./Icon";
+import { Tip } from "./Tip";
+import { InfoBar } from "./InfoBar";
+import { FirstRunCard } from "./FirstRunCard";
+import { apiX, DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { useT, type I18nKey } from "../lib/i18n";
@@ -11,16 +15,16 @@ import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Toggle } from "./RoutePanel";
 import { RegionsSection } from "./RegionsSection";
 
-const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc: I18nKey }> = {
-  tiles: { icon: <Map size={16} strokeWidth={1.75} />, label: "compTiles", desc: "compTilesDesc" },
-  world: { icon: <Globe size={16} strokeWidth={1.75} />, label: "compWorld", desc: "compWorldDesc" },
-  satellite: { icon: <Satellite size={16} strokeWidth={1.75} />, label: "compSatellite", desc: "compSatelliteDesc" },
-  terrain: { icon: <Mountain size={16} strokeWidth={1.75} />, label: "compTerrain", desc: "compTerrainDesc" },
-  routing: { icon: <Route size={16} strokeWidth={1.75} />, label: "compRouting", desc: "compRoutingDesc" },
-  geocode: { icon: <MapPin size={16} strokeWidth={1.75} />, label: "compGeocode", desc: "compGeocodeDesc" },
-  transit: { icon: <Bus size={16} strokeWidth={1.75} />, label: "compTransit", desc: "compTransitDesc" },
-  trails: { icon: <Footprints size={16} strokeWidth={1.75} />, label: "compTrails", desc: "compTrailsDesc" },
-  minyanim: { icon: <BookOpen size={16} strokeWidth={1.75} />, label: "compMinyanim", desc: "compMinyanimDesc" },
+const META: Record<DataComponent, { icon: typeof Map; label: I18nKey; desc: I18nKey }> = {
+  tiles: { icon: Map, label: "compTiles", desc: "compTilesDesc" },
+  world: { icon: Globe, label: "compWorld", desc: "compWorldDesc" },
+  satellite: { icon: Satellite, label: "compSatellite", desc: "compSatelliteDesc" },
+  terrain: { icon: Mountain, label: "compTerrain", desc: "compTerrainDesc" },
+  routing: { icon: Route, label: "compRouting", desc: "compRoutingDesc" },
+  geocode: { icon: MapPin, label: "compGeocode", desc: "compGeocodeDesc" },
+  transit: { icon: Bus, label: "compTransit", desc: "compTransitDesc" },
+  trails: { icon: Footprints, label: "compTrails", desc: "compTrailsDesc" },
+  minyanim: { icon: BookOpen, label: "compMinyanim", desc: "compMinyanimDesc" },
 };
 
 /** Rough download sizes of a first install (prebuilt packages), for the "update all" summary. */
@@ -50,6 +54,28 @@ const PHASE_KEY: Record<ProgressPhase, I18nKey> = {
   cancelled: "phaseCancelled",
 };
 
+/** A hint shown as its first sentence with "עוד…" for the rest (long explanations no longer
+ *  push the controls down on every visit). */
+export function MoreText({ text, className }: { text: string; className?: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const m = /^(.+?[.!?])\s+(.+)$/s.exec(text);
+  if (!m) return <p className={clsx("m-0 text-xs text-muted", className)}>{text}</p>;
+  return (
+    <p className={clsx("m-0 text-xs text-muted", className)}>
+      {open ? text : m[1]}{" "}
+      <button className="text-accent hover:underline underline-offset-2" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {open ? t("showLess") : t("showMore")}
+      </button>
+    </p>
+  );
+}
+
+/** The components the update checks offer (settings.wantedComponents; null = all). */
+export function isWanted(c: DataComponent, wanted: DataComponent[] | null | undefined): boolean {
+  return !wanted || wanted.includes(c);
+}
+
 export function DataPanel() {
   const t = useT();
   const status = useStore((s) => s.dataStatus);
@@ -57,6 +83,7 @@ export function DataPanel() {
   const lang = useStore((s) => s.settings.language);
   const check = useStore((s) => s.dataCheck);
   const checking = useStore((s) => s.checkingUpdates);
+  const wanted = useStore((s) => s.settings.wantedComponents);
   const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, downloadPackage, toastError, updateSettings } = useStore.getState();
   const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
   const usePrebuilt = useStore((s) => s.settings.usePrebuiltData ?? true);
@@ -66,6 +93,7 @@ export function DataPanel() {
   const paused = !!status?.paused;
   const present = DATA_COMPONENTS.filter((c) => status?.[c]?.present);
   const anyPresent = present.length > 0;
+  const [advanced, setAdvanced] = useState(false);
   // Components excluded from the next export (everything installed is included by default).
   const [excluded, setExcluded] = useState<DataComponent[]>([]);
   const selected = present.filter((c) => !excluded.includes(c));
@@ -79,7 +107,7 @@ export function DataPanel() {
 
   const doExport = async () => {
     if (selected.length === 0) {
-      toastError(t("nothingSelected"));
+      useStore.getState().toast("error", t("nothingSelected"));
       return;
     }
     try {
@@ -102,7 +130,8 @@ export function DataPanel() {
   useTauriEvent<{ phase: ProgressPhase; done: number; total: number; message: string }>("package-download", setPkg);
   const pkgActive = !!pkg && pkg.phase !== "done" && pkg.phase !== "failed" && pkg.phase !== "cancelled";
   const pkgPct = pkg && pkg.total > 0 ? Math.min(100, Math.round((pkg.done / pkg.total) * 100)) : null;
-  const doDownloadPackage = async () => {
+  /** Download the ready-made package; with `install`, install it right away (first run). */
+  const doDownloadPackage = async (install = false) => {
     try {
       const dest = await saveDialog({
         title: t("downloadPackage"),
@@ -112,7 +141,10 @@ export function DataPanel() {
       if (!dest) return;
       setPkgFile(null);
       setPkg({ phase: "queued", done: 0, total: 0, message: "" });
-      if (await downloadPackage(dest)) setPkgFile(dest);
+      if (await downloadPackage(dest)) {
+        setPkgFile(dest);
+        if (install) await importData(dest);
+      }
     } catch (e) {
       toastError(e);
     }
@@ -146,7 +178,7 @@ export function DataPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updating]);
 
-  const available = DATA_COMPONENTS.filter((c) => check?.[c]?.available);
+  const available = DATA_COMPONENTS.filter((c) => check?.[c]?.available && isWanted(c, wanted));
   // "Update all" first shows what it is about to download and how big it is: on a fresh install
   // it would otherwise start the satellite imagery (up to many GB, hours) and the world map
   // without a word. Optional extras that are not installed yet start unticked.
@@ -157,24 +189,35 @@ export function DataPanel() {
     if (c === "satellite") return (ortho ? SAT_ORTHO_BYTES : SAT_SENTINEL_BYTES)[satelliteQuality] ?? SAT_ORTHO_BYTES.high;
     return NEW_BYTES[c];
   };
-  const pending = DATA_COMPONENTS.filter((c) => (status && !status[c]?.present) || check?.[c]?.available);
+  const pending = DATA_COMPONENTS.filter((c) => isWanted(c, wanted) && ((status && !status[c]?.present) || check?.[c]?.available));
   const checkErrors = DATA_COMPONENTS.filter((c) => check?.[c]?.error);
+  const openPlan = () => setPlan(pending.filter((c) => !(OPTIONAL_EXTRAS.includes(c) && !status?.[c]?.present)));
 
-  const openDir = async () => {
-    if (!status?.dir) return;
+  const openDir = async (dir: string | undefined) => {
+    if (!dir) return;
     try {
-      await openPath(status.dir);
+      await openPath(dir);
     } catch {
       try {
-        await revealItemInDir(status.dir);
+        await revealItemInDir(dir);
       } catch (e) {
         toastError(e);
       }
     }
   };
+  const openLogs = async () => {
+    try {
+      await openDir(await apiX.logsDir());
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  const firstRun = !!status && !anyPresent && !updating && !pkgActive;
 
   return (
     <div className="px-4 pb-5 flex flex-col gap-4">
+      {firstRun && <FirstRunCard onPackage={() => void doDownloadPackage(true)} onChoose={openPlan} />}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between px-0.5">
           <h2 className="section-label m-0 p-0">{t("dataTitle")}</h2>
@@ -185,64 +228,65 @@ export function DataPanel() {
               void refreshDataStatus();
               void checkUpdates(true);
             }}
-            title={t("checkUpdates")}
           >
-            <RefreshCw size={14} strokeWidth={1.75} className={clsx((updating || checking) && "animate-spin")} />
+            <Icon as={RefreshCw} size={14} className={clsx((updating || checking) && "animate-spin")} />
             {checking ? t("checking") : t("checkUpdates")}
           </button>
         </div>
         <div className="flex flex-col gap-2 mb-1">
-        {updating ? (
-          <button className="btn btn-danger w-full !h-10" onClick={() => void cancelUpdate()}>
-            <X size={16} strokeWidth={1.75} /> {t("cancelUpdate")}
-          </button>
-        ) : pending.length > 0 ? (
-          // only when there is something to do: an available update or a missing component
-          plan ? (
-            <div className="card p-3 flex flex-col gap-2 fade-in">
-              <div className="text-sm font-semibold">{t("updatePlanTitle")}</div>
-              <div className="flex flex-col">
-                {pending.map((c) => (
-                  <label key={c} className="flex items-center gap-2.5 min-h-9 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 accent-[var(--accent)]"
-                      checked={plan.includes(c)}
-                      onChange={(e) => setPlan(e.target.checked ? [...plan, c] : plan.filter((x) => x !== c))}
-                    />
-                    <span className="flex-1 min-w-0 truncate">{t(META[c].label)}</span>
-                    <bdi dir="ltr" className="text-xs text-muted num shrink-0">~{fmtBytes(estimate(c))}</bdi>
-                  </label>
-                ))}
-              </div>
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  className="btn btn-primary flex-1"
-                  disabled={plan.length === 0}
-                  onClick={() => {
-                    const comps = pending.filter((c) => plan.includes(c));
-                    setPlan(null);
-                    void startUpdate(comps);
-                  }}
-                >
-                  <Download size={16} strokeWidth={2} /> {t("updatePlanStart")} <bdi dir="ltr" className="num font-normal">(~{fmtBytes(plan.reduce((n, c) => n + estimate(c), 0))})</bdi>
-                </button>
-                <button className="btn" onClick={() => setPlan(null)}>
-                  {t("cancel")}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button className="btn btn-primary w-full" onClick={() => setPlan(pending.filter((c) => !(OPTIONAL_EXTRAS.includes(c) && !status?.[c]?.present)))}>
-              <Download size={16} strokeWidth={2} /> {t("updateAll")}
+          {updating ? (
+            <button className="btn btn-danger w-full" onClick={() => void cancelUpdate()}>
+              <Icon as={X} /> {t("cancelUpdate")}
             </button>
-          )
-        ) : null}
-        <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
-        <div className="group-list">
-          <Toggle label={t("prebuiltData")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
-        </div>
-        <p className="m-0 text-xs text-muted px-0.5">{t("prebuiltDataHint")}</p>
+          ) : pending.length > 0 ? (
+            // only when there is something to do: an available update or a missing component
+            plan ? (
+              <div className="card p-3 flex flex-col gap-2 fade-in">
+                <div className="font-semibold">{t("updatePlanTitle")}</div>
+                <div className="flex flex-col">
+                  {pending.map((c) => (
+                    <label key={c} className="flex items-center gap-2.5 min-h-9 cursor-pointer">
+                      <input type="checkbox" className="w-4 h-4 accent-[var(--accent)]" checked={plan.includes(c)} onChange={(e) => setPlan(e.target.checked ? [...plan, c] : plan.filter((x) => x !== c))} />
+                      <span className="flex-1 min-w-0 truncate">{t(META[c].label)}</span>
+                      <bdi dir="ltr" className="text-xs text-muted num shrink-0">
+                        ~{fmtBytes(estimate(c))}
+                      </bdi>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    className="btn btn-primary flex-1"
+                    disabled={plan.length === 0}
+                    onClick={() => {
+                      const comps = pending.filter((c) => plan.includes(c));
+                      setPlan(null);
+                      void startUpdate(comps);
+                    }}
+                  >
+                    <Icon as={Download} /> {t("updatePlanStart")}{" "}
+                    <bdi dir="ltr" className="num font-normal">
+                      (~{fmtBytes(plan.reduce((n, c) => n + estimate(c), 0))})
+                    </bdi>
+                  </button>
+                  <button className="btn" onClick={() => setPlan(null)}>
+                    {t("cancel")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              !firstRun && (
+                <button className="btn btn-primary w-full" onClick={openPlan}>
+                  <Icon as={Download} /> {t("updateAll")}
+                </button>
+              )
+            )
+          ) : null}
+          <p className="m-0 text-xs text-muted px-0.5">{t("dataNeedsInternet")}</p>
+          <div className="group-list">
+            <Toggle label={t("prebuiltData")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
+          </div>
+          <MoreText text={t("prebuiltDataHint")} className="px-0.5" />
         </div>
         <div className="group-list">
           {DATA_COMPONENTS.map((c) => (
@@ -255,6 +299,7 @@ export function DataPanel() {
               updating={updating}
               paused={paused}
               lang={lang}
+              wanted={isWanted(c, wanted)}
               onUpdate={() => void startUpdate([c])}
               onCancel={() => void cancelUpdate(c)}
               onPause={(p) => void pauseUpdate(p)}
@@ -264,7 +309,7 @@ export function DataPanel() {
                     <label className="flex flex-col gap-1 text-xs text-muted">
                       <span>{t("satelliteSource")}</span>
                       <select
-                        className="input h-9 text-sm w-full min-w-0"
+                        className="input h-9 w-full min-w-0"
                         value={satelliteSource}
                         disabled={updating}
                         onChange={(e) => {
@@ -278,7 +323,7 @@ export function DataPanel() {
                     <label className="flex flex-col gap-1 text-xs text-muted">
                       <span>{t("satelliteQuality")}</span>
                       <select
-                        className="input h-9 text-sm w-full min-w-0"
+                        className="input h-9 w-full min-w-0"
                         value={!ortho && satelliteQuality === "max" ? "high" : satelliteQuality}
                         disabled={updating}
                         onChange={(e) => {
@@ -301,7 +346,7 @@ export function DataPanel() {
                         )}
                       </select>
                     </label>
-                    {ortho && <p className="m-0 text-[11px] leading-snug text-muted">{t("satOrthoNote")}</p>}
+                    {ortho && <MoreText text={t("satOrthoNote")} />}
                   </div>
                 ) : undefined
               }
@@ -323,102 +368,141 @@ export function DataPanel() {
 
       <RegionsSection />
 
+      {/* advanced: transfer to an offline computer, data folder, logs, which components to offer */}
       <div className="flex flex-col gap-2">
-        <h2 className="section-label m-0">{t("offlineTransfer")}</h2>
-        <div className="group-list">
-          <div className="px-3 py-2.5 flex flex-col gap-2">
-            <button className="btn btn-sm btn-primary" disabled={updating} onClick={() => void doDownloadPackage()}>
-              <Download size={14} strokeWidth={1.75} /> {t("downloadPackage")} <bdi dir="ltr" className="num opacity-80">(~420 MB)</bdi>
-            </button>
-            {pkgActive && (
-              <div className="flex flex-col gap-1 fade-in">
-                <div className="flex items-center gap-2 text-xs text-muted">
-                  <span className="flex-1 min-w-0 truncate"><bdi>{pkg?.message}</bdi></span>
-                  {pkgPct !== null && <span className="num shrink-0">{pkgPct}%</span>}
-                  <button className="btn btn-ghost btn-icon btn-sm text-muted shrink-0" title={t("cancel")} aria-label={t("cancel")} onClick={() => void cancelUpdate()}>
-                    <X size={14} strokeWidth={1.75} />
+        <button className="w-full flex items-center gap-2 h-9 px-1 rounded text-muted hover:text-fg transition-colors" aria-expanded={advanced} aria-controls="data-advanced" onClick={() => setAdvanced((v) => !v)}>
+          <Icon as={SlidersHorizontal} />
+          <span className="flex-1 text-start section-label p-0">{t("advanced")}</span>
+          <Icon as={ChevronDown} className={clsx("transition-transform duration-150", advanced && "rotate-180")} />
+        </button>
+        {(advanced || pkgActive || !!pkgFile) && (
+          <div id="data-advanced" className="flex flex-col gap-4 fade-in">
+            <div className="flex flex-col gap-2">
+              <h2 className="section-label m-0">{t("offlineTransfer")}</h2>
+              <div className="group-list">
+                <div className="px-3 py-2.5 flex flex-col gap-2">
+                  <button className="btn btn-sm btn-primary" disabled={updating} onClick={() => void doDownloadPackage()}>
+                    <Icon as={Download} size={14} /> {t("downloadPackage")}
+                  </button>
+                  {pkgActive && (
+                    <div className="flex flex-col gap-1 fade-in">
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span className="flex-1 min-w-0 truncate">
+                          <bdi>{pkg?.message}</bdi>
+                        </span>
+                        {pkgPct !== null && <span className="num shrink-0">{pkgPct}%</span>}
+                        <button className="btn btn-ghost btn-icon btn-sm text-muted shrink-0" aria-label={t("cancel")} onClick={() => void cancelUpdate()}>
+                          <Icon as={X} size={14} />
+                        </button>
+                      </div>
+                      <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pkgPct ?? undefined} aria-label={t("downloadPackage")}>
+                        <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pkgPct === null && "animate-pulse w-1/3")} style={pkgPct !== null ? { width: `${pkgPct}%` } : undefined} />
+                      </div>
+                    </div>
+                  )}
+                  {pkgFile && !pkgActive && (
+                    <div className="flex gap-2 fade-in">
+                      <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void importData(pkgFile)}>
+                        <Icon as={PackageOpen} size={14} /> {t("installDownloaded")}
+                      </button>
+                      <button className="btn btn-sm flex-1" onClick={() => void revealItemInDir(pkgFile).catch(toastError)}>
+                        <Icon as={FolderOpen} size={14} /> {t("showInFolder")}
+                      </button>
+                    </div>
+                  )}
+                  <MoreText text={t("downloadPackageHint")} />
+                </div>
+                {anyPresent && (
+                  <div className="px-3 py-2.5 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2 text-xs text-muted">
+                      <span>{t("exportSelectHint")}</span>
+                      <span className="num">
+                        {compresses ? (
+                          <>
+                            {t("exportSizeEstimate")} <bdi dir="ltr">~{fmtBytes(estimatedBytes)}</bdi> ({t("exportSizeRaw")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>)
+                          </>
+                        ) : (
+                          <>
+                            {t("exportSize")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {present.map((c) => {
+                        const on = !excluded.includes(c);
+                        return (
+                          <button key={c} type="button" className="choice" aria-pressed={on} disabled={updating} onClick={() => setExcluded((x) => (on ? [...x, c] : x.filter((k) => k !== c)))}>
+                            <Icon as={META[c].icon} size={14} />
+                            {t(META[c].label)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="row gap-2">
+                  <button className="btn btn-sm flex-1" disabled={updating || selected.length === 0} onClick={() => void doExport()}>
+                    <Icon as={PackagePlus} size={14} /> {t("exportPackage")}
+                  </button>
+                  <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void doImport()}>
+                    <Icon as={PackageOpen} size={14} /> {t("importPackage")}
                   </button>
                 </div>
-                <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pkgPct ?? undefined}>
-                  <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pkgPct === null && "animate-pulse w-1/3")} style={pkgPct !== null ? { width: `${pkgPct}%` } : undefined} />
-                </div>
               </div>
-            )}
-            {pkgFile && !pkgActive && (
-              <div className="flex gap-2 fade-in">
-                <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void importData(pkgFile)}>
-                  <PackageOpen size={14} strokeWidth={1.75} /> {t("installDownloaded")}
-                </button>
-                <button className="btn btn-sm flex-1" onClick={() => void revealItemInDir(pkgFile).catch(toastError)}>
-                  <FolderOpen size={14} strokeWidth={1.75} /> {t("showInFolder")}
-                </button>
-              </div>
-            )}
-            <p className="m-0 text-xs text-muted">{t("downloadPackageHint")}</p>
-          </div>
-          {anyPresent && (
-            <div className="px-3 py-2.5 flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2 text-xs text-muted">
-                <span>{t("exportSelectHint")}</span>
-                <span className="num">
-                  {compresses ? (
-                    <>
-                      {t("exportSizeEstimate")} <bdi dir="ltr">~{fmtBytes(estimatedBytes)}</bdi> ({t("exportSizeRaw")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>)
-                    </>
-                  ) : (
-                    <>
-                      {t("exportSize")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>
-                    </>
-                  )}
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {present.map((c) => {
-                  const on = !excluded.includes(c);
+              <MoreText text={t("offlineTransferHint")} className="px-0.5" />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <h2 className="section-label m-0">{t("wantedComponents")}</h2>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label={t("wantedComponents")}>
+                {DATA_COMPONENTS.map((c) => {
+                  const on = isWanted(c, wanted);
                   return (
                     <button
                       key={c}
                       type="button"
                       className="choice"
                       aria-pressed={on}
-                      disabled={updating}
-                      onClick={() => setExcluded((x) => (on ? [...x, c] : x.filter((k) => k !== c)))}
+                      onClick={() => {
+                        const cur = wanted ?? [...DATA_COMPONENTS];
+                        const next = on ? cur.filter((x) => x !== c) : [...cur, c];
+                        void updateSettings({ wantedComponents: next.length === DATA_COMPONENTS.length ? null : next });
+                      }}
                     >
-                      {META[c].icon}
+                      <Icon as={META[c].icon} size={14} />
                       {t(META[c].label)}
                     </button>
                   );
                 })}
               </div>
+              <p className="m-0 text-xs text-muted px-0.5">{t("wantedComponentsHint")}</p>
             </div>
-          )}
-          <div className="row gap-2">
-            <button className="btn btn-sm flex-1" disabled={updating || selected.length === 0} onClick={() => void doExport()}>
-              <PackagePlus size={14} strokeWidth={1.75} /> {t("exportPackage")}
-            </button>
-            <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void doImport()}>
-              <PackageOpen size={14} strokeWidth={1.75} /> {t("importPackage")}
-            </button>
-          </div>
-        </div>
-        <p className="m-0 text-xs text-muted px-0.5">{t("offlineTransferHint")}</p>
-      </div>
 
-      {status?.dir && (
-        <div className="flex flex-col gap-2">
-          <h2 className="section-label m-0">{t("dataDir")}</h2>
-          <div className="group-list">
-            <div className="row">
-              <div className="flex-1 min-w-0 text-xs text-muted truncate" dir="ltr" style={{ textAlign: "start" }} title={status.dir}>
-                {status.dir}
+            {status?.dir && (
+              <div className="flex flex-col gap-2">
+                <h2 className="section-label m-0">{t("dataDir")}</h2>
+                <div className="group-list">
+                  <div className="row">
+                    <div className="flex-1 min-w-0 text-xs text-muted truncate selectable" dir="ltr" style={{ textAlign: "start" }}>
+                      {status.dir}
+                    </div>
+                    <button className="btn btn-sm shrink-0" onClick={() => void openDir(status.dir)}>
+                      <Icon as={FolderOpen} size={14} /> {t("openFolder")}
+                    </button>
+                  </div>
+                  <div className="row">
+                    <div className="flex-1 min-w-0 text-xs text-muted">{t("logsHint")}</div>
+                    <button className="btn btn-sm shrink-0" onClick={() => void openLogs()}>
+                      <Icon as={FileText} size={14} /> {t("openLogs")}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button className="btn btn-sm shrink-0" onClick={() => void openDir()}>
-                <FolderOpen size={14} strokeWidth={1.75} /> {t("openFolder")}
-              </button>
-            </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -431,6 +515,7 @@ function ComponentCard({
   updating,
   paused,
   lang,
+  wanted,
   onUpdate,
   onCancel,
   onPause,
@@ -443,14 +528,16 @@ function ComponentCard({
   updating: boolean;
   paused: boolean;
   lang: string;
+  wanted: boolean;
   onUpdate: () => void;
   onCancel: () => void;
   onPause: (paused: boolean) => void;
-  /** Extra controls under the description (satellite quality). */
+  /** Extra controls under the description (satellite source and quality), behind "options". */
   extra?: React.ReactNode;
 }) {
   const t = useT();
   const m = META[id];
+  const [showExtra, setShowExtra] = useState(false);
   const active = prog && !["done", "failed", "cancelled"].includes(prog.phase);
   const running = active && prog!.phase !== "queued";
   const showPaused = !!running && paused;
@@ -458,32 +545,33 @@ function ComponentCard({
   return (
     <div className="flex flex-col gap-2 px-3 py-3">
       <div className="flex items-start gap-3">
-        <span className={clsx("tile", st?.present && "text-fg")}>{m.icon}</span>
+        <span className={clsx("tile", st?.present && "text-fg")}>
+          <Icon as={m.icon} />
+        </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-base font-semibold">{t(m.label)}</span>
+            <span className="font-semibold">{t(m.label)}</span>
             {active ? (
               <span className={clsx("pill", showPaused ? "" : "pill-accent")}>{showPaused ? t("phasePaused") : t(PHASE_KEY[prog!.phase])}</span>
             ) : !st?.present ? (
               <span className="pill">{t("missing")}</span>
-            ) : chk?.available ? (
-              <span className="pill pill-accent" title={chk.remoteVersion}>
-                {t("updateAvailable")}
-              </span>
+            ) : chk?.available && wanted ? (
+              <span className="pill pill-accent">{t("updateAvailable")}</span>
             ) : chk && !chk.error ? (
-              <span className="pill pill-success" title={chk.remoteVersion}>
-                {t("upToDate")}
-              </span>
+              <span className="pill pill-success">{t("upToDate")}</span>
             ) : (
-              <span className="pill pill-success" title={chk?.error}>
-                {st?.loaded && id !== "tiles" ? t("loaded") : t("present")}
-              </span>
+              <span className="pill pill-success">{st?.loaded && id !== "tiles" ? t("loaded") : t("present")}</span>
             )}
           </div>
           <div className="text-xs text-muted mt-0.5">{t(m.desc)}</div>
-          {extra}
+          {extra && (
+            <button className="text-xs text-accent hover:underline underline-offset-2 mt-1" aria-expanded={showExtra} onClick={() => setShowExtra((v) => !v)}>
+              {showExtra ? t("hideOptions") : t("showOptions")}
+            </button>
+          )}
+          {extra && showExtra && extra}
           {st?.present && (
-            <div className="text-xs text-subtle mt-1 truncate num" title={st.version ? `${t("version")}: ${st.version}` : undefined}>
+            <div className="text-xs text-subtle mt-1 truncate num">
               <bdi dir="ltr">{fmtBytes(st.sizeBytes)}</bdi>
               {st.updatedIso && (
                 <>
@@ -491,31 +579,31 @@ function ComponentCard({
                   {t("updated")} <bdi dir="ltr">{fmtDateTime(st.updatedIso, lang)}</bdi>
                 </>
               )}
+              {st.version && <span className="sr-only">{` · ${t("version")}: ${st.version}`}</span>}
             </div>
           )}
         </div>
         {active ? (
           <div className="flex items-center shrink-0 -me-1.5">
             {running && (
-              <button
-                className="btn btn-ghost btn-icon btn-sm text-muted"
-                onClick={() => onPause(!paused)}
-                title={paused ? t("resumeUpdate") : t("pauseUpdate")}
-                aria-label={paused ? t("resumeUpdate") : t("pauseUpdate")}
-              >
-                {paused ? <Play size={14} strokeWidth={2} /> : <Pause size={14} strokeWidth={2} />}
-              </button>
+              <Tip text={paused ? t("resumeUpdate") : t("pauseUpdate")}>
+                <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={() => onPause(!paused)} aria-label={`${paused ? t("resumeUpdate") : t("pauseUpdate")}: ${t(m.label)}`}>
+                  <Icon as={paused ? Play : Pause} size={14} />
+                </button>
+              </Tip>
             )}
-            <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={onCancel} title={t("cancelComponent")} aria-label={t("cancelComponent")}>
-              <X size={15} strokeWidth={2} />
-            </button>
+            <Tip text={t("cancelComponent")}>
+              <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={onCancel} aria-label={`${t("cancelComponent")}: ${t(m.label)}`}>
+                <Icon as={X} size={15} />
+              </button>
+            </Tip>
           </div>
         ) : (
           <button
-            className={clsx("btn btn-sm shrink-0", chk?.available && "btn-primary")}
+            className={clsx("btn btn-sm shrink-0", chk?.available && wanted && "btn-primary")}
             disabled={updating || (!!st?.present && !!chk && !chk.available && !chk.error)}
             onClick={onUpdate}
-            title={st?.present && chk && !chk.available && !chk.error ? t("upToDate") : undefined}
+            aria-label={`${t("update")}: ${t(m.label)}`}
           >
             {t("update")}
           </button>
@@ -523,22 +611,25 @@ function ComponentCard({
       </div>
       {prog && (
         <div className="fade-in ps-11">
-          <div className="flex justify-between gap-2 text-xs mb-1.5">
-            <span
-              className={clsx(prog.phase === "failed" ? "text-danger whitespace-normal break-words justify" : "truncate", prog.phase === "done" ? "text-success" : prog.phase !== "failed" && "text-muted")}
-              title={prog.phase === "failed" ? prog.message : undefined}
-            >
-              {active ? (showPaused ? t("phasePaused") : prog.message || t(PHASE_KEY[prog.phase])) : prog.phase === "failed" && prog.message ? `${t("phaseFailed")}: ${prog.message}` : t(PHASE_KEY[prog.phase])}
-            </span>
-            {pct !== null && active && <span className="text-muted num shrink-0">{pct}%</span>}
-          </div>
-          {active && (
-            <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
-              <div
-                className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pct === null && !showPaused && "animate-pulse w-1/3", pct === null && showPaused && "w-1/3 opacity-50")}
-                style={pct !== null ? { width: `${pct}%` } : undefined}
-              />
-            </div>
+          {prog.phase === "failed" ? (
+            <InfoBar severity="error" title={t("phaseFailed")}>
+              <span className="selectable break-words">{prog.message}</span>
+            </InfoBar>
+          ) : (
+            <>
+              <div className="flex justify-between gap-2 text-xs mb-1.5">
+                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active ? (showPaused ? t("phasePaused") : prog.message || t(PHASE_KEY[prog.phase])) : t(PHASE_KEY[prog.phase])}</span>
+                {pct !== null && active && <span className="text-muted num shrink-0">{pct}%</span>}
+              </div>
+              {active && (
+                <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined} aria-label={t(m.label)}>
+                  <div
+                    className={clsx("h-full bg-accent rounded-full transition-[width] duration-300 ease-out", pct === null && !showPaused && "animate-pulse w-1/3", pct === null && showPaused && "w-1/3 opacity-50")}
+                    style={pct !== null ? { width: `${pct}%` } : undefined}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

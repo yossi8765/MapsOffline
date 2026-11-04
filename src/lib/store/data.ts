@@ -20,6 +20,8 @@ export interface DataSlice {
   pauseUpdate: (paused: boolean) => Promise<void>;
 }
 
+let statusErrorShown = false;
+
 export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
   dataStatus: null,
   dataCheck: null,
@@ -31,7 +33,11 @@ export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
       const dataStatus = await api.dataStatus();
       set({ dataStatus });
     } catch (e) {
-      console.warn("data_status failed", e);
+      // once per session: the panel would otherwise look empty without a word
+      if (!statusErrorShown) {
+        statusErrorShown = true;
+        get().toastError(e);
+      }
     }
   },
   checkUpdates: async (force = false) => {
