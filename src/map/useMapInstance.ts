@@ -14,7 +14,7 @@ import { shieldImage } from "./icons";
 import { MAPLIBRE_HE } from "./locale";
 
 let protocolRegistered = false;
-function ensureProtocol() {
+export function ensureProtocol() {
   if (protocolRegistered) return;
   maplibregl.setWorkerUrl(maplibreWorkerUrl);
   const protocol = new Protocol();
@@ -26,28 +26,36 @@ function ensureProtocol() {
 export interface MapInstanceOptions {
   /** The style the map is created with (read once). */
   initialStyle: () => StyleSpecification;
-  /** UI language at creation: control texts and the side the controls go to. */
+  /** UI language: control texts and the side the controls go to (followed at runtime). */
   lang: string;
+  /** "metric" | "imperial": the scale bar (followed at runtime). */
+  units: string;
+  /** Create the map only once this is true (report ד-7: after the tiles URL is known, so the
+   *  first style is already the right one and is not rebuilt right away). */
+  enabled: boolean;
   /** Extra event wiring, once, right after the map is created. */
   onCreate: (map: maplibregl.Map) => void;
-  /** After every style (re)load: add the overlays. */
+  /** After every full style (re)load: add the overlays. */
   onStyleLoad: (map: maplibregl.Map) => void;
 }
 
+/** Press-and-hold on a touch screen opens the context menu (report ג-30). */
+const LONG_PRESS_MS = 550;
+
 /**
  * Create the MapLibre map once: start view (last view when allowed), controls, gestures,
- * context menu, view tracking, road-shield images. `mapReady` turns true after each style load
- * (set it false before a setStyle); `cursor` is the pointer position for the coordinate readout.
+ * context menu, view tracking, road-shield images. `mapReady` turns true after the first style
+ * load (style updates are diffed afterwards and keep it true).
  */
 export function useMapInstance(containerRef: RefObject<HTMLDivElement | null>, opts: MapInstanceOptions) {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [cursor, setCursor] = useState<LonLat | null>(null);
   const optsRef = useRef(opts);
   optsRef.current = opts;
+  const controls = useRef<{ nav?: maplibregl.NavigationControl; attrib?: maplibregl.AttributionControl; scale?: maplibregl.ScaleControl; side?: string; lang?: string; defaultLocale?: Record<string, string> }>({});
 
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
+    if (!opts.enabled || !containerRef.current || mapRef.current) return;
     ensureProtocol();
     const o = optsRef.current;
     // last map view (when the setting allows it; mirrored in localStorage for this early read)
@@ -66,18 +74,12 @@ export function useMapInstance(containerRef: RefObject<HTMLDivElement | null>, o
       maxBounds: MAX_BOUNDS,
       attributionControl: false,
       canvasContextAttributes: { antialias: true },
-      // MapLibre's own control tooltips / aria labels in the UI language
-      locale: o.lang === "he" ? MAPLIBRE_HE : {},
+      // control texts: set per UI language by the controls effect below
     });
     mapRef.current = map;
     const detachGestures = attachWheelGestures(map, getScrollMode);
-    // The sidebar floats on the start side (right in Hebrew); every map control goes to the
-    // other side so the panel never hides it (the OSM attribution is a licence requirement).
-    const freeSide = o.lang === "he" ? "left" : "right";
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), `top-${freeSide}`);
-    map.addControl(new maplibregl.AttributionControl({ compact: true }), `bottom-${freeSide}`);
-    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), `bottom-${freeSide}`);
-    map.on("mousemove", (e) => setCursor([e.lngLat.lng, e.lngLat.lat]));
+    // two-finger rotation on touch screens (pinch zoom stays)
+    map.touchZoomRotate.enableRotation();
     map.on("moveend", () => useStore.getState().setMapView([map.getCenter().lng, map.getCenter().lat], map.getZoom()));
     map.on("contextmenu", (e) => {
       e.preventDefault();
@@ -86,6 +88,20 @@ export function useMapInstance(containerRef: RefObject<HTMLDivElement | null>, o
     map.on("click", () => {
       useStore.getState().setContextMenu(null);
     });
+    // long press (touch): the context menu, as a right click does with a mouse
+    let press: ReturnType<typeof setTimeout> | undefined;
+    const cancelPress = () => press && clearTimeout(press);
+    map.on("touchstart", (e) => {
+      cancelPress();
+      if (e.originalEvent.touches.length !== 1) return;
+      press = setTimeout(() => {
+        useStore.getState().setContextMenu({ x: e.point.x, y: e.point.y, lon: e.lngLat.lng, lat: e.lngLat.lat });
+      }, LONG_PRESS_MS);
+    });
+    map.on("touchend", cancelPress);
+    map.on("touchcancel", cancelPress);
+    map.on("touchmove", cancelPress);
+    map.on("movestart", cancelPress);
     o.onCreate(map);
     map.on("style.load", () => {
       optsRef.current.onStyleLoad(map);
@@ -110,12 +126,46 @@ export function useMapInstance(containerRef: RefObject<HTMLDivElement | null>, o
       console.warn("map error", e?.error?.message ?? e);
     });
     return () => {
+      cancelPress();
       detachGestures();
       map.remove();
       mapRef.current = null;
+      controls.current = {};
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [opts.enabled]);
 
-  return { mapRef, mapReady, setMapReady, cursor };
+  // ---- controls: on the side the sidebar leaves free, in the UI language and units (report א-11;
+  // they used to be fixed at creation, so switching to English hid them under the panel)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const c = controls.current;
+    const side = opts.lang === "he" ? "left" : "right";
+    if (c.side !== side || c.lang !== opts.lang) {
+      if (c.nav) map.removeControl(c.nav);
+      if (c.attrib) map.removeControl(c.attrib);
+      if (c.scale) map.removeControl(c.scale);
+      // MapLibre's own control texts (zoom in / out, compass) in the UI language: the map reads
+      // them from its (private) `_locale` when a control is built
+      const m = map as unknown as { _locale: Record<string, string> };
+      c.defaultLocale ??= { ...m._locale };
+      m._locale = opts.lang === "he" ? { ...c.defaultLocale, ...MAPLIBRE_HE } : { ...c.defaultLocale };
+      c.nav = new maplibregl.NavigationControl({ visualizePitch: true });
+      // compact = the "i" button; the full credits open on click (the short credit line in
+      // MapView links to the About section), so it never covers the map (report א-4)
+      c.attrib = new maplibregl.AttributionControl({ compact: true });
+      c.scale = new maplibregl.ScaleControl({ maxWidth: 120, unit: opts.units === "imperial" ? "imperial" : "metric" });
+      map.addControl(c.nav, `top-${side}`);
+      map.addControl(c.attrib, `bottom-${side}`);
+      map.addControl(c.scale, `bottom-${side}`);
+      c.side = side;
+      c.lang = opts.lang;
+      // start collapsed (MapLibre opens a compact attribution on wide maps)
+      requestAnimationFrame(() => map.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
+    }
+    c.scale?.setUnit(opts.units === "imperial" ? "imperial" : "metric");
+  }, [opts.lang, opts.units, mapReady]);
+
+  return { mapRef, mapReady, setMapReady };
 }

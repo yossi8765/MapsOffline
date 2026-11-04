@@ -10,15 +10,14 @@ export const SRC_POIS = "poi-layer";
 export const POIS_MIN_ZOOM = 11;
 export const POIS_LIMIT = 1500;
 
-/** A POI marker's GeoResult (kept as JSON in the feature), its category as the picker's label. */
-export function parseResult(json: unknown, label: string): GeoResult | undefined {
-  if (typeof json !== "string") return undefined;
-  try {
-    const r = JSON.parse(json) as GeoResult;
-    return { ...r, category: r.categoryLabel || label || r.category };
-  } catch {
-    return undefined;
-  }
+/** The full search results of the markers now on the map, by feature `rid` (report ד-3: the
+ *  features carry only the id, not the whole result serialised as JSON for the map worker). */
+const results = new Map<string, GeoResult>();
+
+/** A POI marker's GeoResult, its category as the picker's label. */
+export function resultOf(rid: unknown, label: string): GeoResult | undefined {
+  const r = typeof rid === "string" ? results.get(rid) : undefined;
+  return r ? { ...r, category: r.categoryLabel || label || r.category } : undefined;
 }
 
 export function add(map: maplibregl.Map, beforeId: string | undefined, dark: boolean): void {
@@ -58,10 +57,13 @@ export function add(map: maplibregl.Map, beforeId: string | undefined, dark: boo
 
 /** Marker features of the POIs that belong to one of the selected picker categories. */
 export function poiFeatures(pois: GeoResult[], selectedCats: PoiCategory[], t: (k: I18nKey) => string): Feature[] {
+  results.clear();
   return pois.flatMap((p) => {
     const c = categoryOf(p.category ?? "", p.name, selectedCats);
     if (!c) return [];
-    return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label), color: c.color, rank: -(p.score ?? 0), json: JSON.stringify(p) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
+    const rid = p.id || `${p.lon},${p.lat}`;
+    results.set(rid, p);
+    return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label), color: c.color, rank: -(p.score ?? 0), rid }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
   });
 }
 

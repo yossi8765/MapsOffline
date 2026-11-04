@@ -1,9 +1,11 @@
+import { useRef } from "react";
 import { X } from "lucide-react";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDistance } from "../lib/format";
 import { categoryOf, POI_CATEGORIES } from "../lib/poiCategories";
 import { kindIcon } from "./SearchBox";
+import { useDialog } from "../lib/useDialog";
 
 /** Search radii offered in the list (metres). */
 const RADII = [300, 600, 1000, 2000, 5000];
@@ -14,8 +16,11 @@ const RADII = [300, 600, 1000, 2000, 5000];
  *  popover's spot. */
 export function NearbyList() {
   const t = useT();
-  const nearby = useStore((s) => s.nearby);
+  const nearby = useStore((s) => (s.mapPopover === "nearby" ? s.nearby : null));
   const units = useStore((s) => s.settings.units);
+  const ref = useRef<HTMLDivElement>(null);
+  // focus inside, Tab trap, Escape closes (report ב-3: the list used to ignore Escape)
+  useDialog(ref, () => useStore.getState().closeNearby(), { active: !!nearby });
   if (!nearby) return null;
   const { lon, lat, radius, cat } = nearby;
   const close = () => useStore.getState().closeNearby();
@@ -23,7 +28,7 @@ export function NearbyList() {
   const distM = (x: number, y: number) => Math.hypot((x - lon) * Math.cos((lat * Math.PI) / 180), y - lat) * 111_320;
   const kinds = [...POI_CATEGORIES].sort((a, b) => t(a.label).localeCompare(t(b.label), "he"));
   return (
-    <div role="dialog" aria-label={t("nearbyTitle")} className="absolute top-3 end-[64px] z-30 w-[340px] max-h-[calc(100%-24px)] popover rounded-[var(--radius)] flex flex-col overflow-hidden no-print fade-in">
+    <div ref={ref} role="dialog" aria-label={t("nearbyTitle")} className="map-popover absolute top-3 end-[64px] z-30 w-[340px] max-h-[calc(100%-24px)] popover rounded-[var(--radius)] flex flex-col overflow-hidden no-print fade-in">
       <div className="flex items-center justify-between ps-4 pe-2 h-12 shrink-0">
         <h2 className="text-base font-semibold m-0">{t("nearbyTitle")}</h2>
         <button className="btn btn-ghost btn-icon btn-sm text-muted" onClick={close} aria-label={t("close")} title={t("close")}>

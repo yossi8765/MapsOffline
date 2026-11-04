@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 import { Flag, Navigation } from "lucide-react";
 import { api, type GeoResult, type LonLat, type Minyan } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -28,11 +28,13 @@ interface Props {
   onEnter: () => void;
   onLeave: () => void;
   onClose: () => void;
+  /** receives the card element (the hover hook moves a pinned card with the map through it) */
+  elRef?: MutableRefObject<HTMLDivElement | null>;
 }
 
 /** Desktop hover card next to a map marker (hebrew-maps / Google style): the name and kind right
  *  away from the feature, a stop's next departures a moment later, and route buttons. */
-export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
+export function MapHoverCard({ target, onEnter, onLeave, onClose, elRef }: Props) {
   const t = useT();
   const [next, setNext] = useState<{ line: string; color?: string; min: number; headsign: string }[] | null>(null);
   const synagogue = target.kind === "poi" && isSynagogue(target.result?.category, target.sub);
@@ -92,18 +94,22 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
     onClose();
   };
 
-  // place the card beside the marker, flipped when it would leave the map
-  const W = 260;
-  const host = document.querySelector(".maplibregl-map") as HTMLElement | null;
-  const hw = host?.clientWidth ?? window.innerWidth;
-  const hh = host?.clientHeight ?? window.innerHeight;
-  const left = Math.min(Math.max(8, target.x + 16 + W > hw ? target.x - 16 - W : target.x + 16), hw - W - 8);
-  const top = Math.min(Math.max(8, target.y - 24), hh - 180);
+  // place the card beside the marker (measured height: a stop with departures or a synagogue
+  // with prayers is taller than the first guess), again whenever its content grows
+  const ownRef = useRef<HTMLDivElement | null>(null);
+  const setEl = (el: HTMLDivElement | null) => {
+    ownRef.current = el;
+    if (elRef) elRef.current = el;
+  };
+  useLayoutEffect(() => {
+    if (ownRef.current) placeHoverCard(ownRef.current, target.x, target.y);
+  }, [target.x, target.y, next, prayers]);
 
   return (
     <div
+      ref={setEl}
       className="absolute z-30 popover rounded-[var(--radius)] p-3 flex flex-col gap-2 fade-in no-print"
-      style={{ left, top, width: W }}
+      style={{ left: target.x + 16, top: Math.max(8, target.y - 24), width: CARD_W }}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       role="dialog"
@@ -161,6 +167,22 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose }: Props) {
       </button>
     </div>
   );
+}
+
+const CARD_W = 260;
+
+/** Put the card beside the marker at (x, y) (map container pixels), flipped to the other side or
+ *  pushed up when it would leave the map. Called on open, when its content changes height, and by
+ *  the hover hook on every map move of a pinned card (no React render per frame, report ד-4). */
+export function placeHoverCard(el: HTMLElement, x: number, y: number): void {
+  const host = el.parentElement ?? document.body;
+  const hw = host.clientWidth || window.innerWidth;
+  const hh = host.clientHeight || window.innerHeight;
+  const h = el.offsetHeight || 180;
+  const left = Math.min(Math.max(8, x + 16 + CARD_W > hw ? x - 16 - CARD_W : x + 16), hw - CARD_W - 8);
+  const top = Math.max(8, Math.min(y - 24, hh - h - 8));
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
 }
 
 /** A synagogue by its category (search label, picker label or raw OSM id). */

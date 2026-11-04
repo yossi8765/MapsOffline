@@ -1,6 +1,34 @@
+import clsx from "clsx";
+import { AppWindow, Columns2, FileUp, Grid2x2, Layers3, Pencil, Ruler, Route as RouteIcon } from "lucide-react";
 import { useStore, type MapLayers } from "../lib/store";
 import { useT } from "../lib/i18n";
-import { Toggle } from "./RoutePanel";
+
+/** A layer switch; disabled (with a link to the Data panel) while its data is not installed
+ *  (report ב-23: the switch used to turn on and show nothing). */
+function LayerToggle({ label, checked, onChange, missing }: { label: string; checked: boolean; onChange: (v: boolean) => void; missing?: boolean }) {
+  const t = useT();
+  return (
+    <div className={clsx("row justify-between", missing && "opacity-80")}>
+      <span className="flex flex-col min-w-0">
+        <span className={clsx("text-base", missing && "text-muted")}>{label}</span>
+        {missing && (
+          <button
+            type="button"
+            className="text-xs text-accent text-start hover:underline w-fit"
+            onClick={() => {
+              const s = useStore.getState();
+              s.setMapPopover(null);
+              s.setPanel("data");
+            }}
+          >
+            {t("layerNeedsData")}
+          </button>
+        )}
+      </span>
+      <button type="button" role="switch" aria-checked={checked && !missing} aria-label={label} aria-disabled={missing} disabled={missing} className="switch" onClick={() => onChange(!checked)} />
+    </div>
+  );
+}
 
 export function LayersPanel() {
   const t = useT();
@@ -9,29 +37,37 @@ export function LayersPanel() {
   const stopsUnavailable = useStore((s) => s.transitStopsUnavailable);
   const satelliteUrl = useStore((s) => s.satelliteUrl);
   const terrainUrl = useStore((s) => s.terrainUrl);
+  const trailsInstalled = useStore((s) => s.dataStatus?.trails?.present ?? true);
+  const transitInstalled = useStore((s) => s.dataStatus?.transit?.present ?? true);
+  const userCount = useStore((s) => s.userLayers.length);
+  const customCount = useStore((s) => (s.settings.customLayers ?? []).filter((c) => c.visible).length);
+  const recording = useStore((s) => s.track.recording);
+  const compare = useStore((s) => s.compare);
+  const noTerrain = !terrainUrl;
+  const st = useStore.getState();
+  const tool = (run: () => void) => () => {
+    st.setMapPopover(null);
+    run();
+  };
 
   return (
     <div className="px-4 pb-4 flex flex-col gap-5">
       <section className="flex flex-col gap-2">
         <div className="group-list">
-          <Toggle label={t("layerSatellite")} checked={layers.satellite} onChange={(v) => setLayers({ satellite: v })} />
-          <Toggle label={t("layerHillshade")} checked={layers.hillshade} onChange={(v) => setLayers({ hillshade: v })} />
-          <Toggle label={t("layerTerrain3d")} checked={layers.terrain3d} onChange={(v) => setLayers({ terrain3d: v })} />
-          <Toggle label={t("layer3d")} checked={layers.buildings3d} onChange={(v) => setLayers({ buildings3d: v })} />
-          <Toggle label={t("layerPoi")} checked={layers.poi} onChange={(v) => setLayers({ poi: v })} />
-          <Toggle label={t("layerTransit")} checked={layers.transitStops} onChange={(v) => setLayers({ transitStops: v })} />
-          <Toggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
-          <Toggle label={t("contours")} checked={layers.contours} onChange={(v) => setLayers({ contours: v })} />
-          <Toggle label={t("trails")} checked={layers.trails} onChange={(v) => setLayers({ trails: v })} />
+          <LayerToggle label={t("layerSatellite")} checked={layers.satellite} missing={!satelliteUrl} onChange={(v) => setLayers({ satellite: v })} />
+          <LayerToggle label={t("layerHillshade")} checked={layers.hillshade} missing={noTerrain} onChange={(v) => setLayers({ hillshade: v })} />
+          <LayerToggle label={t("layerTerrain3d")} checked={layers.terrain3d} missing={noTerrain} onChange={(v) => setLayers({ terrain3d: v })} />
+          <LayerToggle label={t("layer3d")} checked={layers.buildings3d} onChange={(v) => setLayers({ buildings3d: v })} />
+          <LayerToggle label={t("layerPoi")} checked={layers.poi} onChange={(v) => setLayers({ poi: v })} />
+          <LayerToggle label={t("layerTransit")} checked={layers.transitStops} missing={!transitInstalled} onChange={(v) => setLayers({ transitStops: v })} />
+          <LayerToggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
+          <LayerToggle label={t("contours")} checked={layers.contours} missing={noTerrain} onChange={(v) => setLayers({ contours: v })} />
+          <LayerToggle label={t("trails")} checked={layers.trails} missing={!trailsInstalled} onChange={(v) => setLayers({ trails: v })} />
         </div>
-        {layers.satellite && (
-          <p className="m-0 text-xs text-muted px-0.5 fade-in">{satelliteUrl ? t("layerSatelliteHint") : t("layerSatelliteMissing")}</p>
-        )}
-        {(layers.hillshade || layers.terrain3d) && (
-          <p className="m-0 text-xs text-muted px-0.5 fade-in">{terrainUrl ? t("layerTerrainHint") : t("layerTerrainMissing")}</p>
-        )}
+        {layers.satellite && satelliteUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerSatelliteHint")}</p>}
+        {(layers.hillshade || layers.terrain3d) && terrainUrl && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerTerrainHint")}</p>}
         {layers.buildings3d && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layer3dHint")}</p>}
-        {layers.transitStops && (
+        {layers.transitStops && transitInstalled && (
           <p className="m-0 text-xs text-muted px-0.5 fade-in">{stopsUnavailable ? t("layerTransitHint") : t("layerTransitZoomHint")}</p>
         )}
       </section>
@@ -71,6 +107,44 @@ export function LayersPanel() {
               <span>{t(l === "he" ? "langHe" : l === "en" ? "langEn" : "langAr")}</span>
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="section-label m-0">{t("myLayersSection")}</h2>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button className="btn btn-sm justify-start" onClick={() => st.setMapPopover("userLayers")}>
+            <Layers3 size={14} /> {t("userLayersTitle")}
+            {userCount > 0 && <span className="num text-xs text-muted ms-auto">{userCount}</span>}
+          </button>
+          <button className="btn btn-sm justify-start" onClick={() => st.setMapPopover("customLayers")}>
+            <Grid2x2 size={14} /> {t("customLayersTitle")}
+            {customCount > 0 && <span className="num text-xs text-muted ms-auto">{customCount}</span>}
+          </button>
+          <button className="btn btn-sm justify-start" onClick={tool(() => st.openImport())}>
+            <FileUp size={14} /> {t("importTitle")}
+          </button>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="section-label m-0">{t("toolsSection")}</h2>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button className="btn btn-sm justify-start" onClick={tool(() => st.startMeasure())}>
+            <Ruler size={14} /> {t("measureTitle")}
+          </button>
+          <button className="btn btn-sm justify-start" onClick={tool(() => st.startDrawing())}>
+            <Pencil size={14} /> {t("drawTitle")}
+          </button>
+          <button className={clsx("btn btn-sm justify-start", recording && "text-danger")} onClick={tool(() => st.toggleTrackRecording())}>
+            <RouteIcon size={14} /> {recording ? t("trackStop") : t("trackStart")}
+          </button>
+          <button className={clsx("btn btn-sm justify-start", compare !== "off" && "text-accent")} onClick={tool(() => st.setCompare(compare === "off" ? "swipe" : "off"))}>
+            <Columns2 size={14} /> {t("compareTitle")}
+          </button>
+          <button className="btn btn-sm justify-start" onClick={tool(() => st.openMapWindow())}>
+            <AppWindow size={14} /> {t("mapWindowOpen")}
+          </button>
         </div>
       </section>
     </div>

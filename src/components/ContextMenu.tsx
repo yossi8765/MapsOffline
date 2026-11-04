@@ -1,30 +1,50 @@
 import { useEffect, useRef } from "react";
-import { Copy, ExternalLink, Flag, Info, MapPin, Navigation, Radar, Star } from "lucide-react";
+import { Ban, Copy, ExternalLink, FileUp, Flag, Info, MapPin, Navigation, Radar, Ruler, Star, Timer } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
 import { findFavorite, useStore, type ContextMenuState } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { copyText, fmtCoords } from "../lib/format";
+import { formatCoord } from "../lib/coords";
+import { useMenuKeys } from "../lib/useDialog";
+import type { IsochroneMode } from "../lib/store/map";
 
 export function ContextMenu({ state }: { state: ContextMenuState }) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const close = () => useStore.getState().setContextMenu(null);
   const point = { lon: state.lon, lat: state.lat, label: fmtCoords(state.lon, state.lat) };
+  // the coordinates as shown / copied: in the format chosen in Settings (decimal, DMS, ITM, UTM)
+  const coordFormat = useStore((s) => s.settings.coordFormat ?? "dd");
+  const coordText = formatCoord(state.lon, state.lat, coordFormat);
+  // arrow keys / Home / End move between the items (report ב-3)
+  useMenuKeys(ref);
+  const routeMode = useStore((s) => s.mode);
+  const isoMode: IsochroneMode = routeMode === "foot" || routeMode === "bike" || routeMode === "transit" || routeMode === "wheelchair" ? routeMode : "car";
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      }
+    };
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
   }, []);
 
   // keep inside viewport
   const style: React.CSSProperties = { left: state.x, top: state.y };
   if (typeof window !== "undefined") {
-    if (state.x + 220 > window.innerWidth) style.left = state.x - 220;
-    if (state.y + 300 > window.innerHeight) style.top = Math.max(8, state.y - 300);
+    if (state.x + 230 > window.innerWidth) style.left = state.x - 230;
+    if (state.y + 470 > window.innerHeight) style.top = Math.max(8, window.innerHeight - 470);
   }
 
   const resolveLabel = async () => {
@@ -93,16 +113,44 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     },
     {
       group: 2,
+      icon: <Ruler size={16} strokeWidth={1.75} />,
+      label: t("ctxMeasure"),
+      run: async () => useStore.getState().startMeasure([state.lon, state.lat]),
+    },
+    {
+      group: 2,
+      icon: <Timer size={16} strokeWidth={1.75} />,
+      label: t("ctxIsochrone"),
+      run: async () => useStore.getState().showIsochrone([state.lon, state.lat], isoMode),
+    },
+    {
+      group: 2,
+      icon: <Ban size={16} strokeWidth={1.75} />,
+      label: t("ctxAvoidArea"),
+      run: async () => {
+        const s = useStore.getState();
+        s.startDrawing("avoid");
+        s.addDrawPoint([state.lon, state.lat]);
+      },
+    },
+    {
+      group: 2,
+      icon: <FileUp size={16} strokeWidth={1.75} />,
+      label: t("ctxImport"),
+      run: async () => useStore.getState().openImport(),
+    },
+    {
+      group: 3,
       icon: <Copy size={16} strokeWidth={1.75} />,
       label: t("ctxCopyCoords"),
       run: async () => {
-        if (await copyText(point.label)) useStore.getState().toast("success", t("copied"));
+        if (await copyText(coordText)) useStore.getState().toast("success", t("copied"));
       },
     },
     ...(online
       ? [
           {
-            group: 2,
+            group: 3,
             icon: <ExternalLink size={16} strokeWidth={1.75} />,
             label: t("ctxOpenGoogle"),
       run: async () => {
@@ -118,7 +166,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
         ]
       : []),
     {
-      group: 2,
+      group: 3,
       icon: <Star size={16} strokeWidth={1.75} />,
       label: t("ctxAddFavorite"),
       run: async () => {
@@ -139,18 +187,20 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
     <div
       ref={ref}
       role="menu"
-      className="absolute z-30 popover rounded-[var(--radius-card)] p-1 w-[220px] fade-in no-print"
+      aria-label={t("ctxMenuLabel")}
+      className="absolute z-30 popover rounded-[var(--radius-card)] p-1 w-[230px] fade-in no-print"
       style={style}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="px-2.5 pt-1.5 pb-2 text-xs text-subtle num selectable">
-        <bdi dir="ltr">{point.label}</bdi>
+        <bdi dir="ltr">{coordText}</bdi>
       </div>
       {items.map((it, i) => (
         <div key={it.label}>
           {(i === 0 || items[i - 1].group !== it.group) && <div className="h-px bg-line my-1 -mx-1" />}
           <button
             role="menuitem"
+            tabIndex={-1}
             className="w-full flex items-center gap-2.5 px-2.5 h-8 rounded text-start text-sm hover:bg-hover focus-visible:bg-hover transition-colors duration-100"
             onClick={() => {
               close();

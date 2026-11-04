@@ -983,3 +983,127 @@
 }
 
 /* ===== [F2] map styles ===== */
+
+/* Trip pins without Latin letters (report א-12): origin = ring, destination = flag, stops = numbers */
+.wp-marker.wp-start span,
+.wp-marker.wp-end span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wp-marker.wp-start span svg,
+.wp-marker.wp-end span svg {
+  display: block;
+}
+
+/* the same glyphs on paper (PrintSheet) */
+.print-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.print-pin-start {
+  background: var(--accent);
+}
+.print-pin-end {
+  background: var(--danger);
+}
+.print-pin-via {
+  background: #6b7280;
+}
+
+/* while navigating the trip bar sits at the bottom: no credits under it (report א-4) */
+.map-root.navigating .maplibregl-ctrl-attrib,
+.map-root.navigating .maplibregl-ctrl-scale {
+  display: none;
+}
+
+/* map tool bars and the recording indicator */
+.tool-bar .seg button {
+  white-space: nowrap;
+}
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+
+/* "Preparing the map…" while the print picture renders (lib/print.ts) */
+.print-preparing {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  color: var(--fg);
+  font-size: 14px;
+}
+.print-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: print-spin 0.8s linear infinite;
+}
+@keyframes print-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dark map: the stock minor roads hardly differ from the land and the buildings (report א-15);
+ *  the overlays' casing / halo use the dark map's own neutral tone instead of navy. */
+:root {
+  --map-casing-night: #15181d;
+  --map-halo-night: #15181d;
+}
+
+/* Touch screens (report ג-30): bigger targets for the map buttons and the tool bars */
+@media (pointer: coarse) {
+  .map-root .maplibregl-ctrl-group button {
+    width: 40px;
+    height: 40px;
+  }
+  .map-popover .btn,
+  .tool-bar .btn,
+  .tool-bar .seg button {
+    min-height: 40px;
+  }
+  .map-popover .switch {
+    transform: scale(1.15);
+  }
+  .wp-marker {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+/* the second map of the compare view */
+.compare-map .maplibregl-ctrl-bottom-left,
+.compare-map .maplibregl-ctrl-bottom-right {
+  display: none;
+}

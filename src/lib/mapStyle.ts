@@ -1,5 +1,6 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from "maplibre-gl";
+import type { CustomLayer } from "./api";
 
 export const ISRAEL_BBOX: [number, number, number, number] = [34.2, 29.45, 35.95, 33.35];
 export const MAX_BOUNDS: [[number, number], [number, number]] = [
@@ -41,6 +42,8 @@ export interface StyleOptions {
   /** Marked trails (GeoJSON written by the data update) – drawn when `trails` or topo. */
   trailsUrl?: string | null;
   trails?: boolean;
+  /** User tile layers (Settings.customLayers), served by the backend at mo-user.localhost. */
+  customLayers?: CustomLayer[];
 }
 
 export type MapTheme = "standard" | "cycle" | "transit" | "topo";
@@ -94,35 +97,52 @@ function contourLayers(dark: boolean, lang: string): LayerSpecification[] {
   ];
 }
 
+/** Trail networks drawn already at zoom 9–11 (national / regional); every trail from zoom 11.
+ *  Below that the ~2,000 local trails covered the hills like scribbles (report א-13). */
+export const TRAILS_LONG_NETWORKS = ["nwn", "ncn", "iwn", "icn", "rwn", "rcn"];
+export const TRAILS_MINZOOM = 11;
+
 /** Marked trails in their sign colour: white casing, dashed for cycling routes, name in colour. */
-function trailLayers(): LayerSpecification[] {
+export function trailLayers(): LayerSpecification[] {
   const color: ExpressionSpecification = ["match", ["get", "colour"], ...Object.entries(TRAIL_COLORS).flat(), "#d6332b"] as unknown as ExpressionSpecification;
   const bike: ExpressionSpecification = ["in", ["get", "route"], ["literal", ["bicycle", "mtb"]]];
+  const long: ExpressionSpecification = ["any", ["in", ["get", "network"], ["literal", TRAILS_LONG_NETWORKS]], ["in", "שביל ישראל", ["to-string", ["get", "name"]]]];
+  const width = (a: number, b: number, c: number): ExpressionSpecification => ["interpolate", ["linear"], ["zoom"], 9, a, 14, b, 17, c];
   return [
+    {
+      id: "trails-long",
+      type: "line",
+      source: "trails",
+      minzoom: 9,
+      maxzoom: TRAILS_MINZOOM,
+      filter: long,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": color, "line-width": width(1.2, 2.5, 4), "line-opacity": 0.5 },
+    },
     {
       id: "trails-casing",
       type: "line",
       source: "trails",
-      minzoom: 9,
+      minzoom: TRAILS_MINZOOM,
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": "#ffffff", "line-opacity": 0.85, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 2.5, 14, 5, 17, 7] },
+      paint: { "line-color": "#ffffff", "line-opacity": 0.85, "line-width": width(2.5, 5, 7) },
     },
     {
       id: "trails",
       type: "line",
       source: "trails",
-      minzoom: 9,
+      minzoom: TRAILS_MINZOOM,
       filter: ["!", bike],
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": color, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.2, 14, 2.5, 17, 4] },
+      paint: { "line-color": color, "line-width": width(1.2, 2.5, 4) },
     },
     {
       id: "trails-bike",
       type: "line",
       source: "trails",
-      minzoom: 9,
+      minzoom: TRAILS_MINZOOM,
       filter: bike,
-      paint: { "line-color": color, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.2, 14, 2.5, 17, 4], "line-dasharray": [2, 1.5] },
+      paint: { "line-color": color, "line-width": width(1.2, 2.5, 4), "line-dasharray": [2, 1.5] },
     },
     {
       id: "trails-label",
@@ -237,10 +257,30 @@ export function isMergedTiles(url: string | null | undefined): boolean {
   return !!url && url.startsWith(MERGED_TILES_PREFIX);
 }
 
+/** Dark-flavour road colours with more contrast against the land (#1f1f1f) and the buildings: the
+ *  stock minor roads (#333–#3d3d3d) were hardly visible at street zoom (report א-15). */
+export const DARK_ROADS = {
+  other: "#41444a",
+  minor_service: "#43464c",
+  minor_a: "#50535a",
+  minor_b: "#474a50",
+  link: "#50535a",
+  major: "#555860",
+  highway: "#62656d",
+  bridges_other: "#41444a",
+  bridges_minor: "#474a50",
+  bridges_link: "#50535a",
+  bridges_major: "#555860",
+  bridges_highway: "#62656d",
+  buildings: "#18191b",
+} as const;
+
 export function flavorFor(name: FlavorName): Flavor {
   const f = namedFlavor(name);
   // design: the stock light-flavor cyan sea is loud next to the neutral UI; use a calmer blue.
-  return name === "light" ? { ...f, water: "#aacbe0" } : f;
+  if (name === "light") return { ...f, water: "#aacbe0" };
+  if (name === "dark") return { ...f, ...DARK_ROADS };
+  return f;
 }
 
 /** Build the full MapLibre style. Without tiles the map is only a background. */
@@ -318,6 +358,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     base.layers.push(...worldLayers);
     if (sat) base.layers.push(satelliteLayer());
     if (dem && hillshade) base.layers.push(hillshadeLayer());
+    base.layers.push(...customRasterLayers((o.customLayers ?? []).filter((c) => c.visible), base));
     return base;
   }
 
@@ -426,8 +467,15 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     putOverlay(contourLayers(o.flavor === "dark", o.lang));
   }
   if (o.trailsUrl && (o.trails || topo)) {
-    base.sources.trails = { type: "geojson", data: o.trailsUrl, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>' };
+    // coarser tiling of the 5–6 MB file: fewer vertices per tile, no tiles beyond zoom 14
+    base.sources.trails = { type: "geojson", data: o.trailsUrl, tolerance: 0.6, buffer: 32, maxzoom: 14, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>' };
     putOverlay(trailLayers());
+  }
+  // User tile layers: over the imagery and the land, under the roads and labels, in list order
+  const custom = (o.customLayers ?? []).filter((c) => c.visible);
+  if (custom.length) {
+    const firstLine = ls.findIndex((l) => l.type === "line" || l.type === "symbol");
+    ls.splice(firstLine < 0 ? ls.length : firstLine, 0, ...customRasterLayers(custom, base));
   }
   // Protomaps' layer list already starts with its own "background" layer. Outside the extracted
   // bbox there are no water polygons, so paint the background as sea instead of bare land.
@@ -439,6 +487,26 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     base.layers = [base.layers[0], ...worldLayers, ...ls];
   }
   return base;
+}
+
+/** Tile URL template of a user layer, served (and cached) by the backend's mo-user scheme. */
+export function customLayerTiles(id: string): string {
+  return `http://mo-user.localhost/${encodeURIComponent(id)}/{z}/{x}/{y}`;
+}
+
+/** Raster sources (added to `style`) and layers of the visible user tile layers. */
+function customRasterLayers(list: CustomLayer[], style: StyleSpecification): LayerSpecification[] {
+  return list.map((c) => {
+    style.sources[`custom-${c.id}`] = {
+      type: "raster",
+      tiles: [customLayerTiles(c.id)],
+      tileSize: 256,
+      minzoom: c.minzoom ?? 0,
+      maxzoom: c.maxzoom ?? 19,
+      ...(c.attribution ? { attribution: c.attribution } : {}),
+    };
+    return { id: `custom-${c.id}`, type: "raster", source: `custom-${c.id}`, paint: { "raster-opacity": Math.max(0, Math.min(1, c.opacity)), "raster-fade-duration": 150 } } as LayerSpecification;
+  });
 }
 
 /** First symbol layer id – route layers are inserted below labels. */
