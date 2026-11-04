@@ -57,6 +57,8 @@ fn component_of(name: &str) -> Option<DataComponent> {
         "routing" => Some(DataComponent::Routing),
         "geocode" => Some(DataComponent::Geocode),
         "transit" => Some(DataComponent::Transit),
+        "trails" => Some(DataComponent::Trails),
+        "minyanim" => Some(DataComponent::Minyanim),
         _ => None,
     }
 }
@@ -89,7 +91,7 @@ fn copy_with_progress<R: Read, W: Write>(
 fn compression_for(c: DataComponent) -> CompressionMethod {
     match c {
         DataComponent::Tiles | DataComponent::World | DataComponent::Satellite | DataComponent::Terrain => CompressionMethod::Stored,
-        DataComponent::Routing | DataComponent::Geocode | DataComponent::Transit => CompressionMethod::Deflated,
+        DataComponent::Routing | DataComponent::Geocode | DataComponent::Transit | DataComponent::Trails | DataComponent::Minyanim => CompressionMethod::Deflated,
     }
 }
 
@@ -171,7 +173,7 @@ pub fn inspect(src: &Path) -> anyhow::Result<PackageInfo> {
     if info.format > PACKAGE_FORMAT {
         bail!("החבילה נוצרה בגרסה חדשה יותר של התוכנה ({}); יש לעדכן את התוכנה", info.app_version);
     }
-    if info.graph_version != crate::routing::graph::VERSION && info.components.contains(&DataComponent::Routing) {
+    if !crate::routing::graph::readable_version(info.graph_version) && info.components.contains(&DataComponent::Routing) {
         bail!(
             "נתוני הניווט בחבילה בפורמט {} והתוכנה דורשת פורמט {}; יש ליצור את החבילה מגרסת תוכנה תואמת",
             info.graph_version,

@@ -5,7 +5,10 @@
 # uploads them with the data directory's manifest.json as generic package mapsdata/<date>. The app
 # (src-tauri/src/data/prebuilt.rs) takes components from the newest package when they are recent,
 # compatible and newer than what it has installed. Satellite = Sentinel-2 at the lowest detail
-# (the govmap orthophoto is personal-use only and must not be published). Old packages are pruned.
+# (the govmap orthophoto is personal-use only and must not be published), re-encoded to WebP q80
+# (~-38 %). Terrain = Mapterhorn's DEM cut to Israel (mirrored here: Mapterhorn is volunteer-run,
+# no SLA). Trails come from the same OSM extract; minyanim from Nedarim Plus' public endpoints
+# (credit "נדרים פלוס – פרויקט זמני תפילות הארצי"). Old packages are pruned.
 set -uo pipefail
 
 ROOT="${CI_PROJECT_DIR:-$(pwd)}"
@@ -41,13 +44,21 @@ fi
 echo '{"satelliteSource":"sentinel","satelliteQuality":"low","usePrebuiltData":false}' > "$D/settings.json"
 
 echo "== building the components"
-"$BIN" --dir "$D" build --tiles --world --terrain --routing --geocode --transit || echo "WARNING: some components failed"
+"$BIN" --dir "$D" build --tiles --world --terrain --routing --geocode --transit --trails || echo "WARNING: some components failed"
 "$BIN" --dir "$D" build --satellite || echo "WARNING: satellite failed"
+# smaller imagery package: JPEG -> WebP quality 80 (cwebp from the "webp" apt package)
+if command -v cwebp > /dev/null; then
+  "$BIN" --dir "$D" webp-satellite --quality 80 || echo "WARNING: WebP re-encoding failed, the package keeps JPEG"
+else
+  echo "WARNING: cwebp not installed, the satellite package keeps JPEG"
+fi
+# weekly snapshot of the synagogue prayer times (~10-15 min of paced requests)
+"$BIN" --dir "$D" build --minyanim || echo "WARNING: minyanim failed"
 "$BIN" --dir "$D" status || true
 
 echo "== packing"
 built=0
-for c in tiles world satellite terrain routing geocode transit; do
+for c in tiles world satellite terrain routing geocode transit trails minyanim; do
   if "$BIN" --dir "$D" export "$OUT/$c.mapsdata" --only "$c"; then
     built=$((built + 1))
   else

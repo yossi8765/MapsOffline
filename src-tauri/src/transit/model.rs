@@ -565,6 +565,7 @@ pub fn search_stops(t: &Transit, query: &str, near: Option<LonLat>, limit: usize
                 category: Some(format!("stop:{code}")),
                 // far-away stops fall behind nearby places of the same name: -1 per km, max -60
                 score: score as f64 - (d / 1000.0).min(60.0),
+                extra: None,
             }
         })
         .collect()

@@ -6,6 +6,10 @@ import { MapView } from "./components/MapView";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toast";
 import { PrintSheet } from "./components/PrintSheet";
+import { LayersPopover } from "./components/LayersPopover";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { NearbyList } from "./components/NearbyList";
+import { printPage } from "./lib/print";
 
 export default function App() {
   const theme = useStore((s) => s.settings.theme);
@@ -108,25 +112,52 @@ export default function App() {
     document.documentElement.setAttribute("dir", isRtl(lang) ? "rtl" : "ltr");
   }, [lang]);
 
-  // global shortcuts
+  // global shortcuts – by physical key (e.code), so they work in the Hebrew layout too
+  // (D = ג, L = ך, N = מ, T = א, / = .). Single keys only when no field has the focus.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = useStore.getState();
+      const el = e.target as HTMLElement | null;
+      const typing = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
       if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-        const k = e.key.toLowerCase();
-        if (k === "f") {
+        if (e.code === "KeyF" || e.code === "KeyK") {
           e.preventDefault();
           s.focusSearch();
-        } else if (k === "r") {
+        } else if (e.code === "KeyR") {
           e.preventDefault();
           s.clearRoute();
           s.setPanel("route");
-        } else if (k === "h") {
+        } else if (e.code === "KeyH") {
           e.preventDefault();
           s.setPanel("history");
+        } else if (e.code === "KeyP") {
+          // print through printPage (light theme, map overview); without a route there is
+          // nothing to print, and the browser would print an empty page (5.62)
+          e.preventDefault();
+          if (s.routes.length) void printPage();
         }
-      } else if (e.key === "Escape") {
+        return;
+      }
+      if (e.key === "Escape") {
         s.setContextMenu(null);
+        if (s.shortcutsOpen) useStore.setState({ shortcutsOpen: false });
+        return;
+      }
+      if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.code === "Slash" && e.shiftKey) {
+        e.preventDefault();
+        useStore.setState({ shortcutsOpen: !s.shortcutsOpen });
+      } else if (e.code === "Slash") {
+        e.preventDefault();
+        s.focusSearch();
+      } else if (e.code === "KeyD") {
+        s.setPanel("route");
+      } else if (e.code === "KeyL") {
+        void s.locate(true);
+      } else if (e.code === "KeyN") {
+        useStore.setState({ northUpTick: s.northUpTick + 1 });
+      } else if (e.code === "KeyT") {
+        s.setLayers({ buildings3d: !s.layers.buildings3d });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -138,6 +169,9 @@ export default function App() {
       <div className="app-shell relative w-full h-full bg-bg text-fg overflow-hidden">
         <MapView />
         {settingsLoaded && <Sidebar />}
+        <LayersPopover />
+        <NearbyList />
+        <ShortcutsDialog />
         <Toasts />
       </div>
       <PrintSheet />

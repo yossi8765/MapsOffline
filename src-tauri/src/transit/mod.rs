@@ -1,6 +1,7 @@
 //! Public transport: GTFS → compact model, RAPTOR (depart-at / arrive-by), journey assembly.
 
 pub mod board;
+pub mod fares;
 pub mod journey;
 pub mod model;
 pub mod raptor;

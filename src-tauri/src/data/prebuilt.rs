@@ -23,7 +23,7 @@ pub const PACKAGE: &str = "mapsdata";
 const MAX_AGE_DAYS: i64 = 10;
 
 /// Components the pipeline publishes.
-pub const PUBLISHED: [DataComponent; 7] = [
+pub const PUBLISHED: [DataComponent; 9] = [
     DataComponent::Tiles,
     DataComponent::Satellite,
     DataComponent::World,
@@ -31,6 +31,8 @@ pub const PUBLISHED: [DataComponent; 7] = [
     DataComponent::Routing,
     DataComponent::Geocode,
     DataComponent::Transit,
+    DataComponent::Trails,
+    DataComponent::Minyanim,
 ];
 
 pub fn file_name(c: DataComponent) -> String {
@@ -45,6 +47,7 @@ fn format_suffix(c: DataComponent) -> Option<String> {
         DataComponent::Routing => Some(format!(" g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV)),
         DataComponent::Geocode => Some(format!(" s{}.{}", crate::geocode::SCHEMA_VERSION, crate::geocode::BUILD_REV)),
         DataComponent::Transit => Some(format!(" t{}", crate::transit::model::VERSION)),
+        DataComponent::Trails => Some(format!(" r{}", super::trails::BUILD_REV)),
         _ => None,
     }
 }

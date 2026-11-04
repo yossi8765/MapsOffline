@@ -20,6 +20,21 @@ export interface GeoResult {
   houseNumber?: string;
   category?: string;
   score?: number;
+  // ---- optional details (Rust GeoExtra, flattened)
+  /** Raw OSM opening_hours of a point of interest. */
+  openingHours?: string;
+  /** Open right now (Israel time); absent when the hours are unknown or unreadable. */
+  openNow?: boolean;
+  /** While open: closing time "HH:MM". */
+  closesAt?: string;
+  /** While closed: next opening, "HH:MM" today or "<day> HH:MM" ("א׳ 08:00") later. */
+  opensAt?: string;
+  /** Kosher (OSM diet:kosher). */
+  kosher?: boolean;
+  /** The asked house number does not exist; placed at this existing number ("מיקום משוער (ליד מס׳ N)"). */
+  nearHouseNumber?: string;
+  /** How the query was read when not literally (first result only): "מציג תוצאות עבור: X". */
+  interpretation?: string;
 }
 
 // ------------------------------------------------------------- routing
@@ -114,6 +129,8 @@ export interface TransitLegInfo {
   arriveIso: string;
   numStops: number;
   stops: TransitStopTime[];
+  /** Typical delay of this line at the boarding stop in minutes (median of recent rides; Open Bus Stride, online only). */
+  delayP50Min?: number;
 }
 
 export interface Leg {
@@ -141,6 +158,12 @@ export interface Route {
   arriveIso?: string;
   transfers: number;
   walkM: number;
+  /** Estimated Rav-Kav "ערך צבור" fare in ₪ (transit routes; estimate, no passes/discounts). */
+  fareEstimateIls?: number;
+  /** How the fare is made up, e.g. "55 + 490 · 14.5 ₪ (כולל מעבר)"; "; " between tickets. */
+  fareNote?: string;
+  /** Avoid options the local route could not honour: "toll" | "motorway" | "unpaved" | "ferry" | "areaA" | "areaB". */
+  avoidViolations?: string[];
 }
 
 export type RouteSource = "online" | "offline";
@@ -270,8 +293,47 @@ export interface LineShape {
 }
 
 // ------------------------------------------------------------- data
-export type DataComponent = "tiles" | "world" | "satellite" | "terrain" | "routing" | "geocode" | "transit";
-export const DATA_COMPONENTS: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit"];
+export type DataComponent = "tiles" | "world" | "satellite" | "terrain" | "routing" | "geocode" | "transit" | "trails" | "minyanim";
+export const DATA_COMPONENTS: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit", "trails", "minyanim"];
+
+/** One prayer of a synagogue's weekly timetable (Nedarim Plus). */
+export interface Minyan {
+  prayer: string;
+  /** "HH:MM" */
+  time: string;
+  /** day letters Sunday..Shabbat, e.g. "אבגדהו", "ש" */
+  days: string;
+  hall?: string;
+  note?: string;
+}
+/** minyanim_for: the timetable of the synagogue at a point. Show `source` as credit. */
+export interface MinyanTable {
+  mosadId: string;
+  name?: string | null;
+  address?: string | null;
+  lon: number;
+  lat: number;
+  distanceM: number;
+  minyanim: Minyan[];
+  message?: string | null;
+  source: string;
+  /** YYYY-MM-DD of the snapshot */
+  fetched: string;
+}
+/** minyanim_next: a prayer starting soon nearby. */
+export interface NextMinyan {
+  mosadId: string;
+  name?: string | null;
+  address?: string | null;
+  lon: number;
+  lat: number;
+  distanceM: number;
+  prayer: string;
+  time: string;
+  inMinutes: number;
+  hall?: string | null;
+  note?: string | null;
+}
 
 export interface ComponentStatus {
   present: boolean;
@@ -296,6 +358,8 @@ export interface DataCheck {
   routing: UpdateCheck;
   geocode: UpdateCheck;
   transit: UpdateCheck;
+  trails: UpdateCheck;
+  minyanim: UpdateCheck;
 }
 
 export interface DataStatus {
@@ -309,6 +373,8 @@ export interface DataStatus {
   routing: ComponentStatus;
   geocode: ComponentStatus;
   transit: ComponentStatus;
+  trails: ComponentStatus;
+  minyanim: ComponentStatus;
   updating: boolean;
 }
 
@@ -357,6 +423,38 @@ export interface Settings {
   transitPreference: TransitPreference;
   /** Take ready-made components from the weekly GitLab build when possible. */
   usePrebuiltData: boolean;
+  /** Show typical line delays from Open Bus Stride (online only). */
+  transitReliability: boolean;
+  /** live navigation speaks the instructions */
+  navVoice: boolean;
+}
+
+/** One live-navigation fix (event "nav-update"). Distances metres, times seconds. */
+export interface NavUpdate {
+  routeId: string;
+  lon: number;
+  lat: number;
+  snappedLon: number;
+  snappedLat: number;
+  /** route bearing at the snapped point, degrees from north (heading-up camera) */
+  bearing: number;
+  stepIndex: number;
+  maneuver: Maneuver;
+  distToManeuverM: number;
+  instruction: string;
+  street?: string | null;
+  nextInstruction?: string | null;
+  nextManeuver?: Maneuver | null;
+  remainingM: number;
+  remainingSec: number;
+  etaIso: string;
+  /** leg the vehicle is on: waypoints after it are still ahead */
+  legIndex: number;
+  offRoute: boolean;
+  /** once per deviation: compute a new route from here */
+  rerouteNeeded: boolean;
+  arrived: boolean;
+  speech?: string | null;
 }
 
 export interface AppInfo {
@@ -480,14 +578,20 @@ export const api = {
     invoke<Favorite>("favorites_add", { name, icon, lon, lat, address, kind, data: data ?? null }),
   // longName ("Eilat <-> Eilat") tells apart lines of one agency that share a number
   transitLine: (shortName: string, agency: string, headsign?: string, longName?: string) => invoke<LineShape>("transit_line", { shortName, agency, headsign: headsign ?? null, longName: longName ?? null }),
-  /** POIs of the given geocoder categories inside the viewport; `category` is the raw id. */
-  poiLayer: (cats: string[], bbox: [number, number, number, number], limit?: number) => invoke<GeoResult[]>("poi_layer", { cats, bbox, limit: limit ?? null }),
+  /** POIs of the given geocoder categories inside the viewport; `category` is the raw id.
+   *  With `zoom` (the map zoom), only the POIs the build-time thinning shows at that zoom. */
+  poiLayer: (cats: string[], bbox: [number, number, number, number], limit?: number, zoom?: number) =>
+    invoke<GeoResult[]>("poi_layer", { cats, bbox, limit: limit ?? null, zoom: zoom ?? null }),
   transitAgencies: () => invoke<string[]>("transit_agencies"),
   transitLines: (agency: string) => invoke<LineSummary[]>("transit_lines", { agency }),
   /** Departures of a line from now to the end of today's service, both directions. */
   transitLineTimes: (shortName: string, agency: string, headsign?: string, longName?: string) => invoke<LineTimes>("transit_line_times", { shortName, agency, headsign: headsign ?? null, longName: longName ?? null }),
   /** Departure board of a stop (by code, else the nearest served stop within 40 m). */
   transitStopBoard: (code: string | undefined, lon: number, lat: number) => invoke<StopBoard>("transit_stop_board", { code: code ?? null, lon, lat }),
+  /** Typical delay (min) per boarding from Open Bus Stride; slow (10-15 s), online only – call after showing routes,
+   *  one entry per transit leg: {shortName, agency, lon, lat (boarding stop), departIso}. Credit: "נתוני דיוק: Open Bus Stride, הסדנא לידע ציבורי". */
+  transitDelays: (legs: { shortName: string; agency: string; lon: number; lat: number; departIso: string }[]) =>
+    invoke<(number | null)[]>("transit_delays", { legs }),
   favoritesUpdate: (id: number, name: string, icon: string) => invoke<void>("favorites_update", { id, name, icon }),
   favoritesDelete: (id: number) => invoke<void>("favorites_delete", { id }),
 
@@ -513,6 +617,12 @@ export const api = {
   satellitePath: () => invoke<string | null>("satellite_path"),
   worldPath: () => invoke<string | null>("world_path"),
   terrainPath: () => invoke<string | null>("terrain_path"),
+  /** Marked trails GeoJSON (load with convertFileSrc as a geojson source), null if not installed. */
+  trailsPath: () => invoke<string | null>("trails_path"),
+  /** Weekly prayer timetable of the synagogue at a point; null when none matches. Rejects with NO_MINYANIM_DATA when not installed. */
+  minyanimFor: (lon: number, lat: number, poiName?: string) => invoke<MinyanTable | null>("minyanim_for", { lon, lat, poiName: poiName ?? null }),
+  /** Prayers starting within `withinMin` minutes (default 180) inside `radiusM` metres, soonest first. */
+  minyanimNext: (lon: number, lat: number, radiusM: number, withinMin?: number) => invoke<NextMinyan[]>("minyanim_next", { lon, lat, radiusM, withinMin: withinMin ?? null }),
   /** Current position via the Windows location service; LOCATION_DENIED / LOCATION_UNAVAILABLE. */
   locate: () => invoke<MyLocation>("locate"),
   appUpdateCheck: () => invoke<AppUpdate>("app_update_check"),
@@ -540,6 +650,19 @@ export const api = {
   settingsGet: () => invoke<Settings>("settings_get"),
   settingsSet: (settings: Settings) => invoke<Settings>("settings_set", { settings }),
   appInfo: () => invoke<AppInfo>("app_info"),
+
+  // live navigation (src-tauri/src/nav): events "nav-update" | "nav-error" | "nav-ended"
+  navStart: (route: Route) => invoke<void>("nav_start", { route }),
+  navSimulate: (route: Route, speedKmh?: number) => invoke<void>("nav_simulate", { route, speedKmh: speedKmh ?? null }),
+  navSetRoute: (route: Route) => invoke<void>("nav_set_route", { route }),
+  navSetVoice: (on: boolean) => invoke<void>("nav_set_voice", { on }),
+  navStop: () => invoke<void>("nav_stop"),
+  speak: (text: string) => invoke<void>("speak", { text }),
+  /** [displayName, language][], the voice used first */
+  voicesList: () => invoke<[string, string][]>("voices_list"),
+  onNavUpdate: (cb: (u: NavUpdate) => void): Promise<UnlistenFn> => listen<NavUpdate>("nav-update", (e) => cb(e.payload)),
+  onNavError: (cb: (msg: string) => void): Promise<UnlistenFn> => listen<string>("nav-error", (e) => cb(e.payload)),
+  onNavEnded: (cb: () => void): Promise<UnlistenFn> => listen("nav-ended", () => cb()),
 
   onDataProgress: (cb: (p: DataProgress) => void): Promise<UnlistenFn> =>
     listen<DataProgress>("data-progress", (e) => cb(e.payload)),

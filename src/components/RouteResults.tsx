@@ -1,7 +1,7 @@
 import { Bus, ChevronDown, ChevronLeft, ChevronRight, Footprints, TrainFront, TramFront, Wifi, WifiOff } from "lucide-react";
 import clsx from "clsx";
 import { useStore } from "../lib/store";
-import { useT } from "../lib/i18n";
+import { useT, type I18nKey } from "../lib/i18n";
 import type { Leg, Route } from "../lib/api";
 import { fmtDistance, fmtDuration, fmtTime, tagLabel } from "../lib/format";
 import { RouteDetails } from "./RouteDetails";
@@ -57,6 +57,43 @@ function TransitStrip({ route, rtl }: { route: Route; rtl: boolean }) {
   );
 }
 
+const VIOLATION_KEY: Record<string, I18nKey> = {
+  toll: "violationToll",
+  unpaved: "violationUnpaved",
+  motorway: "violationMotorway",
+  areas: "violationAreas",
+  areaA: "violationAreas",
+  areaB: "violationAreas",
+  ferry: "violationFerry",
+};
+
+/** Notes above the results: what the selected route could not avoid (when the engine reports
+ *  it in `avoidViolations`), and for public transport that times come from the timetable,
+ *  with a warning when the timetable is more than 14 days old. */
+function RouteNotes() {
+  const t = useT();
+  const routes = useStore((s) => s.routes);
+  const selectedId = useStore((s) => s.selectedRouteId);
+  const transitUpdated = useStore((s) => s.dataStatus?.transit?.updatedIso);
+  const sel = (routes.find((r) => r.id === selectedId) ?? routes[0]) as (Route & { avoidViolations?: string[] }) | undefined;
+  if (!sel) return null;
+  const violations = [...new Set((sel.avoidViolations ?? []).map((v) => VIOLATION_KEY[v]).filter(Boolean))];
+  const ageDays = transitUpdated ? Math.floor((Date.now() - Date.parse(transitUpdated)) / 86_400_000) : 0;
+  const transit = sel.mode === "transit";
+  if (!violations.length && !transit) return null;
+  return (
+    <div className="flex flex-col gap-1 px-0.5 text-xs">
+      {violations.length > 0 && (
+        <p className="m-0 text-warning">
+          {t("couldNotAvoid")} {violations.map((k) => t(k)).join(", ")}
+        </p>
+      )}
+      {transit && <p className="m-0 text-muted">{t("scheduleTimes")}</p>}
+      {transit && ageDays > 14 && <p className="m-0 text-warning">{t("gtfsOld").replace("{n}", String(ageDays))}</p>}
+    </div>
+  );
+}
+
 export function RouteResults() {
   const t = useT();
   const routes = useStore((s) => s.routes);
@@ -83,11 +120,14 @@ export function RouteResults() {
           </div>
         )}
       </div>
+      <RouteNotes />
       <div className="flex flex-col gap-2" role="listbox">
         {routes.map((r) => {
           const sel = r.id === selectedId;
           const secondary =
-            r.mode === "transit" && r.departIso ? `${fmtTime(r.departIso)} – ${fmtTime(r.arriveIso)}` : fmtDistance(r.distanceM, t, units);
+            (r.mode === "transit" && r.departIso ? `${fmtTime(r.departIso)} – ${fmtTime(r.arriveIso)}` : fmtDistance(r.distanceM, t, units)) +
+            // estimated Rav-Kav fare ("ערך צבור") of a transit route
+            (r.fareEstimateIls != null ? ` · ${t("fareApprox").replace("{n}", r.fareEstimateIls.toFixed(r.fareEstimateIls % 1 ? 1 : 0))}` : "");
           const open = sel && detailsOpen;
           return (
             <div

@@ -2,6 +2,7 @@
 
 pub mod download;
 pub mod manifest;
+pub mod minyanim;
 pub mod orthophoto;
 pub mod osmdiff;
 pub mod prebuilt;
@@ -10,6 +11,7 @@ pub mod package;
 pub mod satellite;
 pub mod terrain;
 pub mod tiles;
+pub mod trails;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -102,6 +104,7 @@ pub fn build_tag(c: DataComponent, source_version: &str) -> String {
         DataComponent::Routing => format!("{source_version} g{}.{}", crate::routing::graph::VERSION, crate::routing::graph::BUILD_REV),
         DataComponent::Geocode => format!("{source_version} s{}.{}", crate::geocode::SCHEMA_VERSION, crate::geocode::BUILD_REV),
         DataComponent::Transit => format!("{source_version} t{}", crate::transit::model::VERSION),
+        DataComponent::Trails => format!("{source_version} r{}", trails::BUILD_REV),
         _ => source_version.to_string(),
     }
 }
@@ -133,6 +136,8 @@ pub fn status(paths: &DataPaths) -> DataStatus {
         routing: comp(DataComponent::Routing),
         geocode: comp(DataComponent::Geocode),
         transit: comp(DataComponent::Transit),
+        trails: comp(DataComponent::Trails),
+        minyanim: comp(DataComponent::Minyanim),
         updating: false,
         paused: false,
     }
@@ -205,7 +210,7 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             // The OSM extract is versioned by Geofabrik's replication sequence (see `osmdiff`), the
             // same string the full download and the incremental update tag the PBF with.
             let remote = download::http_client().and_then(|c| osmdiff::remote_state(&c));
-            [DataComponent::Routing, DataComponent::Geocode]
+            [DataComponent::Routing, DataComponent::Geocode, DataComponent::Trails]
                 .into_iter()
                 .map(|c| match &remote {
                     Ok(st) => {
@@ -228,7 +233,14 @@ pub fn check(paths: &DataPaths) -> DataCheck {
         terrain: dem,
         routing: osm.next().unwrap_or_default(),
         geocode: osm.next().unwrap_or_default(),
+        trails: osm.next().unwrap_or_default(),
         transit: gtfs.into_iter().next().unwrap_or_default(),
+        // weekly snapshot: no probe of the charity's server, only the age of what is installed
+        minyanim: UpdateCheck {
+            available: !paths.minyanim_file().exists() || minyanim::is_stale(local(DataComponent::Minyanim).as_deref()),
+            remote_version: None,
+            error: None,
+        },
     }
 }
 
@@ -362,7 +374,7 @@ pub fn update(
     std::thread::scope(|s| {
         // --- self-contained jobs: download + finalize in one go
         type Job = fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>;
-        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job)] {
+        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job), (DataComponent::Minyanim, minyanim::update_minyanim as Job)] {
             if !wants(c) {
                 continue;
             }
@@ -378,7 +390,7 @@ pub fn update(
         }
 
         // --- shared source downloads
-        let osm_comps: Vec<DataComponent> = [DataComponent::Routing, DataComponent::Geocode].into_iter().filter(|&c| wants(c)).collect();
+        let osm_comps: Vec<DataComponent> = [DataComponent::Routing, DataComponent::Geocode, DataComponent::Trails].into_iter().filter(|&c| wants(c)).collect();
         let pbf = (!osm_comps.is_empty()).then(|| {
             let (comps, emit) = (osm_comps.clone(), &emit);
             s.spawn(move || {
@@ -431,6 +443,12 @@ pub fn update(
                     let tmp = paths.graph_file().with_extension("bin.tmp");
                     crate::routing::build_graph(&paths.pbf_file(), &tmp, progress)?;
                     crate::paths::atomic_replace(&paths.graph_file(), &tmp)?;
+                    Ok(())
+                });
+            }
+            if wants(DataComponent::Trails) {
+                build(DataComponent::Trails, &src, &|progress| {
+                    trails::build(&paths.pbf_file(), &paths.trails_file(), progress)?;
                     Ok(())
                 });
             }

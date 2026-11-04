@@ -287,7 +287,12 @@ pub fn serve(state: Arc<AppState>, request: Request<Vec<u8>>) -> Response<Vec<u8
     let b = Response::builder().header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
     match found {
         Some(t) => {
-            let ct = if t.first() == Some(&0x89) { "image/png" } else { "image/jpeg" };
+            // the CI satellite package is WebP; local and live tiles are JPEG (or PNG)
+            let ct = match crate::data::satellite::image_kind(&t) {
+                Some(2) => "image/png",
+                Some(4) => "image/webp",
+                _ => "image/jpeg",
+            };
             b.status(StatusCode::OK).header(header::CONTENT_TYPE, ct).body(t).unwrap()
         }
         // no picture here (sea outside coverage, offline): the map shows what is underneath

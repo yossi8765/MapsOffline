@@ -24,7 +24,16 @@ use crate::routing::areas::{self, Areas};
 use crate::types::{LonLat, ProgressFn, ProgressPhase};
 
 pub const MAGIC: &[u8; 4] = b"MOGR";
-pub const VERSION: u32 = 5;
+/// v6: geometry as zig-zag varint deltas, projected coordinates and restriction offsets
+/// recomputed at load (−23 MB on disk). v4/v5 files are still read.
+pub const VERSION: u32 = 6;
+/// Oldest graph.bin layout `load` still reads.
+pub const MIN_READ_VERSION: u32 = 4;
+
+/// Can this build read a graph.bin of format `ver` (load, package import)?
+pub fn readable_version(ver: u32) -> bool {
+    (MIN_READ_VERSION..=VERSION).contains(&ver)
+}
 /// Revision of the build rules (access, costs) for the same file format: bumping it makes the
 /// update check offer a rebuild of graph.bin (see `data::build_tag`).
 pub const BUILD_REV: u32 = 2;
@@ -861,6 +870,54 @@ fn get<T: Pod, R: Read>(r: &mut R, max_bytes: u64) -> anyhow::Result<Vec<T>> {
     Ok(v)
 }
 
+/// Zig-zag varint deltas of the fixed-point geometry (consecutive points of an edge are a few
+/// metres apart, so most deltas take 1–2 bytes instead of 4).
+fn encode_geom(geom: &[i32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(geom.len() * 2);
+    let (mut px, mut py) = (0i64, 0i64);
+    for c in geom.as_chunks::<2>().0 {
+        for (v, prev) in [(c[0] as i64, &mut px), (c[1] as i64, &mut py)] {
+            let d = v - *prev;
+            *prev = v;
+            let mut z = ((d << 1) ^ (d >> 63)) as u64;
+            loop {
+                let b = (z & 0x7f) as u8;
+                z >>= 7;
+                if z == 0 {
+                    out.push(b);
+                    break;
+                }
+                out.push(b | 0x80);
+            }
+        }
+    }
+    out
+}
+
+fn decode_geom(buf: &[u8], n_values: usize) -> anyhow::Result<Vec<i32>> {
+    let mut out = Vec::with_capacity(n_values);
+    let (mut i, mut prev) = (0usize, [0i64; 2]);
+    while out.len() < n_values {
+        let (mut z, mut shift) = (0u64, 0u32);
+        loop {
+            let b = *buf.get(i).ok_or_else(|| anyhow::anyhow!("corrupt graph file (geometry)"))?;
+            i += 1;
+            z |= ((b & 0x7f) as u64) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+            anyhow::ensure!(shift < 64, "corrupt graph file (geometry)");
+        }
+        let d = ((z >> 1) as i64) ^ -((z & 1) as i64);
+        let k = out.len() & 1;
+        prev[k] += d;
+        out.push(i32::try_from(prev[k]).map_err(|_| anyhow::anyhow!("corrupt graph file (geometry)"))?);
+    }
+    anyhow::ensure!(i == buf.len(), "corrupt graph file (geometry length)");
+    Ok(out)
+}
+
 pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
@@ -873,8 +930,6 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     put(&mut w, &[g.proj0.lon0, g.proj0.lat0, g.proj0.kx, g.proj0.hscale])?;
     put(&mut w, &g.vlon)?;
     put(&mut w, &g.vlat)?;
-    put(&mut w, &g.vpx)?;
-    put(&mut w, &g.vpy)?;
     put(&mut w, &g.v_signal)?;
     put(&mut w, &g.e_from)?;
     put(&mut w, &g.e_to)?;
@@ -886,7 +941,7 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     put(&mut w, &g.e_bear_start)?;
     put(&mut w, &g.e_bear_end)?;
     put(&mut w, &g.e_geom_off)?;
-    put(&mut w, &g.geom)?;
+    put(&mut w, &encode_geom(&g.geom))?;
     put(&mut w, g.name_buf.as_bytes())?;
     put(&mut w, &g.name_off)?;
     put(&mut w, &g.adj_off)?;
@@ -899,7 +954,6 @@ pub fn save(g: &Graph, out: &Path) -> anyhow::Result<()> {
     put(&mut w, &rf)?;
     put(&mut w, &rt)?;
     put(&mut w, &rb)?;
-    put(&mut w, &g.restr_off)?;
     put(&mut w, &[g.grid.x0, g.grid.y0, g.grid.cell])?;
     put(&mut w, &[g.grid.nx, g.grid.ny])?;
     put(&mut w, &g.grid.off)?;
@@ -925,7 +979,7 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     let mut ver = [0u8; 4];
     r.read_exact(&mut ver)?;
     let ver = u32::from_le_bytes(ver);
-    if ver != VERSION && ver != 4 {
+    if !readable_version(ver) {
         anyhow::bail!("graph file version {ver} is not supported (expected {VERSION}); update the routing data");
     }
     let m = file_len; // no array can be larger than the file
@@ -942,26 +996,48 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     } else {
         Proj::default()
     };
+    let vlon: Vec<i32> = get(&mut r, m)?;
+    let vlat: Vec<i32> = get(&mut r, m)?;
+    let (vpx, vpy): (Vec<f32>, Vec<f32>) = if ver < 6 { (get(&mut r, m)?, get(&mut r, m)?) } else { (Vec::new(), Vec::new()) };
+    let v_signal = get(&mut r, m)?;
+    let e_from = get(&mut r, m)?;
+    let e_to = get(&mut r, m)?;
+    let e_len = get(&mut r, m)?;
+    let e_speed = get(&mut r, m)?;
+    let e_flags = get(&mut r, m)?;
+    let e_class = get(&mut r, m)?;
+    let e_name = get(&mut r, m)?;
+    let e_bear_start = get(&mut r, m)?;
+    let e_bear_end = get(&mut r, m)?;
+    let e_geom_off: Vec<u32> = get(&mut r, m)?;
+    let geom: Vec<i32> = if ver < 6 {
+        get(&mut r, m)?
+    } else {
+        let buf: Vec<u8> = get(&mut r, m)?;
+        let n = e_geom_off.last().copied().unwrap_or(0) as usize * 2;
+        anyhow::ensure!(n as u64 <= m, "corrupt graph file (geometry)");
+        decode_geom(&buf, n)?
+    };
     let mut g = Graph {
         proj0,
         bbox: bbox.try_into().map_err(|_| bad())?,
         max_car_kmh: *speed.first().ok_or_else(bad)?,
-        vlon: get(&mut r, m)?,
-        vlat: get(&mut r, m)?,
-        vpx: get(&mut r, m)?,
-        vpy: get(&mut r, m)?,
-        v_signal: get(&mut r, m)?,
-        e_from: get(&mut r, m)?,
-        e_to: get(&mut r, m)?,
-        e_len: get(&mut r, m)?,
-        e_speed: get(&mut r, m)?,
-        e_flags: get(&mut r, m)?,
-        e_class: get(&mut r, m)?,
-        e_name: get(&mut r, m)?,
-        e_bear_start: get(&mut r, m)?,
-        e_bear_end: get(&mut r, m)?,
-        e_geom_off: get(&mut r, m)?,
-        geom: get(&mut r, m)?,
+        vlon,
+        vlat,
+        vpx,
+        vpy,
+        v_signal,
+        e_from,
+        e_to,
+        e_len,
+        e_speed,
+        e_flags,
+        e_class,
+        e_name,
+        e_bear_start,
+        e_bear_end,
+        e_geom_off,
+        geom,
         name_buf: String::from_utf8(get(&mut r, m)?).map_err(|_| bad())?,
         name_off: get(&mut r, m)?,
         adj_off: get(&mut r, m)?,
@@ -972,7 +1048,9 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     let rf: Vec<u32> = get(&mut r, m)?;
     let rt: Vec<u32> = get(&mut r, m)?;
     let rb: Vec<u8> = get(&mut r, m)?;
-    g.restr_off = get(&mut r, m)?;
+    if ver < 6 {
+        g.restr_off = get(&mut r, m)?;
+    }
     let gp: Vec<f32> = get(&mut r, 12)?;
     let gn: Vec<u32> = get(&mut r, 8)?;
     g.grid = Grid {
@@ -996,6 +1074,21 @@ pub fn load(path: &Path) -> anyhow::Result<Graph> {
     g.restrictions = (0..rv.len())
         .map(|i| Restriction { via: rv[i], from_edge: rf[i], to_edge: rt[i], only: rb[i] & 1 != 0, bike: rb[i] & 2 != 0 })
         .collect();
+    if ver >= 6 {
+        // derived fields v6 no longer stores
+        let n = g.vlon.len();
+        g.restr_off = restriction_offsets(&g.restrictions, n);
+        use rayon::prelude::*;
+        let (px, py): (Vec<f32>, Vec<f32>) = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let p = g.proj(g.vlon[i] as f64 * 1e-7, g.vlat[i] as f64 * 1e-7);
+                (p[0], p[1])
+            })
+            .unzip();
+        g.vpx = px;
+        g.vpy = py;
+    }
     g.validate().map_err(|e| anyhow::anyhow!("corrupt graph file: {e}"))?;
     g.areas.build_index();
     log::info!(
@@ -2034,5 +2127,48 @@ mod tests {
         let p = proj(34.78, 32.08);
         let ll = unproj(p[0], p[1]);
         assert!((ll[0] - 34.78).abs() < 1e-5 && (ll[1] - 32.08).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn geom_varint_roundtrip() {
+        let g = vec![347_812_345, 320_853_210, 347_812_399, 320_853_100, -1, i32::MAX, i32::MIN, 0, 5, -5];
+        let enc = encode_geom(&g);
+        assert_eq!(decode_geom(&enc, g.len()).unwrap(), g);
+        assert!(decode_geom(&enc[..enc.len() - 1], g.len()).is_err());
+    }
+
+    /// The installed graph.bin (v5 or v6) saved as v6 and read back must be identical, field
+    /// by field. cargo test --release -- --ignored v6_roundtrip_of_installed_graph --nocapture
+    #[test]
+    #[ignore]
+    fn v6_roundtrip_of_installed_graph() {
+        let src = crate::paths::DataPaths::new(crate::paths::DataPaths::default_root()).graph_file();
+        let t0 = std::time::Instant::now();
+        let a = load(&src).expect("installed graph.bin");
+        let t_old = t0.elapsed();
+        let out = std::env::temp_dir().join("mo-graph-v6-test.bin");
+        save(&a, &out).unwrap();
+        let t1 = std::time::Instant::now();
+        let b = load(&out).unwrap();
+        let t_new = t1.elapsed();
+        let (s_old, s_new) = (std::fs::metadata(&src).unwrap().len(), std::fs::metadata(&out).unwrap().len());
+        eprintln!("size {:.1} MB -> {:.1} MB; load {:?} -> {:?}", s_old as f64 / 1e6, s_new as f64 / 1e6, t_old, t_new);
+        assert_eq!(a.vlon, b.vlon);
+        assert_eq!(a.vlat, b.vlat);
+        assert_eq!(a.vpx, b.vpx);
+        assert_eq!(a.vpy, b.vpy);
+        assert_eq!(a.geom, b.geom);
+        assert_eq!(a.e_geom_off, b.e_geom_off);
+        assert_eq!(a.restr_off, b.restr_off);
+        assert_eq!(a.adj, b.adj);
+        assert_eq!(a.e_flags, b.e_flags);
+        assert_eq!(a.restrictions.len(), b.restrictions.len());
+        assert_eq!(a.grid.items, b.grid.items);
+        let _ = std::fs::remove_file(&out);
     }
 }

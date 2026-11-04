@@ -16,6 +16,14 @@
 //!
 //! The result is the Pareto set over (arrival, number of trips): one journey per round that
 //! improves the destination key.
+//!
+//! Range RAPTOR (`run_range`, rRAPTOR in the paper): the profile over a departure window. Every
+//! boarding time at the access stops inside the window becomes one iteration, processed from the
+//! latest departure to the earliest (reverse mode: earliest deadline to latest). Labels are kept
+//! between iterations – an arrival reachable when leaving later is reachable when leaving earlier
+//! by waiting – so each iteration only explores what the earlier start improves. Pruning is per
+//! round (`cum[k]` = best key with at most k trips), which keeps the Pareto set over
+//! (departure, arrival, trips) exact across iterations.
 
 use rustc_hash::FxHashSet;
 
@@ -98,7 +106,10 @@ struct Ctx<'a> {
     days: Vec<DaySvc>,
     prim: Vec<Vec<Lab>>,
     best: Vec<Vec<Lab>>,
-    star: Vec<i32>,
+    /// cum[k][s] = best key at s with at most k trips (over every iteration so far).
+    cum: Vec<Vec<i32>>,
+    max_trips: usize,
+    /// Target pruning bound for the round being scanned.
     dest_bound: i32,
     marked: Vec<u32>,
     is_marked: Vec<bool>,
@@ -193,6 +204,18 @@ impl<'a> Ctx<'a> {
         best
     }
 
+    /// Record `key` at stop `s` reached with `k` trips in the per-round bounds.
+    #[inline]
+    fn improve(&mut self, k: usize, s: usize, key: i32) {
+        for j in k..=self.max_trips {
+            if key < self.cum[j][s] {
+                self.cum[j][s] = key;
+            } else {
+                break;
+            }
+        }
+    }
+
     fn mark(&mut self, s: u32) {
         if !self.is_marked[s as usize] {
             self.is_marked[s as usize] = true;
@@ -215,14 +238,14 @@ impl<'a> Ctx<'a> {
                 let alight_ok = if self.fwd { fl & NO_DROPOFF == 0 } else { fl & NO_PICKUP == 0 };
                 if alight_ok {
                     let key = self.alight_key(p, tr, d, pos);
-                    if key < self.star[s].min(self.dest_bound) {
+                    if key < self.cum[k][s].min(self.dest_bound) {
                         let lab = Lab {
                             key,
                             kind: Kind::Transit { pattern: p, trip: tr, day_off: d, board_pos: bp, alight_pos: pos as u16 },
                         };
                         self.prim[k][s] = lab;
                         self.best[k][s] = lab;
-                        self.star[s] = key;
+                        self.improve(k, s, key);
                         self.mark(s as u32);
                     }
                 }
@@ -254,9 +277,9 @@ impl<'a> Ctx<'a> {
             }
             for (to, dur) in t.transfers(s) {
                 let key = base.key + dur as i32;
-                if key < self.star[to as usize].min(self.dest_bound) {
+                if key < self.cum[k][to as usize].min(self.dest_bound) {
                     self.best[k][to as usize] = Lab { key, kind: Kind::Foot { from: s, dur: dur as i32 } };
-                    self.star[to as usize] = key;
+                    self.improve(k, to as usize, key);
                     self.mark(to);
                 }
             }
@@ -326,6 +349,15 @@ fn finish(t: &Transit, legs: Vec<JLeg>, trips: usize) -> Journey {
 
 /// Run RAPTOR. Returns the Pareto set (one journey per improving round), fewest trips first.
 pub fn run(t: &Transit, q: &Query) -> Vec<Journey> {
+    let mut v = run_range(t, q, 0);
+    v.sort_by_key(|j| j.trips);
+    v
+}
+
+/// Range RAPTOR over `window` seconds after the query time (reverse: before the deadline).
+/// Returns every journey that is Pareto-optimal over (later departure, earlier arrival, fewer
+/// trips) in the window; `window == 0` is a plain RAPTOR run.
+pub fn run_range(t: &Transit, q: &Query, window: i32) -> Vec<Journey> {
     let nstops = t.stops.len();
     if nstops == 0 || q.sources.is_empty() || q.targets.is_empty() {
         return vec![];
@@ -345,81 +377,209 @@ pub fn run(t: &Transit, q: &Query) -> Vec<Journey> {
         days,
         prim: vec![vec![NOLAB; nstops]; max_trips + 1],
         best: vec![vec![NOLAB; nstops]; max_trips + 1],
-        star: vec![INF; nstops],
+        cum: vec![vec![INF; nstops]; max_trips + 1],
+        max_trips,
         dest_bound: INF,
         marked: Vec::new(),
         is_marked: vec![false; nstops],
     };
     let key_of = |time: i32| if fwd { time } else { -time };
-    let mut min_key = INF;
-    for &(s, time, walk) in q.sources {
-        let key = key_of(time);
-        min_key = min_key.min(key);
-        if key < c.star[s as usize] {
-            let lab = Lab { key, kind: Kind::Access { walk } };
-            c.prim[0][s as usize] = lab;
-            c.best[0][s as usize] = lab;
-            c.star[s as usize] = key;
-            c.mark(s);
-        }
-    }
-    c.dest_bound = min_key.saturating_add(HORIZON);
-    let src: Vec<u32> = c.marked.clone();
-    c.relax_foot(0, &src);
 
-    let mut found: Vec<(usize, u32, i32)> = Vec::new(); // (round, target stop, walk)
-    let mut qpos = vec![NONE; t.patterns.len()];
-    let mut queue: Vec<u32> = Vec::new();
-    for k in 1..=max_trips {
-        // collect patterns through marked stops
-        let marked = std::mem::take(&mut c.marked);
-        for &s in &marked {
-            c.is_marked[s as usize] = false;
+    // Iterations: shifts of the source keys, largest first (latest departure / earliest deadline).
+    let mut shifts: Vec<i32> = vec![0];
+    if window > 0 {
+        for &(s, time, _) in q.sources {
+            let base = key_of(time);
             for (p, pos) in t.stop_patterns(s) {
                 if !q.banned_routes.is_empty() && q.banned_routes.contains(&t.patterns[p as usize].route) {
                     continue;
                 }
-                let e = &mut qpos[p as usize];
-                if *e == NONE {
-                    queue.push(p);
-                    *e = pos;
-                } else if (fwd && pos < *e) || (!fwd && pos > *e) {
-                    *e = pos;
+                let fl = t.pflags(p)[pos as usize];
+                if (fwd && fl & NO_PICKUP != 0) || (!fwd && fl & NO_DROPOFF != 0) {
+                    continue;
+                }
+                for tr in 0..t.patterns[p as usize].ntrips {
+                    for ds in &c.days {
+                        let shift = c.board_key(p, tr, ds.day_off, pos) - base;
+                        if (0..=window).contains(&shift) && c.active(ds, p, tr) {
+                            shifts.push(shift);
+                        }
+                    }
                 }
             }
         }
-        if queue.is_empty() {
-            break;
+        shifts.sort_unstable();
+        shifts.dedup();
+        // every boarding time is one iteration: dropping some would lose the journeys that start
+        // exactly then (later iterations are cheap, labels carry over)
+    }
+
+    let mut dest_cum = vec![INF; max_trips + 1];
+    let mut out: Vec<Journey> = Vec::new();
+    let mut qpos = vec![NONE; t.patterns.len()];
+    let mut queue: Vec<u32> = Vec::new();
+    for &shift in shifts.iter().rev() {
+        let mut min_key = INF;
+        for &(s, time, walk) in q.sources {
+            let key = key_of(time) + shift;
+            min_key = min_key.min(key);
+            if key < c.cum[0][s as usize] {
+                let lab = Lab { key, kind: Kind::Access { walk } };
+                c.prim[0][s as usize] = lab;
+                c.best[0][s as usize] = lab;
+                c.improve(0, s as usize, key);
+                c.mark(s);
+            }
         }
-        for &p in &queue {
-            let start = qpos[p as usize];
-            qpos[p as usize] = NONE;
-            c.scan(p, start, k);
-        }
-        queue.clear();
-        // foot transfers from stops improved by transit in this round
-        let by_transit: Vec<u32> = c.marked.clone();
-        c.relax_foot(k, &by_transit);
-        // destination
-        let mut best_here: Option<(u32, i32, i32)> = None;
-        for &(s, walk) in q.targets {
-            let l = c.prim[k][s as usize];
-            if l.key < INF && matches!(l.kind, Kind::Transit { .. }) {
-                let cand = l.key + walk;
-                if best_here.is_none_or(|b| cand < b.1) {
-                    best_here = Some((s, cand, walk));
+        let horizon = min_key.saturating_add(HORIZON);
+        c.dest_bound = horizon.min(dest_cum[0]);
+        let src: Vec<u32> = c.marked.clone();
+        c.relax_foot(0, &src);
+
+        let mut found: Vec<(usize, u32, i32)> = Vec::new(); // (round, target stop, walk)
+        for k in 1..=max_trips {
+            c.dest_bound = horizon.min(dest_cum[k]);
+            let marked = std::mem::take(&mut c.marked);
+            for &s in &marked {
+                c.is_marked[s as usize] = false;
+                for (p, pos) in t.stop_patterns(s) {
+                    if !q.banned_routes.is_empty() && q.banned_routes.contains(&t.patterns[p as usize].route) {
+                        continue;
+                    }
+                    let e = &mut qpos[p as usize];
+                    if *e == NONE {
+                        queue.push(p);
+                        *e = pos;
+                    } else if (fwd && pos < *e) || (!fwd && pos > *e) {
+                        *e = pos;
+                    }
                 }
             }
-        }
-        if let Some((s, cand, walk)) = best_here {
-            if cand < c.dest_bound {
-                c.dest_bound = cand;
-                found.push((k, s, walk));
+            if queue.is_empty() {
+                break;
+            }
+            for &p in &queue {
+                let start = qpos[p as usize];
+                qpos[p as usize] = NONE;
+                c.scan(p, start, k);
+            }
+            queue.clear();
+            let by_transit: Vec<u32> = c.marked.clone();
+            c.relax_foot(k, &by_transit);
+            let mut best_here: Option<(u32, i32, i32)> = None;
+            for &(s, walk) in q.targets {
+                let l = c.prim[k][s as usize];
+                if l.key < INF && matches!(l.kind, Kind::Transit { .. }) {
+                    let cand = l.key + walk;
+                    if best_here.is_none_or(|b| cand < b.1) {
+                        best_here = Some((s, cand, walk));
+                    }
+                }
+            }
+            if let Some((s, cand, walk)) = best_here {
+                if cand < c.dest_bound {
+                    for d in dest_cum.iter_mut().skip(k) {
+                        if cand < *d {
+                            *d = cand;
+                        }
+                    }
+                    found.push((k, s, walk));
+                }
+            }
+            if c.marked.is_empty() {
+                break;
             }
         }
-        if c.marked.is_empty() {
-            break;
+        // later iterations overwrite labels: reconstruct now
+        out.extend(found.into_iter().filter_map(|(k, s, w)| c.reconstruct(k, s, w)));
+        for s in std::mem::take(&mut c.marked) {
+            c.is_marked[s as usize] = false;
         }
     }
-    found.into_iter().filter_map(|(k, s, w)| c.reconstruct(k, s, w)).collect()
+    pareto(out, fwd)
+}
+
+/// Drop duplicates and journeys dominated over (departure, arrival, trips); for arrive-by the
+/// same order applies (later departure and earlier arrival are both better).
+fn pareto(mut v: Vec<Journey>, fwd: bool) -> Vec<Journey> {
+    v.sort_by_key(|j| (j.trips, j.arrive, -j.depart));
+    v.dedup_by(|a, b| a.depart == b.depart && a.arrive == b.arrive && a.trips == b.trips);
+    let dominated = |a: &Journey, b: &Journey| {
+        // does b dominate a?
+        b.depart >= a.depart && b.arrive <= a.arrive && b.trips <= a.trips && (b.depart > a.depart || b.arrive < a.arrive || b.trips < a.trips)
+    };
+    let keep: Vec<bool> = (0..v.len()).map(|i| !(0..v.len()).any(|j| j != i && dominated(&v[i], &v[j]))).collect();
+    let mut out: Vec<Journey> = v.into_iter().zip(keep).filter(|(_, k)| *k).map(|(j, _)| j).collect();
+    if fwd {
+        out.sort_by_key(|j| (j.depart, j.trips));
+    } else {
+        out.sort_by_key(|j| (j.arrive, j.trips));
+    }
+    out
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+    use crate::types::LonLat;
+
+    fn endpoints(t: &Transit, p: LonLat) -> Vec<(u32, i32)> {
+        t.stops_near(p, 1200.0).into_iter().take(20).map(|(s, d)| (s, (d / 1.25) as i32)).collect()
+    }
+
+    /// Range RAPTOR must contain (or dominate) every plain RAPTOR answer at each departure in its
+    /// window. Uses the installed transit.bin (cargo test -- --ignored range_matches_plain_runs).
+    #[test]
+    #[ignore]
+    fn range_matches_plain_runs() {
+        let path = crate::paths::DataPaths::new(crate::paths::DataPaths::default_root()).transit_file();
+        let t = crate::transit::load(&path).expect("transit.bin");
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let day = t.day_index(date).expect("date in feed");
+        let none = FxHashSet::default();
+        for (o, d) in [([34.7818, 32.0853], [35.2137, 31.7683]), ([34.77, 32.07], [34.89, 32.17]), ([35.0, 32.8], [34.99, 32.79])] {
+            for reverse in [false, true] {
+                let (acc, egr) = (endpoints(&t, o), endpoints(&t, d));
+                let base = if reverse { 9 * 3600 } else { 8 * 3600 };
+                let window = 3600;
+                let mk = |tq: i32| -> (Vec<(u32, i32, i32)>, Vec<(u32, i32)>) {
+                    if !reverse {
+                        (acc.iter().map(|&(s, w)| (s, tq + w, w)).collect(), egr.clone())
+                    } else {
+                        (egr.iter().map(|&(s, w)| (s, tq - w, w)).collect(), acc.clone())
+                    }
+                };
+                let (src, tgt) = mk(base);
+                let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                let t0 = std::time::Instant::now();
+                let range = run_range(&t, &q, window);
+                let t_range = t0.elapsed();
+                let t0 = std::time::Instant::now();
+                for step in 0..4 {
+                    let (src, tgt) = mk(if reverse { base - step * 900 } else { base + step * 900 });
+                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                    let _ = run(&t, &q);
+                }
+                eprintln!("  range {:?} vs 4 plain runs {:?}", t_range, t0.elapsed());
+                let mut checked = 0;
+                for step in (0..=window).step_by(120) {
+                    let tq = if reverse { base - step } else { base + step };
+                    let (src, tgt) = mk(tq);
+                    let q = Query { day, reverse, sources: &src, targets: &tgt, max_trips: MAX_TRIPS, banned_routes: &none };
+                    for j in run(&t, &q) {
+                        // only journeys that start inside the window are covered by the profile
+                        let inside = if reverse { j.arrive >= base - window } else { j.depart <= base + window };
+                        if !inside {
+                            continue;
+                        }
+                        checked += 1;
+                        let ok = range.iter().any(|r| r.depart >= j.depart && r.arrive <= j.arrive && r.trips <= j.trips);
+                        assert!(ok, "{o:?}->{d:?} rev={reverse} t={tq}: plain dep {} arr {} trips {} not covered; range: {:?}", j.depart, j.arrive, j.trips,
+                            range.iter().map(|r| (r.depart, r.arrive, r.trips)).collect::<Vec<_>>());
+                    }
+                }
+                eprintln!("{o:?}->{d:?} rev={reverse}: {} range journeys, {checked} plain journeys covered", range.len());
+            }
+        }
+    }
 }

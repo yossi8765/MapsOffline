@@ -32,11 +32,109 @@ export interface StyleOptions {
   lang: string;
   poi: boolean;
   buildings3d: boolean;
-  /** Thematic look: cycleways or rail / transit brought forward, the rest of the roads muted. */
+  /** Thematic look: cycleways or rail / transit brought forward, the rest of the roads muted;
+   *  "topo" = hiking map (relief, contour lines and marked trails). */
   theme?: MapTheme;
+  /** Contour vector tiles (lib/contours.ts) – drawn when `contours` is on or in the topo theme. */
+  contourTiles?: string | null;
+  contours?: boolean;
+  /** Marked trails (GeoJSON written by the data update) – drawn when `trails` or topo. */
+  trailsUrl?: string | null;
+  trails?: boolean;
 }
 
-export type MapTheme = "standard" | "cycle" | "transit";
+export type MapTheme = "standard" | "cycle" | "transit" | "topo";
+
+/** osmc:symbol colour names of Israeli marked trails → the paint colour (Israel Trail = orange). */
+const TRAIL_COLORS: Record<string, string> = {
+  red: "#d6332b",
+  blue: "#1d5bbf",
+  green: "#178246",
+  black: "#1f2328",
+  orange: "#f08a00",
+  purple: "#7b3fb5",
+  yellow: "#d9a400",
+  brown: "#8a5a2b",
+  white: "#8f96a3",
+};
+
+/** Contour lines (minor / major) with metre labels on the major ones. */
+function contourLayers(dark: boolean, lang: string): LayerSpecification[] {
+  const ink = dark ? "#b9a27c" : "#8a6a3d";
+  const unit = lang === "he" ? " מ׳" : " m";
+  return [
+    {
+      id: "contours",
+      type: "line",
+      source: "contours",
+      "source-layer": "contours",
+      minzoom: 10,
+      paint: {
+        "line-color": ink,
+        "line-opacity": ["case", [">", ["get", "level"], 0], 0.55, 0.3],
+        "line-width": ["case", [">", ["get", "level"], 0], 1, 0.5],
+      },
+    },
+    {
+      id: "contours-label",
+      type: "symbol",
+      source: "contours",
+      "source-layer": "contours",
+      minzoom: 12,
+      filter: [">", ["get", "level"], 0],
+      layout: {
+        "symbol-placement": "line",
+        "text-field": ["concat", ["number-format", ["get", "ele"], {}], unit],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 10,
+        "symbol-spacing": 320,
+      },
+      paint: { "text-color": ink, "text-halo-color": dark ? "#111214" : "#ffffff", "text-halo-width": 1.2 },
+    },
+  ];
+}
+
+/** Marked trails in their sign colour: white casing, dashed for cycling routes, name in colour. */
+function trailLayers(): LayerSpecification[] {
+  const color: ExpressionSpecification = ["match", ["get", "colour"], ...Object.entries(TRAIL_COLORS).flat(), "#d6332b"] as unknown as ExpressionSpecification;
+  const bike: ExpressionSpecification = ["in", ["get", "route"], ["literal", ["bicycle", "mtb"]]];
+  return [
+    {
+      id: "trails-casing",
+      type: "line",
+      source: "trails",
+      minzoom: 9,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-opacity": 0.85, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 2.5, 14, 5, 17, 7] },
+    },
+    {
+      id: "trails",
+      type: "line",
+      source: "trails",
+      minzoom: 9,
+      filter: ["!", bike],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": color, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.2, 14, 2.5, 17, 4] },
+    },
+    {
+      id: "trails-bike",
+      type: "line",
+      source: "trails",
+      minzoom: 9,
+      filter: bike,
+      paint: { "line-color": color, "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.2, 14, 2.5, 17, 4], "line-dasharray": [2, 1.5] },
+    },
+    {
+      id: "trails-label",
+      type: "symbol",
+      source: "trails",
+      minzoom: 12,
+      filter: ["has", "name"],
+      layout: { "symbol-placement": "line", "text-field": ["get", "name"], "text-font": ["Noto Sans Medium"], "text-size": 11, "symbol-spacing": 400 },
+      paint: { "text-color": color, "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
+    },
+  ];
+}
 
 const CYCLE_COLOR = "#16a34a";
 const RAIL_COLOR = "#334155";
@@ -93,7 +191,9 @@ function origin(): string {
 
 export const WORLD_MAX_ZOOM = 6;
 export const TERRAIN_MAX_ZOOM = 12;
-const TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Mapzen terrain tiles</a>';
+/** The previous DEM (256 px PNG), still in use until the terrain data is updated. */
+const OLD_TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Mapzen terrain tiles</a>';
+const TERRAIN_ATTRIBUTION = 'Elevation: <a href="https://mapterhorn.com">Mapterhorn</a> – 10 m DEM of Israel (ASTER GDEM, METI/NASA, processed by 4cast), Copernicus GLO-30 (© DLR/Airbus, provided under COPERNICUS by the EU and ESA)';
 const SENTINEL_ATTRIBUTION =
   '<a href="https://s2maps.eu">Sentinel-2 cloudless</a> by <a href="https://eox.at">EOX</a> (CC BY-NC-SA 4.0), contains modified Copernicus Sentinel data';
 
@@ -130,11 +230,21 @@ function withoutItalic(ls: LayerSpecification[]): LayerSpecification[] {
   });
 }
 
+const HEBREW_RANGE = ["U+0590-05FF", "U+FB1D-FB4F"];
+
 export function buildStyle(o: StyleOptions): StyleSpecification {
   const flavor = flavorFor(o.flavor);
   const base: StyleSpecification = {
     version: 8,
     glyphs: `${origin()}/fonts/{fontstack}/{range}.pbf`,
+    // Hebrew is drawn from real OpenType files (MapLibre 6 font-faces: correct niqqud and
+    // final forms); every other script falls back to the PBF glyph ranges above. Arabic stays on
+    // PBF on purpose: font-faces rasterises one grapheme cluster at a time, which would lose the
+    // joining between letters.
+    "font-faces": {
+      "Noto Sans Regular": [{ url: `${origin()}/fonts/NotoSansHebrew-Regular.ttf`, "unicode-range": HEBREW_RANGE }],
+      "Noto Sans Medium": [{ url: `${origin()}/fonts/NotoSansHebrew-Medium.ttf`, "unicode-range": HEBREW_RANGE }],
+    },
     sprite: `${origin()}/sprites/v4/${o.flavor === "dark" ? "dark" : "light"}`,
     sources: {},
     layers: [{ id: "background", type: "background", paint: { "background-color": flavor.background } }],
@@ -157,9 +267,11 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     const live = o.satelliteUrl!.startsWith("http://mo-sat.localhost/");
     base.sources.satellite = { type: "raster", ...(live ? { tiles: [o.satelliteUrl!], minzoom: 0, maxzoom: 19 } : { url: `pmtiles://${o.satelliteUrl}` }), tileSize: 256, attribution: o.satelliteOrtho ? ORTHOPHOTO_ATTRIBUTION : SENTINEL_ATTRIBUTION };
   }
-  const dem = !!o.terrainUrl && (o.hillshade || o.terrain3d);
+  const topo = o.theme === "topo";
+  const hillshade = o.hillshade || topo;
+  const dem = !!o.terrainUrl && (hillshade || o.terrain3d);
   if (dem) {
-    base.sources.dem = { type: "raster-dem", url: `pmtiles://${o.terrainUrl}`, tileSize: 256, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, attribution: TERRAIN_ATTRIBUTION };
+    base.sources.dem = { type: "raster-dem", url: `pmtiles://${o.terrainUrl}`, tileSize: o.terrainUrl!.includes("mapterhorn") ? 512 : 256, encoding: "terrarium", maxzoom: TERRAIN_MAX_ZOOM, attribution: o.terrainUrl!.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION };
     if (o.terrain3d) base.terrain = { source: "dem", exaggeration: 1.2 };
   }
   const hillshadeLayer = (): LayerSpecification => ({
@@ -178,7 +290,7 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   if (!tilesUrl) {
     base.layers.push(...worldLayers);
     if (sat) base.layers.push(satelliteLayer());
-    if (dem && o.hillshade) base.layers.push(hillshadeLayer());
+    if (dem && hillshade) base.layers.push(hillshadeLayer());
     return base;
   }
 
@@ -191,34 +303,32 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   };
   let ls: LayerSpecification[] = applyTheme(withoutItalic(layers("protomaps", flavor, { lang: o.lang })), o.theme ?? "standard", o.flavor === "dark");
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
-  // Road numbers: the stock shields are tiny (8 px) and sparse; make them readable at every
-  // zoom and place them before the street names so they win collisions.
-  // Israeli colour code by road class: 1-digit national roads blue, 2-digit regional red,
-  // 3-digit local green, longer numbers grey. The shield images are drawn on demand by
-  // MapView (`styleimagemissing`), see `shieldImage()`.
-  // The current Protomaps builds carry the number in `ref` (no `shield_text`), and a road can
-  // list several refs separated by ";": the first one is the shield.
+  // Road numbers as Israeli signs (as in hebrew-maps): freeways blue, 1-2 digit roads red,
+  // 3 digit green, 4 digit white with a black frame; a rounded badge with the inner white frame
+  // of the real signs, the number drawn into the image. MapView's missing-image resolver draws
+  // `shield:<kind>:<number>` on demand (shieldImage()). A road that carries several numbers
+  // ("1;20") shows the first one.
   if (o.roadShields === false) ls = ls.filter((l) => l.id !== "roads_shields");
   const shields = ls.find((l) => l.id === "roads_shields");
   if (shields && shields.type === "symbol") {
+    const raw: ExpressionSpecification = ["to-string", ["coalesce", ["get", "shield_text"], ["get", "ref"], ""]];
+    const semi: ExpressionSpecification = ["index-of", ";", raw];
+    const ref: ExpressionSpecification = ["case", [">", semi, 0], ["slice", raw, 0, semi], raw];
+    const n: ExpressionSpecification = ["length", ref];
+    const kind: ExpressionSpecification = ["case", ["==", ["get", "kind"], "highway"], "fw", ["<=", n, 2], "nat", ["==", n, 3], "reg", "loc"];
     shields.minzoom = 7;
-    const refText: ExpressionSpecification = ["coalesce", ["get", "shield_text"], ["get", "ref"], ""];
-    const n: ExpressionSpecification = ["length", refText];
-    // (no split expression in the style spec: roads with several numbers "1;20" get no shield)
-    shields.filter = ["all", ["in", ["get", "kind"], ["literal", ["highway", "major_road"]]], [">", n, 0], ["<=", n, 5], ["==", ["index-of", ";", refText], -1]];
+    shields.filter = ["all", ["in", ["get", "kind"], ["literal", ["highway", "major_road", "medium_road"]]], [">", n, 0], ["<=", n, 4]];
     shields.layout = {
-      ...shields.layout,
-      "icon-image": ["concat", "shield-", ["case", ["<=", n, 1], "blue", ["<=", n, 2], "red", ["<=", n, 3], "green", "grey"], "-", n],
-      "text-field": refText,
-      "text-font": ["Noto Sans Medium"],
-      "text-size": ["interpolate", ["linear"], ["zoom"], 7, 10, 11, 12, 15, 14],
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.83, 11, 1, 15, 1.17],
-      "text-offset": [0, 0.05],
-      "symbol-spacing": 160,
-      "text-padding": 1,
-      "icon-allow-overlap": false,
+      "icon-image": ["concat", "shield:", kind, ":", ref],
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 7, 0.85, 12, 1, 16, 1.1],
+      "icon-rotation-alignment": "viewport",
+      "icon-padding": 6,
+      "symbol-placement": "line",
+      "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 8, 420, 14, 546],
+      // the most important roads win when shields compete for space
+      "symbol-sort-key": ["match", ["get", "kind"], "highway", 0, "major_road", 1, 2],
     };
-    shields.paint = { "text-color": "#ffffff", "text-halo-width": 0 };
+    shields.paint = {};
   }
   if (o.buildings3d) {
     const idx = ls.findIndex((l) => l.id === "buildings");
@@ -268,10 +378,29 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     const bgIdx = ls.findIndex((l) => l.id === "background");
     ls.splice(bgIdx + 1, 0, satelliteLayer());
   }
-  if (dem && o.hillshade) {
+  if (dem && hillshade) {
     // relief shading over the ground fills (earth / landuse / water), under roads and labels
     const idx = ls.findIndex((l) => l.type === "line" || l.type === "symbol");
     ls.splice(idx < 0 ? ls.length : idx, 0, hillshadeLayer());
+  }
+  // contours and trails: lines under the first label layer, their labels on top
+  const firstLabel = () => {
+    const i = ls.findIndex((l) => l.type === "symbol");
+    return i < 0 ? ls.length : i;
+  };
+  const putOverlay = (layers: LayerSpecification[]) => {
+    const lines = layers.filter((l) => l.type !== "symbol");
+    const labels = layers.filter((l) => l.type === "symbol");
+    ls.splice(firstLabel(), 0, ...lines);
+    ls.push(...labels);
+  };
+  if (o.contourTiles && (o.contours || topo)) {
+    base.sources.contours = { type: "vector", tiles: [o.contourTiles], maxzoom: 15, attribution: o.terrainUrl?.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION };
+    putOverlay(contourLayers(o.flavor === "dark", o.lang));
+  }
+  if (o.trailsUrl && (o.trails || topo)) {
+    base.sources.trails = { type: "geojson", data: o.trailsUrl, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>' };
+    putOverlay(trailLayers());
   }
   // Protomaps' layer list already starts with its own "background" layer. Outside the extracted
   // bbox there are no water polygons, so paint the background as sea instead of bare land.

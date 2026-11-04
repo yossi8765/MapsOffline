@@ -112,9 +112,10 @@ pub async fn geocode_reverse(state: State<'_, Arc<AppState>>, lon: f64, lat: f64
 }
 
 /// Points of interest of the given categories inside the viewport (map layer). The `category`
-/// field carries the raw category id so the frontend can pick the marker icon.
+/// field carries the raw category id so the frontend can pick the marker icon. With `zoom`, only
+/// the POIs the build-time thinning shows at that zoom (fewer, evenly spread, stable icons).
 #[tauri::command]
-pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox: [f64; 4], limit: Option<usize>) -> R<Vec<GeoResult>> {
+pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox: [f64; 4], limit: Option<usize>, zoom: Option<f64>) -> R<Vec<GeoResult>> {
     let st = state.inner().clone();
     let limit = limit.unwrap_or(1500).clamp(1, 10000);
     tauri::async_runtime::spawn_blocking(move || {
@@ -122,7 +123,7 @@ pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox:
         let overlaps = |b: &[f64; 4]| !(bbox[2] < b[0] || bbox[0] > b[2] || bbox[3] < b[1] || bbox[1] > b[3]);
         let mut out = Vec::new();
         if overlaps(&crate::paths::BBOX_ISRAEL) {
-            match st.with_geocoder(|g| g.pois_in_bbox(&c, bbox, limit)) {
+            match st.with_geocoder(|g| g.pois_in_bbox(&c, bbox, limit, zoom)) {
                 Ok(v) => out = v,
                 Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
                 Err(e) => return Err(err(e)),
@@ -133,7 +134,7 @@ pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox:
                 break;
             }
             if overlaps(&b) {
-                if let Ok(mut v) = st.with_region_geocoder(&path, |g| g.pois_in_bbox(&c, bbox, limit - out.len())) {
+                if let Ok(mut v) = st.with_region_geocoder(&path, |g| g.pois_in_bbox(&c, bbox, limit - out.len(), zoom)) {
                     out.append(&mut v);
                 }
             }
@@ -174,6 +175,7 @@ fn parse_coord(q: &str) -> Option<GeoResult> {
         house_number: None,
         category: None,
         score: 100.0,
+        extra: None,
     })
 }
 
@@ -333,6 +335,17 @@ pub async fn transit_line_times(state: State<'_, Arc<AppState>>, short_name: Str
     })
     .await
     .map_err(err)?
+}
+
+/// Typical delay (minutes, median of the last week's rides) of each boarding, from Open Bus
+/// Stride. Slow (10–15 s) and online only: the UI calls it after showing the routes. None per
+/// boarding when unknown, offline, or `settings.transitReliability` is off.
+#[tauri::command]
+pub async fn transit_delays(state: State<'_, Arc<AppState>>, legs: Vec<crate::online::stride::DelayQuery>) -> R<Vec<Option<f64>>> {
+    if !state.settings.read().transit_reliability {
+        return Ok(vec![None; legs.len()]);
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::online::stride::delays(&legs)).await.map_err(err)
 }
 
 /// Departure board of a stop (by code, else nearest served stop within 40 m).
@@ -561,14 +574,36 @@ pub async fn locate() -> R<crate::types::MyLocation> {
 /// Absolute path of the elevation archive, if installed.
 #[tauri::command]
 pub fn terrain_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
-    let p = state.paths().terrain_file();
+    let p = state.paths().terrain_file_in_use();
     Ok(p.exists().then(|| p.display().to_string()))
+}
+
+/// Absolute path of the marked-trails GeoJSON, if installed (map: geojson source via the asset protocol).
+#[tauri::command]
+pub fn trails_path(state: State<'_, Arc<AppState>>) -> R<Option<String>> {
+    let p = state.paths().trails_file();
+    Ok(p.exists().then(|| p.display().to_string()))
+}
+
+/// Weekly prayer timetable of the synagogue at this point (`poi_name` helps between neighbours).
+/// Err "NO_MINYANIM_DATA" when the component is not installed.
+#[tauri::command]
+pub async fn minyanim_for(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, poi_name: Option<String>) -> R<Option<crate::data::minyanim::MinyanTable>> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::minyanim::table_for(&paths, lon, lat, poi_name.as_deref()).map_err(err)).await.map_err(err)?
+}
+
+/// Prayers starting soon around a point (default: within 180 minutes), soonest first.
+#[tauri::command]
+pub async fn minyanim_next(state: State<'_, Arc<AppState>>, lon: f64, lat: f64, radius_m: f64, within_min: Option<i64>) -> R<Vec<crate::data::minyanim::NextMinyan>> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::minyanim::next_near(&paths, lon, lat, radius_m, within_min).map_err(err)).await.map_err(err)?
 }
 
 /// Elevation in metres at each point (None outside the installed DEM), for route profiles.
 #[tauri::command]
 pub async fn elevation_profile(state: State<'_, Arc<AppState>>, points: Vec<LonLat>) -> R<Vec<Option<f32>>> {
-    let archive = state.paths().terrain_file();
+    let archive = state.paths().terrain_file_in_use();
     if !archive.exists() {
         return Err("NO_TERRAIN_DATA".into());
     }
@@ -865,7 +900,8 @@ pub async fn save_text_file(path: String, contents: String) -> R<()> {
     // Only the route-export kinds the save dialog offers: the path comes from the webview, and
     // this must not become a way to overwrite arbitrary files (programs, settings).
     let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("gpx" | "kml" | "txt")) {
+    // (json: favorites export)
+    if !matches!(ext.as_deref(), Some("gpx" | "kml" | "txt" | "json")) {
         return Err("SAVE_FAILED: unsupported file type".into());
     }
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, contents).map_err(|e| format!("SAVE_FAILED: {e}"))).await.map_err(err)?
@@ -877,4 +913,57 @@ pub async fn regions_locate(state: State<'_, Arc<AppState>>, query: String) -> R
     let paths = state.paths();
     let lang = state.settings.read().language.clone();
     tauri::async_runtime::spawn_blocking(move || crate::data::regions::locate(&paths, &query, &lang).map_err(err)).await.map_err(err)?
+}
+
+/// The link the app was started with, once (later links arrive as the "open-link" event).
+#[tauri::command]
+pub fn take_pending_link() -> Option<String> {
+    crate::PENDING_LINK.lock().take()
+}
+
+// ---------------------------------------------------------------- live navigation
+
+/// Navigate `route` with the Windows location service. Progress arrives as "nav-update" events
+/// (snapped position, current maneuver, distances, ETA, offRoute / rerouteNeeded, arrived);
+/// "nav-error" when the location is denied or lost, "nav-ended" when it stops.
+#[tauri::command]
+pub fn nav_start(app: AppHandle, state: State<'_, Arc<AppState>>, route: Route) -> R<()> {
+    let voice = state.settings.read().nav_voice;
+    crate::nav::start(app, &route, crate::nav::Source::Gps, voice).map_err(err)
+}
+
+/// Like nav_start, but drives along the route at `speed_kmh` (no GPS needed).
+#[tauri::command]
+pub fn nav_simulate(app: AppHandle, state: State<'_, Arc<AppState>>, route: Route, speed_kmh: Option<f64>) -> R<()> {
+    let voice = state.settings.read().nav_voice;
+    let speed_kmh = speed_kmh.unwrap_or(50.0).clamp(5.0, 300.0);
+    crate::nav::start(app, &route, crate::nav::Source::Simulate { speed_kmh }, voice).map_err(err)
+}
+
+/// Replace the route of the running session (after a reroute).
+#[tauri::command]
+pub fn nav_set_route(route: Route) -> R<()> {
+    crate::nav::set_route(&route).map_err(err)
+}
+
+#[tauri::command]
+pub fn nav_set_voice(on: bool) {
+    crate::nav::set_voice(on);
+}
+
+#[tauri::command]
+pub fn nav_stop() {
+    crate::nav::stop();
+}
+
+/// Say `text` with the Hebrew system voice (when installed).
+#[tauri::command]
+pub fn speak(text: String) {
+    crate::voice::say(&text);
+}
+
+/// Installed text-to-speech voices: [displayName, language], the one used first.
+#[tauri::command]
+pub async fn voices_list() -> R<Vec<(String, String)>> {
+    tauri::async_runtime::spawn_blocking(crate::voice::voices).await.map_err(err)
 }

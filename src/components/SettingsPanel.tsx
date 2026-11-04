@@ -6,6 +6,9 @@ import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
 import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
+import { SHORTCUTS } from "./ShortcutsDialog";
+import { DATA_COMPONENTS } from "../lib/api";
+import { fmtDateTime } from "../lib/format";
 
 export function SettingsPanel() {
   const t = useT();
@@ -22,6 +25,17 @@ export function SettingsPanel() {
   const { checkAppUpdate, installAppUpdate } = useStore.getState();
   const update = useStore((s) => s.updateSettings);
   const statusDir = useStore((s) => s.dataStatus?.dir);
+  const dataStatus = useStore((s) => s.dataStatus);
+  // "נתונים: OSM 2026-11-01 · עודכנו 03/11/2026": the source date of the map / routing data and
+  // when data was last installed here
+  const dataStamp = (() => {
+    const osm = [dataStatus?.routing?.version, dataStatus?.geocode?.version].map((v) => /OSM (\d{4}-\d{2}-\d{2})/.exec(v ?? "")?.[1]).find(Boolean);
+    const times = DATA_COMPONENTS.map((c) => dataStatus?.[c]?.updatedIso).filter((x): x is string => !!x).sort();
+    const built = times.length ? fmtDateTime(times[times.length - 1]).split(" ")[0] : "";
+    if (!osm && !built) return "";
+    const parts = [osm ? t("dataStampOsm").replace("{d}", osm) : "", built ? t("dataStampBuilt").replace("{d}", built) : ""].filter(Boolean);
+    return `${t("dataStamp")}: ${parts.join(" · ")}`;
+  })();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const chooseDir = async () => {
@@ -98,6 +112,8 @@ export function SettingsPanel() {
 
       <Section title={t("startup")}>
         <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
+        <Toggle label={t("navVoiceSetting")} checked={settings.navVoice ?? true} onChange={(v) => void update({ navVoice: v })} />
+        <Toggle label={t("transitReliabilitySetting")} checked={settings.transitReliability ?? true} onChange={(v) => void update({ transitReliability: v })} />
       </Section>
 
       <Section title={t("navigationDefaults")} hint={`${t("navDefaultsHint")} ${t("avoidAreasHint")}`}>
@@ -125,16 +141,10 @@ export function SettingsPanel() {
         </Row>
       </Section>
 
-      <Section title={t("shortcuts")}>
-        {[
-          ["Ctrl+F", t("shortcutSearch")],
-          ["Ctrl+R", t("shortcutRoute")],
-          ["Ctrl+H", t("shortcutHistory")],
-          ["Esc", t("shortcutEsc")],
-          ["+ / \u2212", t("shortcutZoom")],
-        ].map(([k, v]) => (
+      <Section title={t("shortcuts")} hint={t("shortcutsNote")}>
+        {SHORTCUTS.map(([k, label]) => (
           <div key={k} className="row min-h-10 justify-between">
-            <span className="text-base">{v}</span>
+            <span className="text-base">{t(label)}</span>
             <kbd className="kbd" dir="ltr">
               {k}
             </kbd>
@@ -192,6 +202,7 @@ export function SettingsPanel() {
           {t("appName")} {version && <span className="text-subtle font-normal num">v{version}</span>}
         </div>
         <p className="m-0 text-muted">{t("aboutText")}</p>
+        {dataStamp && <p className="m-0 text-xs text-muted num">{dataStamp}</p>}
         <div className="group-list mt-2">
           <Toggle label={t("autoCheckAppUpdates")} checked={settings.autoCheckAppUpdates} onChange={(v) => void update({ autoCheckAppUpdates: v })} />
           <div className="row gap-2 flex-wrap">

@@ -81,7 +81,7 @@ const C = {
 export const POI_CATEGORIES: PoiCategory[] = [
   // religion
   { id: "synagogue", group: "religion", cats: ["place_of_worship:jewish"], label: "catSynagogue", color: C.religion, svg: Synagogue },
-  { id: "yeshiva", group: "religion", cats: ["place_of_worship:jewish", "college", "school"], nameMatch: /ישיב|מדרש|כולל|ביהמ/, label: "catYeshiva", color: "#6d28d9", svg: BookOpen },
+  { id: "yeshiva", group: "religion", cats: ["place_of_worship:jewish", "college", "school"], nameMatch: /(?:^|[^\u05d0-\u05ea])(?:ישיב|מדרש|ביהמ|כולל(?![\u05d0-\u05ea]))/, label: "catYeshiva", color: "#6d28d9", svg: BookOpen },
   { id: "mikveh", group: "religion", cats: ["mikveh", "mikvah", "public_bath"], label: "catMikveh", color: "#0284c7", svg: Droplets },
   { id: "cemetery", group: "religion", cats: ["grave_yard", "cemetery"], label: "catCemetery", color: "#52525b", svg: Tombstone },
   // transport
@@ -134,8 +134,11 @@ export function poiCategory(id: string): PoiCategory | undefined {
   return POI_CATEGORIES.find((c) => c.id === id);
 }
 
-/** Which of the *selected* categories a POI belongs to (first match; name filters respected). */
+/** Which of the *selected* categories a POI belongs to. Categories with a name filter (yeshivot
+ *  among the synagogues) are tried first, so the icon no longer depends on the order the user
+ *  picked them in. */
 export function categoryOf(rawCat: string, name: string, selected: PoiCategory[]): PoiCategory | undefined {
   const base = rawCat.split(":")[0];
-  return selected.find((c) => c.cats.some((x) => (x.includes(":") ? x === rawCat : x === base)) && (!c.nameMatch || c.nameMatch.test(name)));
+  const ordered = [...selected].sort((a, b) => Number(!!b.nameMatch) - Number(!!a.nameMatch));
+  return ordered.find((c) => c.cats.some((x) => (x.includes(":") ? x === rawCat : x === base)) && (!c.nameMatch || c.nameMatch.test(name)));
 }

@@ -159,7 +159,7 @@ pub fn parse_percent(line: &str) -> Option<u64> {
     digits.parse::<u64>().ok().filter(|p| *p <= 100)
 }
 
-fn ensure_cli(
+pub(crate) fn ensure_cli(
     paths: &DataPaths,
     progress: ProgressFn,
     cancel: &Cancel,
@@ -228,7 +228,7 @@ fn verify_tiles(p: &Path, min_size: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_extract(
+pub(crate) fn run_extract(
     paths: &DataPaths,
     src: &str,
     tmp: &Path,

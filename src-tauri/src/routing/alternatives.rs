@@ -58,6 +58,38 @@ fn fmt(t: DateTime<chrono_tz::Tz>) -> String {
 }
 
 /// (depart, arrive) ISO strings for a route of `duration` seconds.
+/// What the request asked to avoid that the chosen route still uses (the avoid options are
+/// penalties, not bans, except the restricted areas). Values match the UI: "toll",
+/// "motorway", "unpaved" (only edges the unpaved rule counts: long ones with unpavedLongOnly),
+/// "ferry", "areaA", "areaB".
+pub fn avoid_violations(g: &Graph, req: &RouteRequest, edges: impl Iterator<Item = u32>) -> Vec<String> {
+    use crate::routing::graph::flags;
+    use crate::routing::profile::UNPAVED_LONG_M;
+    let a = &req.avoid;
+    let mut hit = 0u32;
+    let mut unpaved = false;
+    for e in edges {
+        let f = g.e_flags[e as usize];
+        hit |= f;
+        if f & flags::UNPAVED != 0 && (!a.unpaved_long_only || g.e_len[e as usize] > UNPAVED_LONG_M) {
+            unpaved = true;
+        }
+    }
+    let mut out = Vec::new();
+    let mut add = |on: bool, name: &str| {
+        if on {
+            out.push(name.to_string());
+        }
+    };
+    add(a.toll && hit & flags::TOLL != 0, "toll");
+    add(a.motorway && hit & flags::MOTORWAY != 0, "motorway");
+    add(a.unpaved && unpaved, "unpaved");
+    add(a.ferry && hit & flags::FERRY != 0, "ferry");
+    add(a.area_a && hit & flags::AREA_A != 0, "areaA");
+    add(a.area_b && hit & flags::AREA_B != 0, "areaB");
+    out
+}
+
 pub fn resolve_times(time: &TimeSpec, duration: f64) -> (Option<String>, Option<String>) {
     let dur = Duration::seconds(duration.round() as i64);
     let now = Utc::now().with_timezone(&Jerusalem);
@@ -263,6 +295,9 @@ pub fn route_with_alternatives(g: &Graph, req: &RouteRequest) -> anyhow::Result<
             arrive_iso,
             transfers: 0,
             walk_m: if req.mode == Mode::Foot { c.distance } else { 0.0 },
+            fare_estimate_ils: None,
+            fare_note: None,
+            avoid_violations: avoid_violations(g, req, c.paths.iter().flat_map(|p| p.states.iter().map(|s| s >> 1))),
         });
     }
     log::debug!("assembled: {:?}", t0.elapsed());

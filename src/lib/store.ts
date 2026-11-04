@@ -27,6 +27,7 @@ import {
   type TransitPreference,
 } from "./api";
 import { translate, type I18nKey } from "./i18n";
+import { POI_CATEGORIES } from "./poiCategories";
 
 export type Panel = "route" | "search" | "favorites" | "history" | "layers" | "data" | "settings";
 
@@ -65,8 +66,12 @@ export interface MapLayers {
   transitStops: boolean;
   flavor: "auto" | "light" | "dark" | "grayscale";
   labelLang: "he" | "en" | "ar";
-  /** Thematic map: standard, cycling, public transport. */
-  theme: "standard" | "cycle" | "transit";
+  /** Thematic map: standard, cycling, public transport, topographic (hiking). */
+  theme: "standard" | "cycle" | "transit" | "topo";
+  /** Contour lines from the elevation data (always on in the topographic theme). */
+  contours: boolean;
+  /** Marked hiking / cycling trails (always on in the topographic theme; needs trails data). */
+  trails: boolean;
 }
 
 export interface HighlightState {
@@ -99,6 +104,8 @@ const DEFAULT_SETTINGS: Settings = {
   avoidHardTurns: true,
   transitPreference: "fastest",
   usePrebuiltData: true,
+  transitReliability: true,
+  navVoice: true,
 };
 
 /** Route-panel defaults derived from the settings. */
@@ -129,6 +136,16 @@ interface State {
   layers: MapLayers;
   appVersion: string;
   transitStopsUnavailable: boolean;
+  /** Map layers popover (opened from a map button; components/LayersPopover.tsx). */
+  layersOpen: boolean;
+  /** Bumped by the "N" shortcut: MapView turns the map north-up and flat (bearing 0, pitch 0). */
+  northUpTick: number;
+  /** Keyboard-shortcut table dialog (App). */
+  shortcutsOpen: boolean;
+  /** "What's nearby" list (context menu): places within 600 m of a point, nearest first. */
+  nearby: { lon: number; lat: number; items: GeoResult[]; loading: boolean } | null;
+  /** A place to show in the search panel's card, set from outside the panel (links, nearby list). */
+  searchPick: { lon: number; lat: number; label: string; result?: GeoResult; tick: number } | null;
 
   // map
   mapCenter: LonLat;
@@ -154,6 +171,8 @@ interface State {
   routeTick: number;
   highlight: HighlightState | null;
   lastRequest: RouteRequest | null;
+  /** live navigation session (src/lib/nav.ts), null when not navigating */
+  navigation: import("./nav").NavState | null;
 
   // data
   dataStatus: DataStatus | null;
@@ -188,6 +207,14 @@ interface State {
 interface Actions {
   setPanel: (p: Panel) => void;
   toggleSidebar: () => void;
+  setLayersOpen: (open: boolean) => void;
+  toggleLayers: () => void;
+  /** Open a place in the search panel card (marker + fly-to). */
+  pickPlace: (p: { lon: number; lat: number; label: string; result?: GeoResult }, zoom?: number) => void;
+  /** Handle a `mapsoffline://map=<z>/<lat>/<lon>&q=<label>` link (also `geo:<lat>,<lon>`). */
+  openLink: (url: string) => boolean;
+  showNearby: (lon: number, lat: number) => Promise<void>;
+  closeNearby: () => void;
   setContextMenu: (c: ContextMenuState | null) => void;
   toast: (kind: Toast["kind"], text: string) => void;
   toastError: (e: unknown) => void;
@@ -216,6 +243,9 @@ interface Actions {
   setAvoid: (a: Partial<Avoid>) => void;
   setAlternativesCount: (n: number) => void;
   computeRoute: () => Promise<void>;
+  /** start live navigation along one of the current routes (simulate: drive it without GPS) */
+  startNavigation: (routeId: string, simulate?: boolean) => Promise<void>;
+  stopNavigation: () => Promise<void>;
   selectRoute: (id: string | null) => void;
   /** Click on a route card: select it (opening its steps), or toggle the steps when already selected. */
   toggleRoute: (id: string) => void;
@@ -273,7 +303,51 @@ export function sortTransit(routes: Route[], pref: TransitPreference, timeKind: 
   return [...routes].sort(by);
 }
 
-const DEFAULT_LAYERS: MapLayers = { satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard" };
+/** `mapsoffline://map=<z>/<lat>/<lon>&q=<label>` (our share links) or RFC 5870
+ *  `geo:<lat>,<lon>[,alt][;u=..][?z=<zoom>&q=<label>]`. `geo:0,0?q=<text>` (the Android form for
+ *  "search this address") yields `query`; `q=<lat>,<lon>(<label>)` yields the label. */
+export function parseMapLink(url: string): { lon: number; lat: number; zoom?: number; label?: string; query?: string } | null {
+  const u = url.trim();
+  let m = /^mapsoffline:\/*map=([\d.]+)\/(-?[\d.]+)\/(-?[\d.]+)(?:&q=(.*))?$/i.exec(u);
+  if (m) {
+    const [zoom, lat, lon] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (![zoom, lat, lon].every(Number.isFinite) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    let label: string | undefined;
+    try {
+      label = m[4] ? decodeURIComponent(m[4]) : undefined;
+    } catch {
+      label = m[4];
+    }
+    return { lon, lat, zoom, label };
+  }
+  m = /^geo:(-?[\d.]+),(-?[\d.]+)(?:[;,][^?]*)?(?:\?(.*))?$/i.exec(u);
+  if (m) {
+    const lat = Number(m[1]);
+    const lon = Number(m[2]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    const q = new URLSearchParams(m[3] ?? "");
+    const z = Number(q.get("z"));
+    const zoom = Number.isFinite(z) && z > 0 ? z : undefined;
+    const text = q.get("q")?.trim() || undefined;
+    // q=<lat>,<lon>(<label>)
+    const pin = text ? /^(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*(?:\((.*)\))?$/.exec(text) : null;
+    if (pin) return { lon: Number(pin[2]), lat: Number(pin[1]), zoom, label: pin[3] || undefined };
+    if (lat === 0 && lon === 0) return text ? { lon, lat, zoom, query: text } : null;
+    return { lon, lat, zoom, label: text };
+  }
+  return null;
+}
+
+/** Share link of a place (see parseMapLink). */
+export function makeMapLink(lon: number, lat: number, zoom: number, label?: string): string {
+  return `mapsoffline://map=${Math.round(zoom * 10) / 10}/${lat.toFixed(6)}/${lon.toFixed(6)}${label ? `&q=${encodeURIComponent(label)}` : ""}`;
+}
+
+function fmtCoordsShort(lon: number, lat: number) {
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
+const DEFAULT_LAYERS: MapLayers ={ satellite: false, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard", contours: false, trails: false };
 const LAYERS_KEY = "mapsoffline.layers";
 
 /** The map layers chosen last time. Read synchronously so the map is created with them (a later
@@ -314,6 +388,11 @@ export const useStore = create<State & Actions>((set, get) => ({
   layers: loadSavedLayers(),
   appVersion: "",
   transitStopsUnavailable: false,
+  layersOpen: false,
+  northUpTick: 0,
+  shortcutsOpen: false,
+  nearby: null,
+  searchPick: null,
 
   mapCenter: [34.78, 32.08],
   mapZoom: 8,
@@ -336,6 +415,15 @@ export const useStore = create<State & Actions>((set, get) => ({
   routeTick: 0,
   highlight: null,
   lastRequest: null,
+  navigation: null,
+  startNavigation: async (routeId, simulate) => {
+    const m = await import("./nav");
+    await m.startNavigation(routeId, simulate);
+  },
+  stopNavigation: async () => {
+    const m = await import("./nav");
+    await m.stopNavigation();
+  },
 
   dataStatus: null,
   dataCheck: null,
@@ -362,6 +450,54 @@ export const useStore = create<State & Actions>((set, get) => ({
   // ---------------------------------------------------------------- ui
   setPanel: (panel) => set({ panel, sidebarCollapsed: false }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  setLayersOpen: (layersOpen) => set({ layersOpen }),
+  // the layers popover and the nearby list share the spot next to the map buttons
+  toggleLayers: () => set((s) => ({ layersOpen: !s.layersOpen, nearby: null })),
+  pickPlace: (p, zoom) => {
+    const s = get();
+    set((st) => ({ searchPick: { ...p, tick: (st.searchPick?.tick ?? 0) + 1 }, panel: "search", sidebarCollapsed: false }));
+    s.setMarker({ lonlat: [p.lon, p.lat], label: p.label });
+    s.flyToPoint([p.lon, p.lat], zoom ?? (p.result?.kind === "place" ? 13 : 17));
+  },
+  openLink: (url) => {
+    const parsed = parseMapLink(url);
+    if (!parsed) return false;
+    // `geo:0,0?q=<address text>`: search for the text and open the best result
+    if (parsed.query) {
+      const q = parsed.query;
+      void api
+        .geocodeSearch(q, get().mapCenter, 1)
+        .then((res) => {
+          const r = res[0];
+          if (r) get().pickPlace({ lon: r.lon, lat: r.lat, label: r.name, result: r });
+          else get().toast("info", `${translate(get().settings.language, "searchNoResults")}: ${q}`);
+        })
+        .catch((e) => get().toastError(e));
+      return true;
+    }
+    get().pickPlace({ lon: parsed.lon, lat: parsed.lat, label: parsed.label || fmtCoordsShort(parsed.lon, parsed.lat) }, parsed.zoom);
+    return true;
+  },
+  showNearby: async (lon, lat) => {
+    set({ nearby: { lon, lat, items: [], loading: true }, layersOpen: false });
+    // 600 m box around the point; every category the map knows
+    const dLat = 600 / 111_320;
+    const dLon = 600 / (111_320 * Math.cos((lat * Math.PI) / 180));
+    const cats = [...new Set(POI_CATEGORIES.flatMap((c) => c.cats))];
+    try {
+      const res = await api.poiLayer(cats, [lon - dLon, lat - dLat, lon + dLon, lat + dLat], 400);
+      const dist = (r: GeoResult) => Math.hypot((r.lon - lon) * Math.cos((lat * Math.PI) / 180), r.lat - lat);
+      const items = res
+        .filter((r) => r.name && dist(r) * 111_320 <= 600)
+        .sort((a, b) => dist(a) - dist(b))
+        .slice(0, 30);
+      if (get().nearby?.lon === lon && get().nearby?.lat === lat) set({ nearby: { lon, lat, items, loading: false } });
+    } catch (e) {
+      set({ nearby: null });
+      get().toastError(e);
+    }
+  },
+  closeNearby: () => set({ nearby: null }),
   setContextMenu: (contextMenu) => set({ contextMenu }),
   toast: (kind, text) => {
     const id = toastSeq++;
@@ -559,7 +695,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         highlight: null,
       });
       if (routes.length) {
-        const label = `${pts[0]!.label} ← ${pts[pts.length - 1]!.label}`;
+        const label = `${pts[0]!.label} ${get().settings.language === "en" ? "→" : "←"} ${pts[pts.length - 1]!.label}`;
         const r = routes[0];
         void get().addHistory("route", label, {
           request: req,

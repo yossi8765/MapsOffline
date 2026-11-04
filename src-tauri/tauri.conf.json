@@ -44,6 +44,11 @@
       }
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["mapsoffline", "geo"] }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

@@ -48,6 +48,45 @@ pub struct GeoResult {
     /// Ranking score (higher is better) – informative only.
     #[serde(default)]
     pub score: f64,
+    /// Optional details (opening hours, nearest house number, how the query was read), flattened
+    /// into the same JSON object; `None` for most results.
+    #[serde(flatten, default)]
+    pub extra: Option<Box<GeoExtra>>,
+}
+
+/// Optional `GeoResult` fields (camelCase in JSON, each omitted when absent).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoExtra {
+    /// Raw OSM `opening_hours` of a point of interest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_hours: Option<String>,
+    /// Open right now (Asia/Jerusalem); absent when the hours are unknown or could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_now: Option<bool>,
+    /// "HH:MM" today when it closes (open now) …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closes_at: Option<String>,
+    /// … or the next opening ("HH:MM", or "Mon HH:MM"-style ISO date-time when not today).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opens_at: Option<String>,
+    /// Kosher (OSM `diet:kosher` yes/only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kosher: Option<bool>,
+    /// The asked house number does not exist: the result is placed at this existing number
+    /// (same side of the street when possible). UI: "מיקום משוער (ליד מס׳ N)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_house_number: Option<String>,
+    /// How the query was understood when it was not taken literally (keyboard layout fixed,
+    /// typo corrected, category + place): set on the first result only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpretation: Option<String>,
+}
+
+impl GeoExtra {
+    pub fn is_empty(&self) -> bool {
+        *self == GeoExtra::default()
+    }
 }
 
 // ---------------------------------------------------------------- routing
@@ -222,6 +261,10 @@ pub struct TransitLegInfo {
     pub arrive_iso: String,
     pub num_stops: u32,
     pub stops: Vec<TransitStopTime>,
+    /// Typical delay of this line at the boarding stop (minutes, median of recent rides), from
+    /// Open Bus Stride when online and `settings.transitReliability`; None otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_p50_min: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +315,16 @@ pub struct Route {
     /// Total walking meters (transit only).
     #[serde(default)]
     pub walk_m: f64,
+    /// Estimated Rav-Kav "ערך צבור" fare in shekels (transit only; `transit::fares`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fare_estimate_ils: Option<f64>,
+    /// How the fare was made up, e.g. "55 + 490 · 14.5 ₪ (כולל מעבר)" (transit only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fare_note: Option<String>,
+    /// Avoid options the route could not honour ("toll", "motorway", "unpaved", "ferry",
+    /// "areaA", "areaB"); local engine only, empty for online routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_violations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -472,10 +525,14 @@ pub enum DataComponent {
     Routing,
     Geocode,
     Transit,
+    /// Marked hiking / cycling trails (GeoJSON from the OSM PBF)
+    Trails,
+    /// Synagogue prayer times (Nedarim Plus)
+    Minyanim,
 }
 
 impl DataComponent {
-    pub const ALL: [DataComponent; 7] = [
+    pub const ALL: [DataComponent; 9] = [
         DataComponent::Tiles,
         DataComponent::World,
         DataComponent::Satellite,
@@ -483,6 +540,8 @@ impl DataComponent {
         DataComponent::Routing,
         DataComponent::Geocode,
         DataComponent::Transit,
+        DataComponent::Trails,
+        DataComponent::Minyanim,
     ];
 }
 
@@ -524,6 +583,10 @@ pub struct DataCheck {
     pub routing: UpdateCheck,
     pub geocode: UpdateCheck,
     pub transit: UpdateCheck,
+    #[serde(default)]
+    pub trails: UpdateCheck,
+    #[serde(default)]
+    pub minyanim: UpdateCheck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -537,6 +600,10 @@ pub struct DataStatus {
     pub routing: ComponentStatus,
     pub geocode: ComponentStatus,
     pub transit: ComponentStatus,
+    #[serde(default)]
+    pub trails: ComponentStatus,
+    #[serde(default)]
+    pub minyanim: ComponentStatus,
     pub updating: bool,
     /// The running update is paused (resumes with `data_pause(false)`).
     #[serde(default)]
@@ -631,6 +698,12 @@ pub struct Settings {
     /// Take ready-made components from the project's weekly GitLab build when possible.
     #[serde(default = "default_true")]
     pub use_prebuilt_data: bool,
+    /// Show how late a line usually is at the boarding stop (Open Bus Stride, online only).
+    #[serde(default = "default_true")]
+    pub transit_reliability: bool,
+    /// Live navigation speaks the instructions (Windows Hebrew voice when installed).
+    #[serde(default = "default_true")]
+    pub nav_voice: bool,
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
@@ -707,6 +780,8 @@ impl Default for Settings {
             avoid_hard_turns: true,
             transit_preference: default_transit_pref(),
             use_prebuilt_data: true,
+            nav_voice: true,
+            transit_reliability: true,
         }
     }
 }

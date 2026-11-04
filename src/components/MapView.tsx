@@ -1,25 +1,35 @@
-import { useEffect, useRef, useState } from "react";
-import maplibregl, { type GeoJSONSource, type StyleSpecification } from "maplibre-gl";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import * as maplibregl from "maplibre-gl";
+// MapLibre 6 is ESM with a separate worker module: let Vite emit it and tell MapLibre where it is
+// (it otherwise looks next to its own module URL, which the bundle does not have).
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
+import type { GeoJSONSource, StyleSpecification } from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import { Database, Wifi } from "lucide-react";
 import { useStore, resolveTheme } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { buildStyle, DEFAULT_CENTER, DEFAULT_ZOOM, MAX_BOUNDS, firstSymbolLayer, isMergedTiles, type FlavorName } from "../lib/mapStyle";
 import { categoryOf, POI_CATEGORIES } from "../lib/poiCategories";
-import { CategoryPicker, LocateButton } from "./CategoryPicker";
-import { fmtCoords } from "../lib/format";
+import { CategoryPicker, LayersButton, LocateButton } from "./CategoryPicker";
+import { fmtCoords, fmtDistance } from "../lib/format";
 import { api, errorCode, type LonLat, type Route } from "../lib/api";
 import type { Feature, FeatureCollection, Point } from "geojson";
 import { ContextMenu } from "./ContextMenu";
+import { MapHoverCard, type HoverTarget } from "./MapHoverCard";
+import { NavigationView } from "./NavigationView";
 import { attachWheelGestures, getScrollMode } from "../lib/gestures";
+import { contourTilesUrl } from "../lib/contours";
+import { renderRouteImage } from "../lib/mapImage";
+import { setPrintMapProvider } from "../lib/print";
 
 let protocolRegistered = false;
 function ensureProtocol() {
   if (protocolRegistered) return;
+  maplibregl.setWorkerUrl(maplibreWorkerUrl);
   const protocol = new Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
-  // Hebrew/Arabic label shaping – bundled locally so it works offline.
-  maplibregl.setRTLTextPlugin(`${window.location.origin}/rtl-text.js`, false).catch((e) => console.warn("rtl plugin", e));
+  // MapLibre 6 draws right-to-left text itself: no RTL plugin any more.
   protocolRegistered = true;
 }
 
@@ -33,10 +43,35 @@ const SRC_ME = "my-location";
 const POIS_MIN_ZOOM = 11;
 const POIS_LIMIT = 1500;
 
+/** A colour token from src/styles.css (the active theme and colour scheme), with a fallback. */
+function cssVar(name: string, fallback: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+/** Every colour the map overlays use, read from the CSS tokens, so the theme and the colour
+ *  scheme reach the route, my location, stops and labels too. `dark` = the map is dark (the map
+ *  flavour can differ from the panel theme). */
+function mapColors(dark: boolean) {
+  const n = dark ? "-night" : "";
+  return {
+    me: cssVar("--map-me", "#1a66d9"),
+    casing: cssVar(`--map-casing${n}`, dark ? "#0b1220" : "#ffffff"),
+    halo: cssVar(`--map-halo${n}`, dark ? "#0b1220" : "#ffffff"),
+    label: cssVar(`--map-label${n}`, dark ? "#e2e8f0" : "#1e293b"),
+    alt: cssVar(`--map-alt${n}`, dark ? "#94a3b8" : "#64748b"),
+    stop: cssVar(`--map-stop${n}`, dark ? "#5c7a94" : "#4a6276"),
+    stopLabel: cssVar(`--map-stop-label${n}`, dark ? "#c3d0dc" : "#3b4f60"),
+    poiCard: cssVar(`--map-poi-card${n}`, dark ? "#1e293b" : "#ffffff"),
+    highlight: cssVar("--map-highlight", "#f59e0b"),
+    rail: cssVar("--map-rail", "#7c3aed"),
+    lightRail: cssVar("--map-light-rail", "#dc2626"),
+    bus: cssVar("--map-bus", "#0891b2"),
+    walk: cssVar("--map-walk", "#64748b"),
+  };
+}
+
 function modeColor(mode: string): string {
-  const css = getComputedStyle(document.documentElement);
-  const v = css.getPropertyValue(mode === "foot" ? "--route-foot" : mode === "bike" ? "--route-bike" : "--route-car").trim();
-  return v || "#2563eb";
+  return cssVar(mode === "foot" ? "--route-foot" : mode === "bike" ? "--route-bike" : "--route-car", "#1a66d9");
 }
 
 function legColor(route: Route, legIdx: number): string {
@@ -44,9 +79,10 @@ function legColor(route: Route, legIdx: number): string {
   if (leg?.transit) {
     const c = leg.transit.color;
     if (c) return c.startsWith("#") ? c : `#${c}`;
-    return leg.transit.vehicle === "rail" ? "#7c3aed" : leg.transit.vehicle === "light_rail" ? "#dc2626" : "#0891b2";
+    const mc = mapColors(false);
+    return leg.transit.vehicle === "rail" ? mc.rail : leg.transit.vehicle === "light_rail" ? mc.lightRail : mc.bus;
   }
-  if (leg?.kind === "walk" && route.mode === "transit") return "#64748b";
+  if (leg?.kind === "walk" && route.mode === "transit") return mapColors(false).walk;
   return modeColor(route.mode);
 }
 
@@ -101,19 +137,20 @@ function drawBusIcon(dark: boolean): ImageData {
     c.beginPath();
     c.roundRect(x, y, w, h, r);
   };
+  const mc = mapColors(dark);
   // outline + blue square
   rr(2, 2, 28, 28, 8);
-  c.fillStyle = dark ? "#0b1220" : "#ffffff";
+  c.fillStyle = mc.casing;
   c.fill();
   rr(3.5, 3.5, 25, 25, 7);
-  c.fillStyle = dark ? "#5c7a94" : "#4a6276";
+  c.fillStyle = mc.stop;
   c.fill();
   // bus body
   c.fillStyle = "#ffffff";
   rr(9, 7.5, 14, 15, 3);
   c.fill();
   // window band
-  c.fillStyle = dark ? "#5c7a94" : "#4a6276";
+  c.fillStyle = mc.stop;
   rr(11, 10, 10, 5.5, 1.2);
   c.fill();
   // lights
@@ -134,8 +171,8 @@ function addTransitStopLayers(map: maplibregl.Map, beforeId: string | undefined,
   const empty = { type: "FeatureCollection", features: [] } as FeatureCollection;
   if (!map.getSource(SRC_TSTOPS)) map.addSource(SRC_TSTOPS, { type: "geojson", data: empty });
   const before = beforeId && map.getLayer(beforeId) ? beforeId : undefined;
-  const text = dark ? "#c3d0dc" : "#3b4f60";
-  const halo = dark ? "#0b1220" : "#ffffff";
+  const text = mapColors(dark).stopLabel;
+  const halo = mapColors(dark).halo;
   if (!map.hasImage(BUS_ICON)) {
     try {
       const img = drawBusIcon(dark);
@@ -187,59 +224,18 @@ function addTransitStopLayers(map: maplibregl.Map, beforeId: string | undefined,
   }
 }
 
-/** Popup body for a transit stop: name, code and from/to buttons. */
-function stopPopupContent(name: string, code: string, lonlat: LonLat, sub = ""): HTMLElement {
-  const s = useStore.getState();
-  const root = document.createElement("div");
-  root.className = "flex flex-col gap-2 min-w-[180px]";
-  const title = document.createElement("div");
-  title.className = "font-semibold text-base pe-4";
-  title.textContent = name;
-  root.appendChild(title);
-  if (code || sub) {
-    const c = document.createElement("div");
-    c.className = "text-xs text-muted";
-    c.textContent = code ? `${s.t("stopCode")}: ${code}` : sub;
-    root.appendChild(c);
-  }
-  const row = document.createElement("div");
-  row.className = "flex gap-1.5";
-  const mk = (label: string, primary: boolean, onClick: () => void) => {
-    const b = document.createElement("button");
-    b.className = `btn btn-sm flex-1 ${primary ? "btn-primary" : ""}`;
-    b.textContent = label;
-    b.onclick = onClick;
-    return b;
-  };
-  const point = { lon: lonlat[0], lat: lonlat[1], label: name };
-  row.appendChild(
-    mk(s.t("ctxFromHere"), false, () => {
-      useStore.getState().setFrom(point);
-      useStore.getState().setPanel("route");
-    }),
-  );
-  row.appendChild(
-    mk(s.t("ctxToHere"), true, () => {
-      useStore.getState().setTo(point);
-      useStore.getState().setPanel("route");
-    }),
-  );
-  root.appendChild(row);
-  return root;
-}
-
 const POI_ICON_PX = 36;
 
-/** One marker style for every category: a rounded card with the lucide outline glyph in a
- * single ink colour (inverted in the dark theme), rasterised at the device pixel ratio. */
-function poiIconSvg(lucideSvg: string, dark: boolean): string {
+/** Category marker: a badge in the category's colour (the same colour as its chip and its
+ * label) with the white lucide glyph and a thin outline in the map's casing colour. */
+function poiIconSvg(lucideSvg: string, dark: boolean, color: string): string {
   const inner = lucideSvg.replace(/^[\s\S]*?<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
-  const card = dark ? "#1e293b" : "#ffffff";
-  const edge = dark ? "#475569" : "#cbd5e1";
-  const ink = dark ? "#e2e8f0" : "#334155";
+  const card = color;
+  const edge = mapColors(dark).casing;
+  const ink = "#ffffff";
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${POI_ICON_PX}" height="${POI_ICON_PX}" viewBox="0 0 36 36">` +
-    `<rect x="2.5" y="2.5" width="31" height="31" rx="9" fill="${card}" stroke="${edge}" stroke-width="1"/>` +
+    `<rect x="2.5" y="2.5" width="31" height="31" rx="9" fill="${card}" stroke="${edge}" stroke-width="1.5"/>` +
     `<g transform="translate(9 9) scale(0.75)" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>` +
     `</svg>`
   );
@@ -268,35 +264,63 @@ async function loadPoiIcons(map: maplibregl.Map, dark: boolean): Promise<void> {
             resolve();
           };
           img.onerror = () => resolve();
-          img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(poiIconSvg(c.svg, dark))}`;
+          img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(poiIconSvg(c.svg, dark, c.color))}`;
         }),
     ),
   );
 }
 
-/** Road-number shield `shield-<colour>-<chars>`: rounded rectangle in the class colour with a
- * white border, sized for `chars` digits at the 12 px label (icon-size 1 = zoom 11). */
-function shieldImage(name: string): ImageData | null {
-  const m = /^shield-(blue|red|green|grey)-(\d+)$/.exec(name);
+/** Israeli road-sign colours (hebrew-maps' palette). */
+const SHIELD_STYLES = {
+  fw: { bg: "#1D5BBF", fg: "#FFFFFF", frame: "#FFFFFF", edge: "#123C80" },
+  nat: { bg: "#D6332B", fg: "#FFFFFF", frame: "#FFFFFF", edge: "#8F1D17" },
+  reg: { bg: "#178246", fg: "#FFFFFF", frame: "#FFFFFF", edge: "#0D5A2F" },
+  loc: { bg: "#FFFFFF", fg: "#1F2328", frame: "#1F2328", edge: "#6B7280" },
+} as const;
+
+/** Road-number shield `shield:<fw|nat|reg|loc>:<number>`: a rounded badge with the inner frame
+ *  of the real signs and the number, drawn at the device pixel ratio. */
+function shieldImage(name: string): { data: ImageData; pixelRatio: number } | null {
+  const m = /^shield:(fw|nat|reg|loc):(.+)$/.exec(name);
   if (!m) return null;
-  const fill = { blue: "#1d5fd1", red: "#c62828", green: "#1e7f3c", grey: "#4b5563" }[m[1] as "blue" | "red" | "green" | "grey"];
-  const chars = Math.max(1, Math.min(6, Number(m[2])));
-  const w = 10 + 7.5 * chars;
-  const h = 17;
+  const st = SHIELD_STYLES[m[1] as keyof typeof SHIELD_STYLES];
+  const text = m[2].trim();
   const dpr = Math.max(1, Math.min(4, Math.ceil(window.devicePixelRatio || 1)));
+  const height = 18;
+  const font = `700 ${Math.round(height * 0.64)}px "Segoe UI", "Noto Sans", Arial, sans-serif`;
+  const probe = document.createElement("canvas").getContext("2d")!;
+  probe.font = font;
+  const w = Math.max(height + 2, Math.ceil(probe.measureText(text).width) + 12);
+  const h = height;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(w * dpr);
-  canvas.height = Math.ceil(h * dpr);
+  canvas.width = Math.round((w + 2) * dpr);
+  canvas.height = Math.round((h + 3) * dpr);
   const c = canvas.getContext("2d")!;
   c.scale(dpr, dpr);
+  // body with a soft drop shadow
+  c.shadowColor = "rgba(0,0,0,.28)";
+  c.shadowBlur = 1.5;
+  c.shadowOffsetY = 0.8;
   c.beginPath();
-  c.roundRect(0.5, 0.5, w - 1, h - 1, 3.5);
-  c.fillStyle = fill;
+  c.roundRect(1, 1, w, h, 3.5);
+  c.fillStyle = st.bg;
   c.fill();
-  c.lineWidth = 1.5;
-  c.strokeStyle = "#ffffff";
+  c.shadowColor = "transparent";
+  c.lineWidth = 1;
+  c.strokeStyle = st.edge;
   c.stroke();
-  return c.getImageData(0, 0, canvas.width, canvas.height);
+  // inner frame, as on the real signs
+  c.beginPath();
+  c.roundRect(2.6, 2.6, w - 3.2, h - 3.2, 2.2);
+  c.lineWidth = 1.1;
+  c.strokeStyle = st.frame;
+  c.stroke();
+  c.font = font;
+  c.fillStyle = st.fg;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillText(text, 1 + w / 2, 1 + h / 2 + 0.5);
+  return { data: c.getImageData(0, 0, canvas.width, canvas.height), pixelRatio: dpr };
 }
 
 /** "My location": accuracy disc (metres, scaled with zoom) + blue dot. */
@@ -311,9 +335,9 @@ function addMyLocationLayers(map: maplibregl.Map) {
       paint: {
         // radius in px = accuracy_m / metres-per-pixel(zoom); r0 is the value at zoom 0
         "circle-radius": ["interpolate", ["exponential", 2], ["zoom"], 0, ["get", "r0"], 22, ["*", ["get", "r0"], 4194304]],
-        "circle-color": "#2563eb",
+        "circle-color": mapColors(false).me,
         "circle-opacity": 0.12,
-        "circle-stroke-color": "#2563eb",
+        "circle-stroke-color": mapColors(false).me,
         "circle-stroke-opacity": 0.3,
         "circle-stroke-width": 1,
       },
@@ -324,7 +348,7 @@ function addMyLocationLayers(map: maplibregl.Map) {
       id: "my-location-dot",
       type: "circle",
       source: SRC_ME,
-      paint: { "circle-radius": 7, "circle-color": "#2563eb", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
+      paint: { "circle-radius": 7, "circle-color": mapColors(false).me, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 },
     });
   }
 }
@@ -340,20 +364,25 @@ function addPoiLayers(map: maplibregl.Map, beforeId: string | undefined, dark: b
         type: "symbol",
         source: SRC_POIS,
         minzoom: POIS_MIN_ZOOM,
+        // Fewer, named markers (hebrew-maps / Google): from zoom 13 a marker is drawn only with
+        // its name next to it (text-optional false), the name in the category's colour, placed on
+        // whichever side has room. Server-side thinning (minzoom per POI) keeps the density even.
         layout: {
           "icon-image": ["concat", "poi-", ["get", "cat"]],
           "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.55, 15, 0.75, 18, 0.9],
-          "icon-allow-overlap": true,
-          "icon-padding": 1,
-          "text-field": ["step", ["zoom"], "", 14, ["get", "name"]],
+          "icon-allow-overlap": false,
+          "icon-padding": 2,
+          "text-field": ["step", ["zoom"], "", 13, ["get", "name"]],
           "text-font": ["Noto Sans Regular"],
           "text-size": 11,
-          "text-offset": [0, 1.25],
-          "text-anchor": "top",
-          "text-optional": true,
+          "text-variable-anchor": ["top", "right", "left", "bottom"],
+          "text-radial-offset": 1.15,
+          "text-justify": "auto",
+          "text-optional": false,
           "text-max-width": 8,
+          "symbol-sort-key": ["get", "rank"],
         },
-        paint: { "text-color": dark ? "#e2e8f0" : "#1e293b", "text-halo-color": dark ? "#0b1220" : "#ffffff", "text-halo-width": 1.3 },
+        paint: { "text-color": ["get", "color"], "text-halo-color": mapColors(dark).halo, "text-halo-width": 1.4 },
       },
       before,
     );
@@ -365,7 +394,7 @@ function addLineLayers(map: maplibregl.Map, beforeId: string | undefined, dark: 
   const empty = { type: "FeatureCollection", features: [] } as FeatureCollection;
   if (!map.getSource(SRC_LINE)) map.addSource(SRC_LINE, { type: "geojson", data: empty });
   const before = beforeId && map.getLayer(beforeId) ? beforeId : undefined;
-  const casing = dark ? "#0b1220" : "#ffffff";
+  const casing = mapColors(dark).casing;
   if (!map.getLayer("line-preview-casing")) {
     map.addLayer(
       { id: "line-preview-casing", type: "line", source: SRC_LINE, filter: ["==", ["geometry-type"], "LineString"], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": casing, "line-width": 9, "line-opacity": 0.9 } },
@@ -394,7 +423,8 @@ function addLineLayers(map: maplibregl.Map, beforeId: string | undefined, dark: 
 }
 
 function addRouteLayers(map: maplibregl.Map, beforeId: string | undefined, dark: boolean) {
-  const casing = dark ? "#0b1220" : "#ffffff";
+  const mc = mapColors(dark);
+  const casing = mc.casing;
   const empty = { type: "FeatureCollection", features: [] } as FeatureCollection;
   if (!map.getSource(SRC_ALTS)) map.addSource(SRC_ALTS, { type: "geojson", data: empty });
   if (!map.getSource(SRC_SEL)) map.addSource(SRC_SEL, { type: "geojson", data: empty });
@@ -416,7 +446,7 @@ function addRouteLayers(map: maplibregl.Map, beforeId: string | undefined, dark:
     type: "line",
     source: SRC_ALTS,
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": dark ? "#94a3b8" : "#64748b", "line-width": 5, "line-opacity": 0.55 },
+    paint: { "line-color": mc.alt, "line-width": 5, "line-opacity": 0.55 },
   });
   add({
     id: "route-sel-casing",
@@ -447,7 +477,7 @@ function addRouteLayers(map: maplibregl.Map, beforeId: string | undefined, dark:
     type: "line",
     source: SRC_HL,
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#f59e0b", "line-width": 10, "line-opacity": 0.75 },
+    paint: { "line-color": mc.highlight, "line-width": 10, "line-opacity": 0.75 },
   });
   add({
     id: "route-stops",
@@ -474,9 +504,24 @@ function addRouteLayers(map: maplibregl.Map, beforeId: string | undefined, dark:
       "text-anchor": "top",
       "text-optional": true,
     },
-    paint: { "text-color": dark ? "#e2e8f0" : "#0f172a", "text-halo-color": casing, "text-halo-width": 1.5 },
+    paint: { "text-color": mc.label, "text-halo-color": casing, "text-halo-width": 1.5 },
   });
 }
+
+/** Hebrew texts of MapLibre's built-in controls (navigation, attribution, scale). */
+const MAPLIBRE_HE: Record<string, string> = {
+  "NavigationControl.ZoomIn": "התקרבות",
+  "NavigationControl.ZoomOut": "התרחקות",
+  "NavigationControl.ResetBearing": "איפוס כיוון לצפון",
+  "AttributionControl.ToggleAttribution": "הצגת מקורות המפה",
+  "AttributionControl.MapFeedback": "דיווח על טעות במפה",
+  "FullscreenControl.Enter": "מסך מלא",
+  "FullscreenControl.Exit": "יציאה ממסך מלא",
+  "GeolocateControl.FindMyLocation": "המיקום שלי",
+  "GeolocateControl.LocationNotAvailable": "המיקום אינו זמין",
+  "ScaleControl.Meters": "מ׳",
+  "ScaleControl.Kilometers": "ק״מ",
+};
 
 export function MapView() {
   const t = useT();
@@ -487,6 +532,10 @@ export function MapView() {
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const [cursor, setCursor] = useState<LonLat | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [hover, setHover] = useState<HoverTarget | null>(null);
+  const hoverRef = useRef<HoverTarget | null>(null);
+  hoverRef.current = hover;
+  const hoverTimers = useRef<{ show?: ReturnType<typeof setTimeout>; hide?: ReturnType<typeof setTimeout> }>({});
 
   const tilesUrl = useStore((s) => s.tilesUrl);
   const satelliteUrl = useStore((s) => s.satelliteUrl);
@@ -508,6 +557,19 @@ export function MapView() {
   const lang = useStore((s) => s.settings.language);
 
   const flavor: FlavorName = layers.flavor === "auto" ? resolveTheme(theme) : layers.flavor;
+  const topo = layers.theme === "topo";
+  // contour lines: computed in the browser from the elevation archive (lib/contours.ts)
+  const contourTiles = useMemo(() => (terrainUrl && (layers.contours || topo) ? contourTilesUrl(terrainUrl) : null), [terrainUrl, layers.contours, topo]);
+  // marked trails archive (built by the data update; absent until installed)
+  const [trailsFile, setTrailsFile] = useState<string | null>(null);
+  useEffect(() => {
+    invoke<string | null>("trails_path")
+      .then((p) => setTrailsFile(p ? convertFileSrc(p) : null))
+      .catch(() => setTrailsFile(null));
+  }, [tilesTick]);
+  const trailsUrl = layers.trails || topo ? trailsFile : null;
+  const contourRef = useRef({ contourTiles, trailsUrl });
+  contourRef.current = { contourTiles, trailsUrl };
   const flavorRef = useRef(flavor);
   flavorRef.current = flavor;
 
@@ -528,7 +590,7 @@ export function MapView() {
     }
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, satelliteOrtho: st.settings.satelliteSource !== "sentinel" || !!st.dataStatus?.satellite?.version?.startsWith("govmap-"), terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme }),
+      style: buildStyle({ tilesUrl: st.tilesUrl, onlineTilesUrl: st.onlineTilesUrl, satelliteUrl: st.satelliteUrl, satellite: layers.satellite, satelliteOrtho: st.settings.satelliteSource !== "sentinel" || !!st.dataStatus?.satellite?.version?.startsWith("govmap-"), terrainUrl: st.terrainUrl, worldUrl: st.worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles: contourRef.current.contourTiles, trails: layers.trails, trailsUrl: contourRef.current.trailsUrl }),
       center: start.center,
       zoom: start.zoom,
       maxZoom: 20,
@@ -536,6 +598,8 @@ export function MapView() {
       maxBounds: MAX_BOUNDS,
       attributionControl: false,
       canvasContextAttributes: { antialias: true },
+      // MapLibre's own control tooltips / aria labels in the UI language
+      locale: lang === "he" ? MAPLIBRE_HE : {},
     });
     mapRef.current = map;
     const detachGestures = attachWheelGestures(map, getScrollMode);
@@ -567,34 +631,100 @@ export function MapView() {
       popupRef.current?.remove();
       popupRef.current = new maplibregl.Popup({ offset: 10 }).setLngLat([lon, lat]).setText(String(f.properties?.name ?? "")).addTo(map);
     });
-    map.on("click", "transit-stops", (e) => {
-      const f = e.features?.[0];
-      if (!f) return;
-      const [lon, lat] = (f.geometry as Point).coordinates;
-      const name = String(f.properties?.name ?? "");
-      const code = f.properties?.code ? String(f.properties.code) : "";
-      popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ offset: 10, maxWidth: "260px" })
-        .setLngLat([lon, lat])
-        .setDOMContent(stopPopupContent(name, code, [lon, lat]))
-        .addTo(map);
+    // Hover card (desktop): 200 ms before it opens, 260 ms of grace to move onto it; a click
+    // pins it until the map is clicked elsewhere.
+    const hoverLayers = ["poi-layer", "transit-stops"];
+    const targetOf = (f: maplibregl.MapGeoJSONFeature, pinned: boolean): HoverTarget => {
+      const [lon, lat] = (f.geometry as Point).coordinates as [number, number];
+      const pt = map.project([lon, lat]);
+      const stop = f.layer.id === "transit-stops";
+      return {
+        kind: stop ? "stop" : "poi",
+        name: String(f.properties?.name ?? ""),
+        sub: stop ? undefined : String(f.properties?.label ?? ""),
+        code: stop && f.properties?.code ? String(f.properties.code) : undefined,
+        color: stop ? undefined : (f.properties?.color as string | undefined),
+        lonlat: [lon, lat],
+        x: pt.x,
+        y: pt.y,
+        pinned,
+      };
+    };
+    const sameTarget = (a: HoverTarget | null, b: HoverTarget) => !!a && a.lonlat[0] === b.lonlat[0] && a.lonlat[1] === b.lonlat[1];
+    let pending: HoverTarget | null = null;
+    for (const layer of hoverLayers) {
+      map.on("mousemove", layer, (e) => {
+        map.getCanvas().style.cursor = "pointer";
+        const f = e.features?.[0];
+        if (!f || hoverRef.current?.pinned) return;
+        const tgt = targetOf(f, false);
+        clearTimeout(hoverTimers.current.hide);
+        if (sameTarget(hoverRef.current, tgt) || sameTarget(pending, tgt)) return;
+        pending = tgt;
+        clearTimeout(hoverTimers.current.show);
+        hoverTimers.current.show = setTimeout(() => {
+          pending = null;
+          setHover(tgt);
+        }, 200);
+      });
+      map.on("mouseleave", layer, () => {
+        map.getCanvas().style.cursor = "";
+        pending = null;
+        clearTimeout(hoverTimers.current.show);
+        if (hoverRef.current?.pinned) return;
+        hoverTimers.current.hide = setTimeout(() => setHover(null), 260);
+      });
+      map.on("click", layer, (e) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        clearTimeout(hoverTimers.current.show);
+        clearTimeout(hoverTimers.current.hide);
+        popupRef.current?.remove();
+        setHover(targetOf(f, true));
+      });
+    }
+    map.on("click", (e) => {
+      const present = hoverLayers.filter((l) => map.getLayer(l));
+      if (!present.length || !map.queryRenderedFeatures(e.point, { layers: present }).length) setHover(null);
     });
-    map.on("click", "poi-layer", (e) => {
-      const f = e.features?.[0];
+    // a marked trail: name, length and network in a small card
+    map.on("click", (e) => {
+      const trailLayers = ["trails", "trails-bike"].filter((l) => map.getLayer(l));
+      if (!trailLayers.length) return;
+      if (map.queryRenderedFeatures(e.point, { layers: ["poi-layer", "transit-stops"].filter((l) => map.getLayer(l)) }).length) return;
+      const f = map.queryRenderedFeatures(e.point, { layers: trailLayers })[0];
       if (!f) return;
-      const [lon, lat] = (f.geometry as Point).coordinates;
-      const name = String(f.properties?.name ?? "");
-      const sub = String(f.properties?.label ?? "");
+      const st = useStore.getState();
+      const root = document.createElement("div");
+      root.className = "flex flex-col gap-1 min-w-[180px]";
+      const title = document.createElement("div");
+      title.className = "font-semibold text-base pe-4 selectable";
+      title.textContent = String(f.properties?.name ?? st.t("trails"));
+      root.appendChild(title);
+      const rows: [string, string][] = [];
+      const len = Number(f.properties?.lengthM ?? f.properties?.length_m);
+      if (Number.isFinite(len) && len > 0) rows.push([st.t("trailLength"), fmtDistance(len, st.t, st.settings.units)]);
+      if (f.properties?.network) rows.push([st.t("trailNetwork"), String(f.properties.network)]);
+      for (const [k, v] of rows) {
+        const r = document.createElement("div");
+        r.className = "text-xs text-muted";
+        r.textContent = `${k}: ${v}`;
+        root.appendChild(r);
+      }
       popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ offset: 10, maxWidth: "260px" })
-        .setLngLat([lon, lat])
-        .setDOMContent(stopPopupContent(name, "", [lon, lat], sub))
-        .addTo(map);
+      popupRef.current = new maplibregl.Popup({ offset: 8, maxWidth: "260px" }).setLngLat(e.lngLat).setDOMContent(root).addTo(map);
     });
-    map.on("mouseenter", "poi-layer", () => (map.getCanvas().style.cursor = "pointer"));
-    map.on("mouseleave", "poi-layer", () => (map.getCanvas().style.cursor = ""));
-    map.on("mouseenter", "transit-stops", () => (map.getCanvas().style.cursor = "pointer"));
-    map.on("mouseleave", "transit-stops", () => (map.getCanvas().style.cursor = ""));
+    // a pinned card follows its marker; an unpinned one closes when the map moves
+    map.on("move", () => {
+      const h = hoverRef.current;
+      if (!h) return;
+      if (!h.pinned) {
+        setHover(null);
+        return;
+      }
+      const pt = map.project(h.lonlat);
+      setHover({ ...h, x: pt.x, y: pt.y });
+    });
     map.on("style.load", () => {
       const firstSymbol = firstSymbolLayer(map.getStyle() as StyleSpecification);
       addTransitStopLayers(map, firstSymbol, flavorRef.current === "dark");
@@ -621,9 +751,11 @@ export function MapView() {
         }
       }, 400);
     });
-    map.on("styleimagemissing", (e) => {
-      const img = shieldImage(e.id);
-      if (img && !map.hasImage(e.id)) map.addImage(e.id, img, { pixelRatio: Math.max(1, Math.min(4, Math.ceil(window.devicePixelRatio || 1))) });
+    // MapLibre 6: `styleimagemissing` only notifies; the resolver is awaited before an image
+    // counts as missing, so road shields are drawn here on first use.
+    map.setMissingStyleImageResolver((id) => {
+      const img = shieldImage(id);
+      if (img && !map.hasImage(id)) map.addImage(id, img.data, { pixelRatio: img.pixelRatio });
     });
     map.on("error", (e) => {
       // Missing glyph/sprite/tile errors should not spam the console.
@@ -651,11 +783,42 @@ export function MapView() {
       firstStyle.current = false;
       return;
     }
-    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme });
+    const style = buildStyle({ tilesUrl, onlineTilesUrl, satelliteUrl, satellite: layers.satellite, satelliteOrtho, terrainUrl, worldUrl, hillshade: layers.hillshade, terrain3d: layers.terrain3d, roadShields: layers.roadShields, flavor, lang: layers.labelLang, poi: layers.poi, buildings3d: layers.buildings3d, theme: layers.theme, contours: layers.contours, contourTiles, trails: layers.trails, trailsUrl });
     setMapReady(false);
     map.setStyle(style, { diff: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme]);
+  }, [tilesUrl, onlineTilesUrl, satelliteUrl, satelliteOrtho, terrainUrl, worldUrl, tilesTick, flavor, layers.labelLang, layers.poi, layers.buildings3d, layers.satellite, layers.hillshade, layers.terrain3d, layers.roadShields, layers.theme, layers.contours, layers.trails, contourTiles, trailsUrl]);
+
+  // ---- colour scheme / theme: the overlays take their colours from the CSS tokens, which change
+  // without a style rebuild when only the accent changes. Re-read them after App has set
+  // data-accent / data-theme (next frame).
+  const accentSetting = useStore((s) => s.settings.accent);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const id = requestAnimationFrame(() => {
+      if (!map.getStyle()) return;
+      const dark = flavorRef.current === "dark";
+      const mc = mapColors(dark);
+      const paint = (layer: string, prop: Parameters<typeof map.setPaintProperty>[1], value: string) => {
+        if (map.getLayer(layer)) map.setPaintProperty(layer, prop, value);
+      };
+      paint("my-location-accuracy", "circle-color", mc.me);
+      paint("my-location-accuracy", "circle-stroke-color", mc.me);
+      paint("my-location-dot", "circle-color", mc.me);
+      paint("route-alts", "line-color", mc.alt);
+      paint("route-hl", "line-color", mc.highlight);
+      paint("route-stops-label", "text-color", mc.label);
+      paint("transit-stops-label", "text-color", mc.stopLabel);
+      if (map.hasImage(BUS_ICON)) {
+        const img = drawBusIcon(dark);
+        map.updateImage(BUS_ICON, img);
+      }
+      syncRoutes(map);
+    });
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accentSetting, theme, mapReady]);
 
   // ---- 3D buildings: tilt the camera when switched on (extrusions are invisible from straight
   // above and below zoom 14), level it again when switched off.
@@ -701,7 +864,7 @@ export function MapView() {
       return;
     }
     const sh = linePreview.shape;
-    const color = sh.color ?? "#0891b2";
+    const color = sh.color ? (sh.color.startsWith("#") ? sh.color : `#${sh.color}`) : mapColors(false).bus;
     const features: Feature[] = [
       { type: "Feature", properties: { color }, geometry: { type: "LineString", coordinates: sh.geometry } },
       ...sh.stops.map((s): Feature => ({ type: "Feature", properties: { color, name: s.name }, geometry: { type: "Point", coordinates: [s.lon, s.lat] } })),
@@ -757,12 +920,13 @@ export function MapView() {
       const b = map.getBounds();
       const id = ++seq;
       try {
-        const pois = await api.poiLayer(cats, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], POIS_LIMIT);
+        const poiLayer = api.poiLayer as (cats: string[], bbox: [number, number, number, number], limit?: number, zoom?: number) => ReturnType<typeof api.poiLayer>;
+        const pois = await poiLayer(cats, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], POIS_LIMIT, Math.floor(map.getZoom()));
         if (id !== seq) return;
         const feats = pois.flatMap((p) => {
           const c = categoryOf(p.category ?? "", p.name, selectedCats);
           if (!c) return [];
-          return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
+          return [{ type: "Feature" as const, properties: { name: p.name, cat: c.id, label: t(c.label), color: c.color, rank: -(p.score ?? 0) }, geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] } }];
         });
         src()?.setData({ type: "FeatureCollection", features: feats });
       } catch (e) {
@@ -935,6 +1099,64 @@ export function MapView() {
     popupRef.current = new maplibregl.Popup({ offset: 12, closeButton: true }).setLngLat(marker.lonlat).setText(marker.label).addTo(map);
   }, [marker]);
 
+  // ---- "N": north up, flat
+  const northUpTick = useStore((s) => s.northUpTick);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !northUpTick) return;
+    map.easeTo({ bearing: 0, pitch: 0, duration: 500 });
+  }, [northUpTick]);
+
+  // ---- printout: a light, north-up picture of the selected route (lib/mapImage.ts)
+  useEffect(() => {
+    setPrintMapProvider(async () => {
+      const s = useStore.getState();
+      const r = s.routes.find((x) => x.id === s.selectedRouteId) ?? s.routes[0];
+      if (!r || r.geometry.length < 2) return null;
+      try {
+        return await renderRouteImage(r);
+      } catch (e) {
+        console.warn("print map image", e);
+        return null;
+      }
+    });
+    return () => setPrintMapProvider(null);
+  }, []);
+
+  // ---- live navigation: follow the snapped position heading-up and tilted; the dot shows the
+  // snapped position. Back to north-up and flat when the session ends.
+  const navUpdate = useStore((s) => s.navigation?.update ?? null);
+  const navigating = useStore((s) => !!s.navigation);
+  const wasNavigating = useRef(false);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (!navigating) {
+      if (wasNavigating.current) {
+        wasNavigating.current = false;
+        map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
+      }
+      return;
+    }
+    wasNavigating.current = true;
+    if (!navUpdate) return;
+    const at: LonLat = [navUpdate.snappedLon, navUpdate.snappedLat];
+    (map.getSource(SRC_ME) as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: { r0: 5 / (156543.03392 * Math.cos((at[1] * Math.PI) / 180)) }, geometry: { type: "Point", coordinates: at } }],
+    });
+    // keep the vehicle in the lower third of the view, as navigation apps do
+    map.easeTo({
+      center: at,
+      bearing: navUpdate.bearing,
+      pitch: 50,
+      zoom: 17,
+      offset: [0, Math.round(map.getContainer().clientHeight * 0.2)],
+      duration: 900,
+      easing: (t) => t,
+    });
+  }, [navUpdate, navigating, mapReady]);
+
   // ---- fly to
   useEffect(() => {
     const map = mapRef.current;
@@ -954,6 +1176,7 @@ export function MapView() {
       else if (e.key === "Escape") {
         useStore.getState().setContextMenu(null);
         popupRef.current?.remove();
+        setHover(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -999,9 +1222,21 @@ export function MapView() {
           </button>
         </div>
       )}
+      {hover && (
+        <MapHoverCard
+          target={hover}
+          onEnter={() => clearTimeout(hoverTimers.current.hide)}
+          onLeave={() => {
+            if (!hoverRef.current?.pinned) hoverTimers.current.hide = setTimeout(() => setHover(null), 260);
+          }}
+          onClose={() => setHover(null)}
+        />
+      )}
       <CategoryPicker />
       <LocateButton />
+      <LayersButton />
       {contextMenu && <ContextMenu state={contextMenu} />}
+      <NavigationView />
     </div>
   );
 }

@@ -235,6 +235,9 @@ pub fn route(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse
             arrive_iso,
             transfers: 0,
             walk_m: if req.mode == Mode::Foot { r.distance } else { 0.0 },
+            fare_estimate_ils: None,
+            fare_note: None,
+            avoid_violations: vec![],
         });
     }
     tag_routes(&mut routes);

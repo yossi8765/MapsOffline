@@ -50,6 +50,25 @@
   --route-foot: #1f8a4c;
   --route-bike: #b86e00;
   --route-alt: #7c8594;
+  /* map overlays (MapView reads these; "-night" = drawn on a dark map flavour) */
+  --map-me: var(--accent);
+  --map-casing: #ffffff;
+  --map-casing-night: #0b1220;
+  --map-halo: #ffffff;
+  --map-halo-night: #0b1220;
+  --map-label: #1e293b;
+  --map-label-night: #e2e8f0;
+  --map-alt: #64748b;
+  --map-alt-night: #94a3b8;
+  --map-stop: #4a6276;
+  --map-stop-night: #5c7a94;
+  --map-stop-label: #3b4f60;
+  --map-stop-label-night: #c3d0dc;
+  --map-highlight: #f59e0b;
+  --map-rail: #7c3aed;
+  --map-light-rail: #dc2626;
+  --map-bus: #0891b2;
+  --map-walk: #64748b;
   --ring-color: rgba(26, 102, 217, 0.45);
   --ring: 0 0 0 3px var(--ring-color);
   --ease: cubic-bezier(0.2, 0, 0, 1);
@@ -728,6 +747,14 @@
   --route-foot: #3f9d7a;
   --route-bike: #c98b3a;
   --route-alt: #a7a1c2;
+  --map-alt: #a7a1c2;
+  --map-highlight: #f2b25c;
+  --map-rail: #8f7ff0;
+  --map-light-rail: #e0728b;
+  --map-bus: #4aa6bd;
+  --map-walk: #8b86a8;
+  --map-stop: #7d78a8;
+  --map-label: #3f3a5a;
   --ring-color: rgba(124, 108, 240, 0.4);
   --shadow-panel: 0 1px 2px rgba(90, 70, 140, 0.06), 0 8px 24px -8px rgba(90, 70, 140, 0.2);
   --shadow-pop: var(--shadow-panel);
@@ -737,8 +764,8 @@
 .maplibregl-ctrl-top-left,
 .maplibregl-ctrl-top-right {
   padding: 4px;
-  /* room for the categories + my-location buttons (components/CategoryPicker.tsx) above the zoom buttons */
-  padding-top: 108px;
+  /* room for the categories, my-location and layers buttons (components/CategoryPicker.tsx) above the zoom buttons */
+  padding-top: 156px;
 }
 .maplibregl-ctrl-group {
   background: var(--surface-raised) !important;

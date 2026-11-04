@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
-import { Copy, ExternalLink, Flag, Info, MapPin, Navigation, Star } from "lucide-react";
+import { Copy, ExternalLink, Flag, Info, MapPin, Navigation, Radar, Star } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../lib/api";
-import { useStore, type ContextMenuState } from "../lib/store";
+import { findFavorite, useStore, type ContextMenuState } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { copyText, fmtCoords } from "../lib/format";
 
@@ -24,7 +24,7 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
   const style: React.CSSProperties = { left: state.x, top: state.y };
   if (typeof window !== "undefined") {
     if (state.x + 220 > window.innerWidth) style.left = state.x - 220;
-    if (state.y + 260 > window.innerHeight) style.top = state.y - 260;
+    if (state.y + 300 > window.innerHeight) style.top = Math.max(8, state.y - 300);
   }
 
   const resolveLabel = async () => {
@@ -73,15 +73,23 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
       icon: <Info size={16} strokeWidth={1.75} />,
       label: t("ctxWhatHere"),
       run: async () => {
+        // the place card of what is here (nearest address / place), at the clicked point
         const s = useStore.getState();
         try {
           const r = await api.geocodeReverse(state.lon, state.lat);
-          s.setMarker({ lonlat: [state.lon, state.lat], label: r ? `${r.name}${r.city && !r.name.includes(r.city) ? `, ${r.city}` : ""}` : t("unknownPlace") });
+          const label = r ? `${r.name}${r.city && !r.name.includes(r.city) ? `, ${r.city}` : ""}` : t("unknownPlace");
+          s.pickPlace({ lon: state.lon, lat: state.lat, label, result: r ? { ...r, lon: state.lon, lat: state.lat } : undefined }, Math.max(s.mapZoom, 16));
         } catch (e) {
-          s.setMarker({ lonlat: [state.lon, state.lat], label: point.label });
+          s.pickPlace({ lon: state.lon, lat: state.lat, label: point.label });
           s.toastError(e);
         }
       },
+    },
+    {
+      group: 1,
+      icon: <Radar size={16} strokeWidth={1.75} />,
+      label: t("ctxNearby"),
+      run: async () => useStore.getState().showNearby(state.lon, state.lat),
     },
     {
       group: 2,
@@ -114,15 +122,15 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
       icon: <Star size={16} strokeWidth={1.75} />,
       label: t("ctxAddFavorite"),
       run: async () => {
+        // through toggleFavorite: no "added" toast for a spot that is already saved (5.61)
         const s = useStore.getState();
-        const label = await resolveLabel();
-        try {
-          await api.favoritesAdd(label, "star", state.lon, state.lat, label);
-          await s.loadFavorites();
-          s.toast("success", `${t("addFavorite")}: ${label}`);
-        } catch (e) {
-          s.toastError(e);
+        const existing = findFavorite(s.favorites, state.lon, state.lat);
+        if (existing) {
+          s.toast("info", `${t("savedPlace")}: ${existing.name}`);
+          return;
         }
+        const label = await resolveLabel();
+        await s.toggleFavorite({ lon: state.lon, lat: state.lat, label });
       },
     },
   ];
@@ -135,8 +143,8 @@ export function ContextMenu({ state }: { state: ContextMenuState }) {
       style={style}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="px-2.5 pt-1.5 pb-2 text-xs text-subtle num" dir="ltr" style={{ textAlign: "start" }}>
-        {point.label}
+      <div className="px-2.5 pt-1.5 pb-2 text-xs text-subtle num selectable">
+        <bdi dir="ltr">{point.label}</bdi>
       </div>
       {items.map((it, i) => (
         <div key={it.label}>

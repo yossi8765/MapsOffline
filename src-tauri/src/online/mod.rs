@@ -7,6 +7,7 @@
 pub mod motis;
 pub mod osrm;
 pub mod polyline;
+pub mod stride;
 
 use std::time::Duration;
 

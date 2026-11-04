@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
@@ -9,7 +10,9 @@ const debug = !!process.env.TAURI_ENV_DEBUG;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react(), tailwindcss()],
+  // React Compiler (Babel, stable 1.0): memoises components and hooks automatically, so the
+  // panels do not re-render on every map move / store update they do not read.
+  plugins: [react(), ...(process.env.NO_COMPILER ? [] : [babel({ presets: [reactCompilerPreset()] })]), tailwindcss()],
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_"],
   server: {
@@ -37,7 +40,7 @@ export default defineConfig(() => ({
         codeSplitting: {
           groups: [
             { name: "maplibre", test: /node_modules[\/](\.pnpm[\/])?maplibre-gl/ },
-            { name: "map-vendor", test: /node_modules[\/](\.pnpm[\/][^\/]+[\/]node_modules[\/])?(pmtiles|@protomaps|fflate)/ },
+            { name: "map-vendor", test: /node_modules[\/](\.pnpm[\/][^\/]+[\/]node_modules[\/])?(pmtiles|@protomaps|fflate|maplibre-contour)/ },
             { name: "react", test: /node_modules[\/](\.pnpm[\/][^\/]+[\/]node_modules[\/])?(react|react-dom|scheduler|zustand)[\/]/ },
           ],
         },

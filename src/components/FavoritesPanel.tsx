@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bus, ChevronDown, Flag, Navigation, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bus, ChevronDown, Download, Flag, Navigation, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import { api, type Favorite, type LineSummary, type LineTimes, type StopBoard } from "../lib/api";
 import { useStore } from "../lib/store";
@@ -42,13 +43,68 @@ function useClock(): number {
   return now;
 }
 
-function countdown(relSec: number, iso: string, generatedMs: number, nowMs: number, t: ReturnType<typeof useT>): { text: string; soon: boolean } {
+export function countdown(relSec: number, iso: string, generatedMs: number, nowMs: number, t: ReturnType<typeof useT>): { text: string; soon: boolean } {
   const secs = relSec - Math.round((nowMs - generatedMs) / 1000);
   if (secs < -60) return { text: t("departed"), soon: false };
   if (secs < 60) return { text: t("nowLabel"), soon: true };
   const min = Math.round(secs / 60);
   if (min <= 90) return { text: `${t("inMinutes")} ${min} ${t("minShort")}`, soon: min <= 5 };
   return { text: fmtTime(iso), soon: false };
+}
+
+/** File format of the favorites export (`.json`): the fields favorites_add takes. */
+interface FavFile {
+  app: "MapsOffline";
+  kind: "favorites";
+  version: 1;
+  favorites: Omit<Favorite, "id" | "createdIso">[];
+}
+
+async function exportFavorites(list: Favorite[], t: ReturnType<typeof useT>) {
+  const st = useStore.getState();
+  try {
+    const d = new Date();
+    const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const path = await saveDialog({ defaultPath: `MapsOffline-favorites-${stamp}.json`, filters: [{ name: t("favFileFilter"), extensions: ["json"] }] });
+    if (!path) return;
+    const file: FavFile = {
+      app: "MapsOffline",
+      kind: "favorites",
+      version: 1,
+      favorites: list.map(({ name, icon, lon, lat, address, kind, data }) => ({ name, icon, lon, lat, address, kind, data })),
+    };
+    await api.saveTextFile(path, JSON.stringify(file, null, 2));
+    st.toast("success", `${t("favExported")}${path}`);
+  } catch (e) {
+    st.toastError(e);
+  }
+}
+
+/** Import from a file picked in the webview (no file-system permission needed). favorites_add
+ *  returns the existing row for the same spot / line, so importing twice adds nothing. */
+function importFavorites(t: ReturnType<typeof useT>) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const st = useStore.getState();
+    const f = input.files?.[0];
+    if (!f) return;
+    try {
+      const json = JSON.parse(await f.text()) as Partial<FavFile>;
+      if (json.kind !== "favorites" || !Array.isArray(json.favorites)) throw new Error("not a favorites file");
+      const before = st.favorites.length;
+      for (const x of json.favorites) {
+        if (typeof x?.name !== "string" || !Number.isFinite(x.lon) || !Number.isFinite(x.lat)) continue;
+        await api.favoritesAdd(x.name, x.icon || "star", x.lon, x.lat, x.address, x.kind ?? "address", x.data);
+      }
+      await st.loadFavorites();
+      st.toast("success", t("favImported").replace("{n}", String(Math.max(0, useStore.getState().favorites.length - before))));
+    } catch (e) {
+      st.toastError(e);
+    }
+  };
+  input.click();
 }
 
 export function FavoritesPanel() {
@@ -468,6 +524,16 @@ export function FavoritesPanel() {
           </section>
         );
       })}
+      {!editing && !adding && (
+        <div className="flex items-center gap-2 pt-1">
+          <button className="btn btn-sm btn-ghost text-muted" disabled={favorites.length === 0} onClick={() => void exportFavorites(favorites, t)}>
+            <Download size={14} strokeWidth={1.75} /> {t("favExport")}
+          </button>
+          <button className="btn btn-sm btn-ghost text-muted" onClick={() => importFavorites(t)}>
+            <Upload size={14} strokeWidth={1.75} /> {t("favImport")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

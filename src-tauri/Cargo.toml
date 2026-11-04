@@ -33,6 +33,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# One running window: a second start (or a mapsoffline:// / geo: link) is handed to it.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1.3"
@@ -53,6 +56,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 # Decoding Terrarium DEM tiles for elevation profiles (decoder only is used; the encoder only in tests).
 png = "0.17"
+# Mapterhorn DEM tiles are lossless WebP (Terrarium): pure-Rust decoder for elevation profiles.
+image-webp = "0.2"
 # govmap orthophoto: decode the ITM source tiles, encode the reprojected WebMercator tiles (pure Rust).
 jpeg-decoder = { version = "0.3", default-features = false }
 jpeg-encoder = "0.6"
@@ -62,6 +67,9 @@ sha2 = "0.10"
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = { version = "0.10", features = ["filter-by-regex"] }
+# OSM opening_hours of points of interest ("open now", closing time); ~200 KB in the exe
+# (measured: a minimal opt-level "s" + LTO binary grew from 127 to 332 KB).
+opening-hours = { version = "2.1.4", default-features = false }
 anyhow = "1"
 log = "0.4"
 # No regex filter syntax / ANSI auto-colour (RUST_LOG=module=level still works).
@@ -80,7 +88,8 @@ smallvec = "1"
 # [target] header belongs to it (chrono & co. once landed here and broke Linux builds).
 [target.'cfg(windows)'.dependencies]
 # WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
-windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation"] }
+# Navigation: text-to-speech (SpeechSynthesis) played through MediaPlayer, WinRT init per thread.
+windows = { version = "0.58", features = ["Devices_Geolocation", "Foundation", "Foundation_Collections", "Media_SpeechSynthesis", "Media_Playback", "Media_Core", "Storage_Streams", "Win32_System_WinRT"] }
 
 # Size/speed tuned, see docs/SIZE.md. opt-level "s" was measured equal to 3 for routing
 # (A*, alternatives) and graph load; only SQLite (FTS5 search) lost ~15-50 % at -Os,

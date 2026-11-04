@@ -9,6 +9,8 @@ pub mod geocode;
 pub mod history;
 pub mod location;
 pub mod map_tiles;
+pub mod nav;
+pub mod voice;
 pub mod app_update;
 pub mod online_tiles;
 pub mod online_sat;
@@ -38,6 +40,19 @@ pub fn run() {
         });
     }
     tauri::Builder::default()
+        // Must be the first plugin: a second start hands its arguments (a mapsoffline:// or geo:
+        // link) to the running window and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Emitter, Manager};
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if let Some(url) = link_arg(&argv) {
+                let _ = app.emit("open-link", url);
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         // Online map without local data: the webview reads the Protomaps world build with HTTP
         // range requests through this proxy (the build host sends no CORS headers).
         .register_asynchronous_uri_scheme_protocol("mo-tiles", |_ctx, request, responder| {
@@ -62,6 +77,15 @@ pub fn run() {
             use tauri::Manager;
             let root = app.state::<Arc<AppState>>().paths().root;
             allow_asset_dir(app.handle(), &root);
+            // Installed builds register the link schemes through the installer; a dev / portable
+            // run registers them for the current user so links work there too.
+            #[cfg(windows)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+            // a link that started the app waits until the webview asks for it (take_pending_link)
+            *PENDING_LINK.lock() = link_arg(&std::env::args().collect::<Vec<_>>());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,6 +108,7 @@ pub fn run() {
             commands::transit_lines,
             commands::transit_line_times,
             commands::transit_stop_board,
+            commands::transit_delays,
             commands::history_list,
             commands::history_add,
             commands::history_delete,
@@ -98,6 +123,9 @@ pub fn run() {
             commands::satellite_path,
             commands::world_path,
             commands::terrain_path,
+            commands::trails_path,
+            commands::minyanim_for,
+            commands::minyanim_next,
             commands::locate,
             commands::app_update_check,
             commands::app_update_download,
@@ -114,6 +142,14 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::app_info,
+            commands::take_pending_link,
+            commands::nav_start,
+            commands::nav_simulate,
+            commands::nav_set_route,
+            commands::nav_set_voice,
+            commands::nav_stop,
+            commands::speak,
+            commands::voices_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapsOffline");
@@ -126,4 +162,18 @@ pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &std::path::Path) {
     if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
         log::warn!("asset scope {}: {e}", dir.display());
     }
+}
+
+/// Link that started the app (first instance), handed to the webview once it is ready.
+pub(crate) static PENDING_LINK: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// The first `mapsoffline:` or `geo:` argument of a command line.
+fn link_arg(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .skip(1)
+        .find(|a| {
+            let l = a.to_ascii_lowercase();
+            l.starts_with("mapsoffline:") || l.starts_with("geo:")
+        })
+        .cloned()
 }

@@ -58,6 +58,8 @@ impl DataPaths {
             self.routing_dir(),
             self.geocode_dir(),
             self.transit_dir(),
+            self.trails_dir(),
+            self.minyanim_dir(),
             self.downloads_dir(),
         ] {
             std::fs::create_dir_all(d)?;
@@ -86,6 +88,12 @@ impl DataPaths {
     pub fn transit_dir(&self) -> PathBuf {
         self.root.join("transit")
     }
+    pub fn trails_dir(&self) -> PathBuf {
+        self.root.join("trails")
+    }
+    pub fn minyanim_dir(&self) -> PathBuf {
+        self.root.join("minyanim")
+    }
     /// Other countries: one folder per Geofabrik region (`regions/<id>/map.pmtiles`, `geocode.sqlite`).
     pub fn regions_dir(&self) -> PathBuf {
         self.root.join("regions")
@@ -106,8 +114,32 @@ impl DataPaths {
     pub fn satellite_file(&self) -> PathBuf {
         self.satellite_dir().join("israel-s2.pmtiles")
     }
+    /// Mapterhorn DEM (512 px WebP). A new name on purpose: older program versions only know
+    /// `israel-dem.pmtiles` (256 px PNG) and would mis-scale / fail to decode the new tiles if
+    /// a ready-made package put them under the old name.
     pub fn terrain_file(&self) -> PathBuf {
+        self.terrain_dir().join("israel-dem-mapterhorn.pmtiles")
+    }
+    /// The elevation archive to read: the Mapterhorn one, else the former one until the terrain
+    /// update has run (so relief and elevation profiles keep working meanwhile).
+    pub fn terrain_file_in_use(&self) -> PathBuf {
+        let new = self.terrain_file();
+        let old = self.legacy_terrain_file();
+        if !new.exists() && old.exists() {
+            old
+        } else {
+            new
+        }
+    }
+    /// The former AWS terrain archive, deleted once the Mapterhorn one is installed.
+    pub fn legacy_terrain_file(&self) -> PathBuf {
         self.terrain_dir().join("israel-dem.pmtiles")
+    }
+    pub fn trails_file(&self) -> PathBuf {
+        self.trails_dir().join("trails.geojson")
+    }
+    pub fn minyanim_file(&self) -> PathBuf {
+        self.minyanim_dir().join("minyanim.json")
     }
     pub fn graph_file(&self) -> PathBuf {
         self.routing_dir().join("graph.bin")
@@ -146,6 +178,8 @@ impl DataPaths {
             DataComponent::Routing => self.graph_file(),
             DataComponent::Geocode => self.geocode_file(),
             DataComponent::Transit => self.transit_file(),
+            DataComponent::Trails => self.trails_file(),
+            DataComponent::Minyanim => self.minyanim_file(),
         }
     }
 }

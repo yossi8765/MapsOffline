@@ -103,6 +103,40 @@ pub fn tile_id(z: u8, x: u32, y: u32) -> u64 {
     acc + d
 }
 
+/// Inverse of [`tile_id`]: (z, x, y) of a PMTiles tile id.
+pub fn tile_zxy(id: u64) -> (u8, u32, u32) {
+    let mut z = 0u8;
+    let mut acc = 0u64;
+    loop {
+        let count = 1u64 << (2 * z as u64);
+        if id < acc + count {
+            break;
+        }
+        acc += count;
+        z += 1;
+    }
+    let n = 1u64 << z;
+    let mut t = id - acc;
+    let (mut x, mut y) = (0u64, 0u64);
+    let mut s = 1u64;
+    while s < n {
+        let rx = 1 & (t / 2);
+        let ry = 1 & (t ^ rx);
+        if ry == 0 {
+            if rx == 1 {
+                x = s - 1 - x;
+                y = s - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        x += s * rx;
+        y += s * ry;
+        t /= 4;
+        s *= 2;
+    }
+    (z, x as u32, y as u32)
+}
+
 pub(crate) fn lon_to_x(lon: f64, z: u8) -> u32 {
     let n = (1u64 << z) as f64;
     (((lon + 180.0) / 360.0 * n).floor() as i64).clamp(0, (1i64 << z) - 1) as u32
@@ -295,7 +329,7 @@ pub struct ArchiveMeta {
     pub bbox: [f64; 4],
     pub min_zoom: u8,
     pub max_zoom: u8,
-    /// PMTiles tile type: 2 = png, 3 = jpeg
+    /// PMTiles tile type: 2 = png, 3 = jpeg, 4 = webp
     pub tile_type: u8,
 }
 
@@ -519,7 +553,7 @@ impl Writer {
             }
         }
         let metadata = gzip(
-            serde_json::json!({ "name": meta.name, "attribution": meta.attribution, "type": "baselayer", "format": if meta.tile_type == 2 { "png" } else { "jpg" } })
+            serde_json::json!({ "name": meta.name, "attribution": meta.attribution, "type": "baselayer", "format": match meta.tile_type { 2 => "png", 4 => "webp", _ => "jpg" } })
                 .to_string()
                 .as_bytes(),
         )?;
@@ -697,6 +731,19 @@ fn all_entries(f: &mut File, h: &Header) -> anyhow::Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// PMTiles tile type of an image by its signature: 2 png, 3 jpeg, 4 webp.
+pub(crate) fn image_kind(b: &[u8]) -> Option<u8> {
+    if b.len() >= 8 && b[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        Some(2)
+    } else if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 {
+        Some(3)
+    } else if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some(4)
+    } else {
+        None
+    }
+}
+
 /// Is `b` a JPEG (`jpeg` = true) or a PNG?
 fn has_signature(b: &[u8], jpeg: bool) -> bool {
     if jpeg {
@@ -724,7 +771,7 @@ pub(crate) fn verify(path: &Path, placeholders: bool) -> anyhow::Result<()> {
             read_at(&mut f, h.data_off + e.offset, u64::from(e.length))?
         }
     };
-    if !has_signature(&t, h.tile_type != 2) {
+    if image_kind(&t) != Some(h.tile_type) {
         bail!("sample tile has the wrong image signature");
     }
     if placeholders && has_placeholders(&entries) {
@@ -763,6 +810,97 @@ pub(crate) fn fetch_tile_attempts(client: &Client, url: &str, jpeg: bool, cancel
         }
     }
     Err(last.unwrap_or_else(|| anyhow!("download failed: {url}")))
+}
+
+/// Re-encode every tile of the raster archive `src` with `conv` into a new archive at `dest`
+/// whose tile type is `tile_type` (CI: Sentinel-2 JPEG -> WebP q80, ~-38 %). Tiles `conv`
+/// returns `None` for keep their bytes. Name, attribution, bbox and zooms are kept.
+/// Returns (bytes before, bytes after) of the tile data.
+pub fn transcode(src: &Path, dest: &Path, tile_type: u8, conv: &(dyn Fn(&[u8]) -> anyhow::Result<Option<Vec<u8>>> + Sync)) -> anyhow::Result<(u64, u64)> {
+    let mut f = File::open(src)?;
+    let h = read_header(&mut f)?;
+    let entries = all_entries(&mut f, &h)?;
+    let meta_json: serde_json::Value = {
+        let mut hb = [0u8; HEADER_LEN];
+        f.seek(SeekFrom::Start(0))?;
+        f.read_exact(&mut hb)?;
+        let u = |o: usize| u64::from_le_bytes(hb[o..o + 8].try_into().unwrap());
+        let raw = read_at(&mut f, u(24), u(32))?;
+        let txt = if hb[97] == 2 { gunzip(&raw)? } else { raw };
+        serde_json::from_slice(&txt).unwrap_or(serde_json::Value::Null)
+    };
+    let i32_at = |hb: &[u8], o: usize| i32::from_le_bytes(hb[o..o + 4].try_into().unwrap()) as f64 / 1e7;
+    let bbox = {
+        let mut hb = [0u8; HEADER_LEN];
+        f.seek(SeekFrom::Start(0))?;
+        f.read_exact(&mut hb)?;
+        [i32_at(&hb, 102), i32_at(&hb, 106), i32_at(&hb, 110), i32_at(&hb, 114)]
+    };
+    // distinct contents once (dedup: sea tiles share one offset)
+    let mut by_off: HashMap<(u64, u32), Vec<u64>> = HashMap::new();
+    for e in &entries {
+        for k in 0..u64::from(e.run_length.max(1)) {
+            by_off.entry((e.offset, e.length)).or_default().push(e.tile_id + k);
+        }
+    }
+    let keys: Vec<(u64, u32)> = by_off.keys().copied().collect();
+    let data_tmp = dest.with_extension("data.tmp");
+    let r = transcode_into(&mut f, &h, &by_off, &keys, &data_tmp, dest, tile_type, &meta_json, bbox, conv);
+    if r.is_err() {
+        // a failed conversion leaves no temp files behind
+        let _ = std::fs::remove_file(&data_tmp);
+        let _ = std::fs::remove_file(data_tmp.with_extension("index.tmp"));
+        let _ = std::fs::remove_file(dest.with_extension("pmtiles.tmp"));
+    }
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transcode_into(
+    f: &mut File,
+    h: &Header,
+    by_off: &HashMap<(u64, u32), Vec<u64>>,
+    keys: &[(u64, u32)],
+    data_tmp: &Path,
+    dest: &Path,
+    tile_type: u8,
+    meta_json: &serde_json::Value,
+    bbox: [f64; 4],
+    conv: &(dyn Fn(&[u8]) -> anyhow::Result<Option<Vec<u8>>> + Sync),
+) -> anyhow::Result<(u64, u64)> {
+    use rayon::prelude::*;
+    let mut before = 0u64;
+    let mut after = 0u64;
+    let mut w = Writer::create(data_tmp)?;
+    let mut min_z = u8::MAX;
+    let mut max_z = 0u8;
+    for chunk in keys.chunks(256) {
+        let blobs: Vec<Vec<u8>> = chunk.iter().map(|&(off, len)| read_at(f, h.data_off + off, u64::from(len))).collect::<anyhow::Result<_>>()?;
+        let converted: Vec<anyhow::Result<Option<Vec<u8>>>> = blobs.par_iter().map(|b| conv(b)).collect();
+        for ((key, old), new) in chunk.iter().zip(&blobs).zip(converted) {
+            let bytes = new?.unwrap_or_else(|| old.clone());
+            before += old.len() as u64;
+            after += bytes.len() as u64;
+            for &id in &by_off[key] {
+                let (z, x, y) = tile_zxy(id);
+                min_z = min_z.min(z);
+                max_z = max_z.max(z);
+                w.add(z, x, y, &bytes)?;
+            }
+        }
+    }
+    let meta = ArchiveMeta {
+        name: meta_json.get("name").and_then(|v| v.as_str()).unwrap_or("Satellite").to_string(),
+        attribution: meta_json.get("attribution").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        bbox,
+        min_zoom: if min_z == u8::MAX { 0 } else { min_z },
+        max_zoom: max_z,
+        tile_type,
+    };
+    let out_tmp = dest.with_extension("pmtiles.tmp");
+    w.finish(&out_tmp, &meta, false)?;
+    crate::paths::atomic_replace(dest, &out_tmp)?;
+    Ok((before, after))
 }
 
 /// What to fetch and how to store it, for one raster archive.
@@ -1025,6 +1163,47 @@ fn update_orthophoto(paths: &DataPaths, settings: &crate::types::Settings, progr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_zxy_inverts_tile_id() {
+        for z in 0..=9u8 {
+            let n = 1u32 << z;
+            for x in (0..n).step_by((n as usize / 7).max(1)) {
+                for y in (0..n).step_by((n as usize / 5).max(1)) {
+                    assert_eq!(tile_zxy(tile_id(z, x, y)), (z, x, y));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transcode_keeps_every_tile() {
+        let dir = std::env::temp_dir().join(format!("mo-transcode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.pmtiles");
+        let mut w = Writer::create(&dir.join("a.data.tmp")).unwrap();
+        let sea = [0xFF, 0xD8, 7, 7, 7];
+        for (z, x, y) in [(3, 1, 2), (3, 2, 2), (4, 5, 6), (4, 6, 6)] {
+            let b: Vec<u8> = if x % 2 == 0 { sea.to_vec() } else { vec![0xFF, 0xD8, z, x as u8, y as u8] };
+            w.add(z, x, y, &b).unwrap();
+        }
+        let meta = ArchiveMeta { name: "s".into(), attribution: "att".into(), bbox: [34.0, 29.0, 36.0, 33.0], min_zoom: 3, max_zoom: 4, tile_type: 3 };
+        w.finish(&src, &meta, false).unwrap();
+        let dst = dir.join("b.pmtiles");
+        let (b, a) = transcode(&src, &dst, 4, &|t: &[u8]| {
+            let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+            v.extend_from_slice(&t[2..]);
+            Ok(Some(v))
+        })
+        .unwrap();
+        assert!(b > 0 && a > 0);
+        for (z, x, y) in [(3, 1, 2), (3, 2, 2), (4, 5, 6), (4, 6, 6)] {
+            let t = read_tile(&dst, z, x, y).unwrap().unwrap();
+            assert_eq!(image_kind(&t), Some(4), "{z}/{x}/{y}");
+        }
+        assert_eq!(read_tile(&dst, 4, 5, 6).unwrap().unwrap()[12..], [4, 5, 6]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn hilbert_ids_match_spec() {

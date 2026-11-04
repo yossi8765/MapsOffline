@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bus, Download, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
+import { BookOpen, Bus, Download, Footprints, FolderOpen, Globe, Map, MapPin, Mountain, PackageOpen, PackagePlus, Pause, Play, RefreshCw, Route, Satellite, X } from "lucide-react";
 import clsx from "clsx";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -18,6 +18,8 @@ const META: Record<DataComponent, { icon: React.ReactNode; label: I18nKey; desc:
   routing: { icon: <Route size={16} strokeWidth={1.75} />, label: "compRouting", desc: "compRoutingDesc" },
   geocode: { icon: <MapPin size={16} strokeWidth={1.75} />, label: "compGeocode", desc: "compGeocodeDesc" },
   transit: { icon: <Bus size={16} strokeWidth={1.75} />, label: "compTransit", desc: "compTransitDesc" },
+  trails: { icon: <Footprints size={16} strokeWidth={1.75} />, label: "compTrails", desc: "compTrailsDesc" },
+  minyanim: { icon: <BookOpen size={16} strokeWidth={1.75} />, label: "compMinyanim", desc: "compMinyanimDesc" },
 };
 
 /** Rough download sizes of a first install (prebuilt packages), for the "update all" summary. */
@@ -29,6 +31,8 @@ const NEW_BYTES: Record<DataComponent, number> = {
   routing: 50e6,
   geocode: 22e6,
   transit: 37e6,
+  trails: 6e6,
+  minyanim: 1e6,
 };
 const SAT_ORTHO_BYTES: Record<string, number> = { low: 150e6, medium: 600e6, high: 2.5e9, max: 10e9 };
 const SAT_SENTINEL_BYTES: Record<string, number> = { low: 15e6, medium: 45e6, high: 120e6, max: 120e6 };
@@ -66,7 +70,7 @@ export function DataPanel() {
   const selected = present.filter((c) => !excluded.includes(c));
   // Package size estimate: the PMTiles archives are stored as-is, the binary components deflate
   // to roughly these fractions (measured on real data).
-  const PACK_RATIO: Record<DataComponent, number> = { tiles: 1, world: 1, satellite: 1, terrain: 1, routing: 0.5, geocode: 0.45, transit: 0.35 };
+  const PACK_RATIO: Record<DataComponent, number> = { tiles: 1, world: 1, satellite: 1, terrain: 1, routing: 0.5, geocode: 0.45, transit: 0.35, trails: 0.3, minyanim: 0.2 };
   const rawBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0), 0);
   const estimatedBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0) * PACK_RATIO[c], 0);
   // the map / imagery / elevation archives are already compressed inside and go in as they are

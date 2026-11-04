@@ -42,6 +42,18 @@ enum Cmd {
         geocode: bool,
         #[arg(long)]
         transit: bool,
+        /// marked hiking / cycling trails (from the OSM PBF)
+        #[arg(long)]
+        trails: bool,
+        /// synagogue prayer times (Nedarim Plus, ~10-15 min of polite requests)
+        #[arg(long)]
+        minyanim: bool,
+    },
+    /// Re-encode the installed satellite archive's tiles to WebP with the `cwebp` tool (CI:
+    /// smaller ready-made package). `cwebp` must be on PATH (Debian/Ubuntu package "webp").
+    WebpSatellite {
+        #[arg(long, default_value_t = 80)]
+        quality: u8,
     },
     /// Other countries: `region list [filter]`, `region install <id> [--map-only|--search-only]`,
     /// `region delete <id>`, `region search <id> <query>`
@@ -242,7 +254,36 @@ fn main() -> anyhow::Result<()> {
                 other => anyhow::bail!("unknown region action {other}"),
             }
         }
-        Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit } => {
+        Cmd::WebpSatellite { quality } => {
+            let file = paths.satellite_file();
+            anyhow::ensure!(file.exists(), "no satellite archive at {}", file.display());
+            let dir = std::env::temp_dir().join(format!("mo-webp-{}", std::process::id()));
+            std::fs::create_dir_all(&dir)?;
+            let n = std::sync::atomic::AtomicU64::new(0);
+            let conv = |jpg: &[u8]| -> anyhow::Result<Option<Vec<u8>>> {
+                // only JPEG tiles are re-encoded (PNG / WebP stay as they are)
+                if !(jpg.len() > 2 && jpg[0] == 0xFF && jpg[1] == 0xD8) {
+                    return Ok(None);
+                }
+                let k = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (src, dst) = (dir.join(format!("{k}.jpg")), dir.join(format!("{k}.webp")));
+                std::fs::write(&src, jpg)?;
+                let st = std::process::Command::new("cwebp").args(["-quiet", "-q", &quality.to_string(), "-m", "6"]).arg(&src).arg("-o").arg(&dst).status()?;
+                anyhow::ensure!(st.success(), "cwebp failed ({st})");
+                let out = std::fs::read(&dst)?;
+                let _ = std::fs::remove_file(&src);
+                let _ = std::fs::remove_file(&dst);
+                // every tile converts (even the rare one that grows): the archive's tile type is
+                // WebP, and the app checks a sample tile's signature against it
+                Ok(Some(out))
+            };
+            let tmp = file.with_extension("webp.pmtiles");
+            let (before, after) = mapsoffline_lib::data::satellite::transcode(&file, &tmp, 4, &conv)?;
+            mapsoffline_lib::paths::atomic_replace(&file, &tmp)?;
+            let _ = std::fs::remove_dir_all(&dir);
+            println!("satellite tiles {:.1} MB -> {:.1} MB ({:+.0} %)", before as f64 / 1e6, after as f64 / 1e6, (after as f64 / before.max(1) as f64 - 1.0) * 100.0);
+        }
+        Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit, trails, minyanim } => {
             let mut comps = vec![];
             if all || tiles {
                 comps.push(DataComponent::Tiles);
@@ -264,6 +305,12 @@ fn main() -> anyhow::Result<()> {
             }
             if all || transit {
                 comps.push(DataComponent::Transit);
+            }
+            if all || trails {
+                comps.push(DataComponent::Trails);
+            }
+            if all || minyanim {
+                comps.push(DataComponent::Minyanim);
             }
             if comps.is_empty() {
                 anyhow::bail!("nothing selected; use --all or component flags");

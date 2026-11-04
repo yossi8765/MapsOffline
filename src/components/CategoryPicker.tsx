@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Loader2, LocateFixed, Search, SlidersHorizontal, X } from "lucide-react";
+import { Check, Layers, Loader2, LocateFixed, Search, SlidersHorizontal, X } from "lucide-react";
 import clsx from "clsx";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
@@ -21,6 +21,25 @@ export function LocateButton() {
       onClick={() => void useStore.getState().locate(true)}
     >
       {locating ? <Loader2 size={18} strokeWidth={1.75} className="animate-spin" /> : <LocateFixed size={18} strokeWidth={1.75} />}
+    </button>
+  );
+}
+
+/** Map control under "my location": opens the map layers popover (LayersPopover, rendered by App). */
+export function LayersButton() {
+  const t = useT();
+  const open = useStore((s) => s.layersOpen);
+  return (
+    <button
+      type="button"
+      data-layers-toggle
+      className={clsx("absolute top-[108px] end-3 z-20 no-print w-10 h-10 rounded popover flex items-center justify-center transition-colors duration-150 hover:bg-hover", open ? "text-accent" : "text-fg")}
+      title={t("layersButton")}
+      aria-label={t("layersButton")}
+      aria-expanded={open}
+      onClick={() => useStore.getState().toggleLayers()}
+    >
+      <Layers size={18} strokeWidth={1.75} />
     </button>
   );
 }

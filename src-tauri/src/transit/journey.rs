@@ -1,8 +1,9 @@
 //! Journey planning: time resolution, access/egress, RAPTOR runs, assembly into `types::Route`.
 //!
-//! Alternatives: the first RAPTOR run yields the Pareto set over (arrival, transfers). Further
-//! runs shift the query time (depart-at: just after the earliest found departure; arrive-by: just
-//! before the latest found arrival) and one run bans the routes of the best journey, giving
+//! Alternatives: one range-RAPTOR query (`raptor::run_range`) over `ALT_WINDOW_S` after the
+//! requested time (arrive-by: before the deadline) yields every journey that is Pareto-optimal
+//! over (departure, arrival, transfers) in that window – the later departures and the
+//! fewer-transfer options in one pass. One more run bans the lines of the best journey, giving
 //! genuinely different options. Journeys are then de-duplicated by their sequence of routes,
 //! dominated ones removed, and tagged.
 
@@ -30,6 +31,10 @@ pub const ACCESS_MAX_STOPS: usize = 20;
 pub const ACCESS_EXTRA_RAIL: usize = 10;
 pub const PURE_WALK_MAX_M: f64 = 2000.0;
 pub const MAX_ALTERNATIVES: usize = 5;
+/// Departure window of the alternatives search (range RAPTOR).
+pub const ALT_WINDOW_S: i32 = 3600;
+/// Plain re-run this long before a journey the walk check rejected.
+const RETRY_SLACK_S: i32 = 180;
 
 /// Resolve the request time to (local service date, seconds since local midnight, arrive_by).
 pub fn resolve_time(ts: &TimeSpec) -> Result<(NaiveDate, i32, bool)> {
@@ -163,6 +168,7 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
         r.tags.clear();
     }
     tag_routes(&mut routes);
+    super::fares::annotate(&mut routes);
     Ok(RouteResponse::offline(routes, t0.elapsed().as_millis() as u64))
 }
 
@@ -197,6 +203,9 @@ fn combine(chain: Vec<Cand>) -> Cand {
         depart_iso: chain.first().unwrap().route.depart_iso.clone(),
         arrive_iso: chain.last().unwrap().route.arrive_iso.clone(),
         transfers: ntransit.saturating_sub(1),
+        fare_estimate_ils: None,
+        fare_note: None,
+        avoid_violations: vec![],
     };
     Cand { route, dep, arr, seq, transit: chain.iter().any(|c| c.transit) }
 }
@@ -240,7 +249,7 @@ fn plan_segment(
 
         if !access.is_empty() && !egress.is_empty() {
             let mut journeys: Vec<Journey> = Vec::new();
-            let run_at = |tq: i32, banned: &FxHashSet<u32>| -> Vec<Journey> {
+            let run_at = |tq: i32, banned: &FxHashSet<u32>, window: i32| -> Vec<Journey> {
                 let (sources, targets): (Vec<(u32, i32, i32)>, Vec<(u32, i32)>) = if !arrive_by {
                     (
                         access.iter().map(|(s, l)| (*s, tq + wsec(l), wsec(l))).collect(),
@@ -252,41 +261,86 @@ fn plan_segment(
                         access.iter().map(|(s, l)| (*s, wsec(l))).collect(),
                     )
                 };
-                raptor::run(
-                    t,
-                    &Query {
-                        day,
-                        reverse: arrive_by,
-                        sources: &sources,
-                        targets: &targets,
-                        max_trips: raptor::MAX_TRIPS,
-                        banned_routes: banned,
-                    },
-                )
+                let q = Query {
+                    day,
+                    reverse: arrive_by,
+                    sources: &sources,
+                    targets: &targets,
+                    max_trips: raptor::MAX_TRIPS,
+                    banned_routes: banned,
+                };
+                if window > 0 {
+                    raptor::run_range(t, &q, window)
+                } else {
+                    raptor::run(t, &q)
+                }
             };
             let none = FxHashSet::default();
-            let mut tq = secs;
-            for _ in 0..(if full { 4 } else { 1 }) {
-                let js = run_at(tq, &none);
-                if js.is_empty() {
-                    break;
-                }
-                tq = if !arrive_by {
-                    js.iter().map(|j| j.depart).min().unwrap() + 60
-                } else {
-                    js.iter().map(|j| j.arrive).max().unwrap() - 60
-                };
-                journeys.extend(js);
-                let distinct: FxHashSet<Vec<u32>> = journeys.iter().map(|j| line_key(t, j)).collect();
-                if distinct.len() > want {
-                    break;
+            journeys.extend(run_at(secs, &none, if full { ALT_WINDOW_S } else { 0 }));
+            if full {
+                // The profile keeps one journey per (departure, arrival, trips); its variant can
+                // fail the road-network walk check in build_route while another variant of the
+                // same quality passes. The previous planner's runs (the requested time, then up
+                // to three runs just after the earliest departure found) are merged too, so the
+                // answer is always a superset of what it returned (~10-25 ms per run).
+                let mut tq = secs;
+                let mut seen: FxHashSet<Vec<u32>> = FxHashSet::default();
+                for _ in 0..4 {
+                    let js = run_at(tq, &none, 0);
+                    if js.is_empty() {
+                        break;
+                    }
+                    tq = if !arrive_by {
+                        js.iter().map(|j| j.depart).min().unwrap() + 60
+                    } else {
+                        js.iter().map(|j| j.arrive).max().unwrap() - 60
+                    };
+                    seen.extend(js.iter().map(|j| line_key(t, j)));
+                    journeys.extend(js);
+                    if seen.len() > want {
+                        break;
+                    }
                 }
             }
-            // diversification: ban the lines of the best journey
+            // Assemble with real walking legs. RAPTOR walks between stops in straight lines, so
+            // the road-network walk can miss a connection it made: depart-at journeys then ride
+            // the next trip of the same line (later arrival), arrive-by ones are dropped. Such a
+            // journey may also have displaced a feasible one that leaves a little earlier: a
+            // plain run from just before it finds that one again.
+            let repair = !arrive_by;
+            let mut built: Vec<(Journey, Route, i32)> = Vec::new();
+            let mut retry: Vec<i32> = Vec::new();
+            for j in journeys {
+                match build_route(t, &j, date, &acc_map, &egr_map, walker, repair) {
+                    Some((route, arr)) => {
+                        if arr != j.arrive {
+                            retry.push(j.depart - RETRY_SLACK_S);
+                        }
+                        built.push((j, route, arr));
+                    }
+                    None => {
+                        log::debug!("journey dropped by the walk check: dep {} arr {} {:?}", j.depart, j.arrive, j.route_seq(t));
+                        retry.push(if arrive_by { j.arrive + RETRY_SLACK_S } else { j.depart - RETRY_SLACK_S });
+                    }
+                }
+            }
+            if full {
+                retry.sort_unstable();
+                retry.dedup();
+                for tq in retry.into_iter().take(3) {
+                    for j in run_at(tq, &none, 0) {
+                        if let Some((route, arr)) = build_route(t, &j, date, &acc_map, &egr_map, walker, repair) {
+                            built.push((j, route, arr));
+                        }
+                    }
+                }
+            }
+            // diversification: ban the lines of the best *feasible* journey (banning those of a
+            // journey the walk check rejects would hide the real best option)
             let best = if !arrive_by {
-                journeys.iter().min_by_key(|j| (j.arrive, -j.depart))
+                built.iter().min_by_key(|(j, _, arr)| (*arr, -j.depart)).map(|(j, _, _)| j)
             } else {
-                journeys.iter().max_by_key(|j| (j.depart, -j.arrive))
+                built.iter().max_by_key(|(j, _, arr)| (j.depart, -*arr)).map(|(j, _, _)| j)
             };
             if let (true, Some(b)) = (full, best) {
                 let lines: FxHashSet<(u32, u32, u32)> = b
@@ -303,13 +357,14 @@ fn plan_segment(
                         lines.contains(&(ri.agency, ri.short_name, ri.long_name))
                     })
                     .collect();
-                let js = run_at(secs, &banned);
-                journeys.extend(js);
-            }
-            for j in &journeys {
-                if let Some(route) = build_route(t, j, date, &acc_map, &egr_map, walker) {
-                    cands.push(Cand { dep: j.depart, arr: j.arrive, seq: line_key(t, j), transit: true, route });
+                for j in run_at(secs, &banned, 0) {
+                    if let Some((route, arr)) = build_route(t, &j, date, &acc_map, &egr_map, walker, repair) {
+                        built.push((j, route, arr));
+                    }
                 }
+            }
+            for (j, route, arr) in built {
+                cands.push(Cand { dep: j.depart, arr, seq: line_key(t, &j), transit: true, route });
             }
         }
     }
@@ -333,6 +388,9 @@ fn plan_segment(
             depart_iso: Some(iso_at(date, dep)),
             arrive_iso: Some(iso_at(date, arr)),
             transfers: 0,
+            fare_estimate_ils: None,
+            fare_note: None,
+            avoid_violations: vec![],
         };
         cands.push(Cand { route, dep, arr, seq: vec![], transit: false });
     }
@@ -490,10 +548,16 @@ fn transit_leg(t: &Transit, date: NaiveDate, p: u32, trip: u32, day_off: i32, fr
             arrive_iso: iso_at(date, arr),
             num_stops: to - from,
             stops: st_list,
+            delay_p50_min: None,
         }),
     }
 }
 
+/// Assemble a RAPTOR journey into a `Route` with real walking legs. Returns the route and its
+/// final arrival (seconds after the query date's midnight). `repair` (depart-at queries): when
+/// the road-network walk misses a connection that RAPTOR's straight-line transfer estimate
+/// made, ride the next trip of the same line instead of dropping the journey (arrive-by
+/// queries cannot arrive later, so they drop it).
 fn build_route(
     t: &Transit,
     j: &Journey,
@@ -501,7 +565,9 @@ fn build_route(
     acc: &FxHashMap<u32, &Leg>,
     egr: &FxHashMap<u32, &Leg>,
     walker: &dyn WalkRouter,
-) -> Option<Route> {
+    repair: bool,
+) -> Option<(Route, i32)> {
+    let day = t.day_index(date);
     let mut legs: Vec<Leg> = Vec::new();
     let mut cur = j.depart;
     // `ready` tracks when the traveller is really ready, using the walker's (road network)
@@ -525,12 +591,26 @@ fn build_route(
                 cur += dur;
             }
             JLeg::Transit { pattern, trip, day_off, from_pos, to_pos } => {
-                let dep = t.dep_at(*pattern, *trip, *from_pos) + day_off * DAY;
+                let mut trip = *trip;
+                let dep = t.dep_at(*pattern, trip, *from_pos) + day_off * DAY;
                 if ready > dep + 60 {
-                    return None;
+                    if !repair {
+                        return None;
+                    }
+                    // next trip of this pattern on the same service day that can still be caught
+                    let p = &t.patterns[*pattern as usize];
+                    let svc_day = day.map(|d| d as i32 + day_off)?;
+                    if svc_day < 0 {
+                        return None;
+                    }
+                    trip = (trip + 1..p.ntrips).find(|&tr| {
+                        t.dep_at(*pattern, tr, *from_pos) + day_off * DAY + 60 >= ready
+                            && t.service_active(t.trip_service[(p.trips_start + tr) as usize], svc_day as u32)
+                    })?;
+                    log::debug!("walk check: transfer missed at {}, next trip taken", t.stop_name(t.pstops(*pattern)[*from_pos as usize]));
                 }
-                let leg = transit_leg(t, date, *pattern, *trip, *day_off, *from_pos, *to_pos);
-                cur = t.arr_at(*pattern, *trip, *to_pos) + day_off * DAY;
+                let leg = transit_leg(t, date, *pattern, trip, *day_off, *from_pos, *to_pos);
+                cur = t.arr_at(*pattern, trip, *to_pos) + day_off * DAY;
                 ready = cur;
                 legs.push(leg);
             }
@@ -572,17 +652,21 @@ fn build_route(
         geometry.extend(l.geometry.iter().skip(skip).copied());
     }
     let ntransit = merged.iter().filter(|l| l.kind == LegKind::Transit).count() as u32;
-    Some(Route {
+    let route = Route {
         id: String::new(),
         mode: Mode::Transit,
-        duration_sec: (j.arrive - j.depart) as f64,
+        duration_sec: (cur - j.depart) as f64,
         distance_m: merged.iter().map(|l| l.distance_m).sum(),
         walk_m: merged.iter().filter(|l| l.kind == LegKind::Walk).map(|l| l.distance_m).sum(),
         geometry,
         legs: merged,
         tags: vec![],
         depart_iso: Some(iso_at(date, j.depart)),
-        arrive_iso: Some(iso_at(date, j.arrive)),
+        arrive_iso: Some(iso_at(date, cur)),
         transfers: ntransit.saturating_sub(1),
-    })
+        fare_estimate_ils: None,
+        fare_note: None,
+        avoid_violations: vec![],
+    };
+    Some((route, cur))
 }

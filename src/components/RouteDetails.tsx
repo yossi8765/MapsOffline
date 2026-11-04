@@ -15,6 +15,7 @@ import {
   MoveUpLeft,
   MoveUpRight,
   Printer,
+  Navigation,
   RotateCcw,
   Undo2,
   CornerLeftDown,
@@ -25,7 +26,7 @@ import { findLineFavorite, useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import type { Leg, Maneuver, Route } from "../lib/api";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { copyText, fmtDistance, fmtDuration, fmtTime, routeToGpx, routeToKml, routeToText } from "../lib/format";
+import { copyText, fmtDistance, fmtDuration, fmtTime, routeArrow, routeToGpx, routeToKml, routeToText } from "../lib/format";
 import { api } from "../lib/api";
 import { printPage } from "../lib/print";
 import { legColorHex, vehicleIcon } from "./RouteResults";
@@ -169,7 +170,12 @@ function TransitLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex
             <Star size={14} strokeWidth={1.75} fill={savedLine ? "currentColor" : "none"} />
           </button>
         </div>
-        {tr.headsign && tr.agency && <div className="text-xs text-subtle truncate -mt-1">{tr.agency}</div>}
+        {tr.agency && (
+          <div className="flex items-center gap-1.5 text-xs text-subtle -mt-1 min-w-0">
+            <OperatorLogo agency={tr.agency} />
+            {tr.headsign && <span className="truncate">{tr.agency}</span>}
+          </div>
+        )}
         <button
           className="text-sm text-muted hover:text-fg flex items-center gap-1 self-start rounded -mx-1 px-1 h-7 transition-colors num"
           onClick={() => setOpen((v) => !v)}
@@ -240,6 +246,25 @@ function WalkLeg({ route, leg, legIndex }: { route: Route; leg: Leg; legIndex: n
   );
 }
 
+/** Walking time over the profile by Tobler's hiking function: 6·e^(−3.5·|slope + 0.05|) km/h on
+ *  each sample step (the samples are spread evenly along the route, so every step is
+ *  distance / (n − 1) long). Water: 0.5 l per walking hour, 0.75 l from June to September,
+ *  rounded up to half a litre, at least 0.5 l. */
+export function toblerWalk(elev: number[], distanceM: number, month = new Date().getMonth()): { sec: number; litres: number } {
+  const n = elev.length;
+  if (n < 2 || distanceM <= 0) return { sec: 0, litres: 0 };
+  const step = distanceM / (n - 1);
+  let sec = 0;
+  for (let i = 1; i < n; i++) {
+    const slope = (elev[i] - elev[i - 1]) / step;
+    const kmh = 6 * Math.exp(-3.5 * Math.abs(slope + 0.05));
+    sec += (step / 1000 / Math.max(kmh, 0.5)) * 3600;
+  }
+  const perHour = month >= 5 && month <= 8 ? 0.75 : 0.5;
+  const litres = Math.max(0.5, Math.ceil(((sec / 3600) * perHour) / 0.5) * 0.5);
+  return { sec, litres };
+}
+
 /** Sample the route every ~50 m (max 400 points) for the elevation profile. */
 function sampleRoute(geometry: [number, number][], max = 400): [number, number][] {
   if (geometry.length <= max) return geometry;
@@ -303,6 +328,17 @@ function ElevationProfile({ route }: { route: Route }) {
             <polygon points={`0,${H} ${pts.join(" ")} ${W},${H}`} fill="var(--accent-soft)" />
             <polyline points={pts.join(" ")} fill="none" stroke="var(--accent)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
           </svg>
+          {route.mode === "foot" &&
+            (() => {
+              const w = toblerWalk(e, route.distanceM);
+              return (
+                <div className="flex flex-col gap-0.5 pt-1 text-sm">
+                  <span className="num">{t("toblerTime").replace("{t}", fmtDuration(w.sec, t))}</span>
+                  <span className="num">{t("waterHint").replace("{x}", String(w.litres))}</span>
+                  <p className="m-0 text-xs text-subtle">{t("walkingHintNote")}</p>
+                </div>
+              );
+            })()}
         </div>
       )}
     </div>
@@ -326,7 +362,7 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
   const t = useT();
   const lang = useStore((s) => s.settings.language);
   const waypoints = useStore((s) => s.waypoints);
-  const name = `${waypoints[0]?.label ?? "A"} ← ${waypoints[waypoints.length - 1]?.label ?? "B"}`;
+  const name = `${waypoints[0]?.label ?? "A"} ${routeArrow(lang)} ${waypoints[waypoints.length - 1]?.label ?? "B"}`;
   const safe = name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
 
   return (
@@ -351,6 +387,12 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
         )}
       </div>
       <ElevationProfile route={route} />
+      <TransitDelays route={route} />
+      {route.mode !== "transit" && (
+        <button className="btn btn-primary w-full no-print" onClick={() => void useStore.getState().startNavigation(route.id)}>
+          <Navigation size={16} strokeWidth={2} className="rtl:-scale-x-100" /> {t("navStart")}
+        </button>
+      )}
       <div className="flex flex-wrap gap-1.5 no-print">
         <button className="btn btn-sm" onClick={() => void exportRoute(`${safe}.gpx`, "gpx", routeToGpx(route, name), t)}>
           <Download size={14} strokeWidth={1.75} /> {t("exportGpx")}
@@ -366,10 +408,65 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
         >
           <Copy size={14} strokeWidth={1.75} /> {t("copyText")}
         </button>
-        <button className="btn btn-sm" onClick={() => printPage()}>
+        <button className="btn btn-sm" onClick={() => void printPage()}>
           <Printer size={14} strokeWidth={1.75} /> {t("print")}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Operator logos shipped in public/operators (only those with a free licence, see CREDITS.md). */
+let logoIndex: Promise<Record<string, string>> | null = null;
+function OperatorLogo({ agency }: { agency: string }) {
+  const [file, setFile] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    logoIndex ??= fetch("/operators/index.json")
+      .then((r) => (r.ok ? r.json() : {}))
+      .catch(() => ({}));
+    void logoIndex.then((idx) => alive && setFile(idx[agency] ?? null));
+    return () => {
+      alive = false;
+    };
+  }, [agency]);
+  if (!file) return null;
+  return <img src={`/operators/${file}`} alt={agency} title={agency} className="h-4 max-w-16 object-contain shrink-0" />;
+}
+
+/** How late each line of a transit route usually is at its boarding stop (Open Bus Stride,
+ *  online, slow: fetched after the route is shown; nothing offline or when switched off). */
+function TransitDelays({ route }: { route: Route }) {
+  const t = useT();
+  const enabled = useStore((s) => s.settings.transitReliability ?? true);
+  const [delays, setDelays] = useState<{ line: string; min: number }[] | null>(null);
+  useEffect(() => {
+    setDelays(null);
+    if (route.mode !== "transit" || !enabled || !navigator.onLine) return;
+    const legs = route.legs.filter((l) => l.transit && l.transit.stops.length > 0 && l.transit.departIso);
+    if (!legs.length) return;
+    let alive = true;
+    api
+      .transitDelays(legs.map((l) => ({ shortName: l.transit!.routeShortName, agency: l.transit!.agency, lon: l.transit!.stops[0].lon, lat: l.transit!.stops[0].lat, departIso: l.transit!.departIso })))
+      .then((v) => {
+        if (!alive) return;
+        const out = legs.flatMap((l, i) => (v[i] != null && Math.abs(v[i]!) >= 1 ? [{ line: l.transit!.routeShortName || l.transit!.routeLongName, min: Math.round(v[i]!) }] : []));
+        setDelays(out);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [route, enabled]);
+  if (!delays || delays.length === 0) return null;
+  return (
+    <div className="card p-3 flex flex-col gap-1 text-sm">
+      {delays.map((d, i) => (
+        <div key={i} className={d.min > 0 ? "text-warning" : "text-success"}>
+          {t("lineDelay").replace("{line}", d.line).replace("{n}", String(Math.abs(d.min))).replace("{dir}", d.min > 0 ? t("late") : t("early"))}
+        </div>
+      ))}
+      <p className="m-0 text-xs text-subtle">{t("strideCredit")}</p>
     </div>
   );
 }

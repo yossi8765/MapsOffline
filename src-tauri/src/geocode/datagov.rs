@@ -24,10 +24,16 @@ pub struct ExtPoi {
 }
 
 fn records(client: &reqwest::blocking::Client, resource: &str) -> anyhow::Result<Vec<Map<String, Value>>> {
+    records_fields(client, resource, None)
+}
+
+/// All records of a datastore resource, optionally only some columns (`fields=a,b`).
+fn records_fields(client: &reqwest::blocking::Client, resource: &str, fields: Option<&str>) -> anyhow::Result<Vec<Map<String, Value>>> {
     let mut out = Vec::new();
     let mut offset = 0usize;
+    let fields = fields.map(|f| format!("&fields={f}")).unwrap_or_default();
     loop {
-        let url = format!("{API}?resource_id={resource}&limit={PAGE}&offset={offset}");
+        let url = format!("{API}?resource_id={resource}&limit={PAGE}&offset={offset}{fields}");
         let r = client.get(&url).timeout(Duration::from_secs(60)).send().with_context(|| format!("GET {url}"))?;
         if r.status().as_u16() == 418 {
             anyhow::bail!("{}", crate::data::download::blocked_message(&url));
@@ -182,6 +188,61 @@ pub fn fetch_all(report: &dyn Fn(&str)) -> Vec<ExtPoi> {
     out
 }
 
+/// One street of a town under all its registered names (official first).
+#[derive(Debug, Clone)]
+pub struct SynGroup {
+    pub city: String,
+    pub names: Vec<String>,
+}
+
+/// The Population Authority's street list with synonyms ("רשימת רחובות בישראל - מתוך מרשם
+/// האוכלוסין", data.gov.il package `israel-streets-synom`, updated weekly): every name of a
+/// street points at its official code. Only streets that have more than one name are returned.
+const STREET_SYNONYMS: &str = "bf185c7f-1a4e-4662-88c5-fa118a244bda";
+
+pub fn fetch_street_synonyms(report: &dyn Fn(&str)) -> Vec<SynGroup> {
+    let Ok(client) = crate::data::download::http_client() else { return Vec::new() };
+    report("מוריד שמות חלופיים של רחובות מ-data.gov.il");
+    match records_fields(&client, STREET_SYNONYMS, Some("city_code,city_name,street_name,official_code")) {
+        Ok(rs) => {
+            let groups = synonym_groups(&rs);
+            log::info!("data.gov.il street names: {} records → {} streets with synonyms", rs.len(), groups.len());
+            groups
+        }
+        Err(e) => {
+            log::warn!("data.gov.il street synonyms skipped: {e:#}");
+            Vec::new()
+        }
+    }
+}
+
+fn synonym_groups(rs: &[Map<String, Value>]) -> Vec<SynGroup> {
+    use rustc_hash::FxHashMap;
+    let mut by: FxHashMap<(i64, i64), (String, Vec<String>)> = FxHashMap::default();
+    let mut order: Vec<(i64, i64)> = Vec::new();
+    for r in rs {
+        let (Some(city), Some(off)) = (num(r, "city_code"), num(r, "official_code")) else { continue };
+        let name = s(r, "street_name").split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            continue;
+        }
+        let key = (city as i64, off as i64);
+        let e = by.entry(key).or_insert_with(|| {
+            order.push(key);
+            (s(r, "city_name").to_string(), Vec::new())
+        });
+        if !e.1.contains(&name) {
+            e.1.push(name);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|k| by.remove(&k))
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(city, names)| SynGroup { city, names })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +250,23 @@ mod tests {
 
     fn rec(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn groups_street_synonyms() {
+        let rs: Vec<Map<String, Value>> = [
+            json!({"city_code": 5000, "city_name": "תל אביב - יפו", "street_name": "דרך בגין", "official_code": 1555}),
+            json!({"city_code": 5000, "city_name": "תל אביב - יפו", "street_name": "מנחם  בגין", "official_code": 1555}),
+            json!({"city_code": 5000, "city_name": "תל אביב - יפו", "street_name": "דיזנגוף", "official_code": 1}),
+            json!({"city_code": 4000, "city_name": "חיפה", "street_name": "דרך בגין", "official_code": 1555}),
+        ]
+        .into_iter()
+        .map(rec)
+        .collect();
+        let g = synonym_groups(&rs);
+        assert_eq!(g.len(), 1, "single-name streets and other towns' codes stay apart");
+        assert_eq!(g[0].city, "תל אביב - יפו");
+        assert_eq!(g[0].names, vec!["דרך בגין".to_string(), "מנחם בגין".to_string()]);
     }
 
     #[test]

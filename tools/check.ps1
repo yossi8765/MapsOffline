@@ -2,7 +2,8 @@
 # Run by hand (.\tools\check.ps1) and by tools\release.ps1 before every build.
 # Releases are built on Windows, not in GitLab CI (which only builds the weekly data), so this
 # script is where the checks run.
-$ErrorActionPreference = "Stop"
+# native tools write progress to stderr: judge them by exit code only
+$ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
 
 function Step($name, [scriptblock]$cmd) {

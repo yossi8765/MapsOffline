@@ -170,6 +170,7 @@ fn convert_leg(l: &MLeg) -> Leg {
                 arrive_iso: arrive_iso.unwrap_or_default(),
                 num_stops: (l.intermediate_stops.len() + 1) as u32,
                 stops,
+                delay_p50_min: None,
             }),
         }
     } else {
@@ -209,6 +210,9 @@ fn convert_itinerary(idx: usize, it: &Itinerary) -> Route {
         geometry,
         walk_m: legs.iter().filter(|l| l.kind == LegKind::Walk).map(|l| l.distance_m).sum(),
         transfers: if transit_legs > 0 { it.transfers.max(transit_legs - 1) } else { 0 },
+        fare_estimate_ils: None,
+        fare_note: None,
+        avoid_violations: vec![],
         legs,
         tags: vec![],
         depart_iso: to_local_iso(&it.start_time),
@@ -251,6 +255,7 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
     routes.sort_by(|a, b| a.arrive_iso.cmp(&b.arrive_iso).then(a.duration_sec.total_cmp(&b.duration_sec)));
     routes.truncate(n as usize);
     tag(&mut routes);
+    crate::transit::fares::annotate(&mut routes);
     Ok(RouteResponse { routes, compute_ms: t0.elapsed().as_millis() as u64, source: RouteSource::Online, provider: Some("transitous".into()) })
 }
 

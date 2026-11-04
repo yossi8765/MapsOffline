@@ -344,11 +344,20 @@ impl WalkRouter for DetourWalk {
 #[test]
 fn infeasible_road_transfer_is_rejected() {
     let t = build_model("detour");
-    // With NoWalk the D→E transfer works (foot_transfer test). With a 20-minute road detour
-    // neither R3 connection can be made, so no journey to F may be returned.
+    // With NoWalk the D→E transfer works (foot_transfer test). With a 20-minute road detour the
+    // connection RAPTOR found cannot be made; the journey is either dropped or repaired onto a
+    // later R3 trip – every returned connection must be makeable with the real walk.
     let r = plan(&t, &req(&t, "1001", "1006", TimeKind::Depart, "2024-10-07T07:55:00+03:00"), &DetourWalk).unwrap();
+    let ts = |iso: &Option<String>| chrono::DateTime::parse_from_rfc3339(iso.as_deref().unwrap()).unwrap().timestamp();
     for rt in &r.routes {
-        assert!(!transit_lines(rt).contains(&"R3".to_string()), "infeasible connection returned");
+        let legs = &rt.legs;
+        for (i, l) in legs.iter().enumerate() {
+            if l.kind != LegKind::Transit || i < 2 || legs[i - 1].kind != LegKind::Walk || legs[i - 2].kind != LegKind::Transit {
+                continue;
+            }
+            let walk = legs[i - 1].duration_sec as i64;
+            assert!(ts(&l.depart_iso) + 60 >= ts(&legs[i - 2].arrive_iso) + walk, "infeasible connection returned: {:?}", transit_lines(rt));
+        }
     }
 }
 

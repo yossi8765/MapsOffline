@@ -98,6 +98,49 @@ pub fn spell_fold(t: &str) -> String {
     out
 }
 
+/// Key of a street name in the trigram index (`streets_tri`): spelling-folded, and every group
+/// of commonly confused letters mapped to one letter, so a typo between them ("הרסל" for
+/// "הרצל") still shares the trigrams. Only a candidate generator: `levenshtein2` decides.
+pub fn tri_key(ckey: &str) -> String {
+    spell_fold(ckey)
+        .chars()
+        .map(|c| match c {
+            'ע' => 'א',
+            'ק' | 'ח' | 'ג' => 'כ',
+            'ש' | 'צ' => 'ס',
+            'ו' => 'ב',
+            'ט' => 'ת',
+            _ => c,
+        })
+        .collect()
+}
+
+/// The FTS5 MATCH expression "any trigram of `key`" (None when shorter than 3 characters).
+pub fn trigram_query(key: &str) -> Option<String> {
+    let ch: Vec<char> = key.chars().collect();
+    if ch.len() < 3 {
+        return None;
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for w in ch.windows(3) {
+        let t: String = w.iter().collect();
+        if !seen.contains(&t) {
+            seen.push(t);
+        }
+    }
+    Some(seen.iter().map(|t| format!("\"{}\"", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR "))
+}
+
+/// Typos allowed in a word of `len` characters, in `levenshtein2` units (2 per error): none up
+/// to 3 letters, one up to 7, two beyond.
+pub fn allowed_edits2(len: usize) -> u32 {
+    match len {
+        0..=3 => 0,
+        4..=7 => 2,
+        _ => 4,
+    }
+}
+
 /// Space separated bag of unique tokens to index in FTS for the given names:
 /// every token, its form without a leading "ה", and the spelling-folded forms of both.
 pub fn index_tokens(names: &[&str]) -> String {
@@ -257,7 +300,8 @@ pub fn address_candidates(q: &str) -> Vec<AddrCand> {
 // ----------------------------------------------------------------- fuzzy
 
 fn confusable(a: char, b: char) -> bool {
-    const GROUPS: &[&[char]] = &[&['א', 'ע'], &['כ', 'ק'], &['ת', 'ט'], &['ס', 'ש'], &['ח', 'כ'], &['ב', 'ו']];
+    // half-cost pairs of Hebrew letters people mix up (sound-alikes, look-alikes)
+    const GROUPS: &[&[char]] = &[&['א', 'ע'], &['כ', 'ק'], &['ת', 'ט'], &['ס', 'ש'], &['ח', 'כ'], &['ב', 'ו'], &['צ', 'ס'], &['ג', 'ק']];
     GROUPS.iter().any(|g| g.contains(&a) && g.contains(&b))
 }
 

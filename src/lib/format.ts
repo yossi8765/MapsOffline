@@ -3,6 +3,7 @@ import relativeTime from "dayjs/plugin/relativeTime";
 import "dayjs/locale/he";
 import type { Leg, Route, RouteTag } from "./api";
 import { translate, type I18nKey } from "./i18n";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 dayjs.extend(relativeTime);
 
@@ -186,9 +187,14 @@ export async function copyText(text: string): Promise<boolean> {
  *  (window.confirm shows "tauri.localhost says" and English OK/Cancel). */
 export async function askConfirm(message: string, okLabel: string, cancelLabel: string, title: string): Promise<boolean> {
   try {
-    const { ask } = await import("@tauri-apps/plugin-dialog");
     return await ask(message, { title, kind: "warning", okLabel, cancelLabel });
   } catch {
     return window.confirm(message);
   }
+}
+
+/** Arrow between origin and destination in route names: "A ← B" reads right-to-left in Hebrew,
+ *  "A → B" in English (also used for exported file names). */
+export function routeArrow(lang: string): string {
+  return lang === "he" || lang === "ar" ? "←" : "→";
 }

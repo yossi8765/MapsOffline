@@ -87,6 +87,47 @@ export function keyboardFix(q: string): string | null {
   return [...q.toLowerCase()].map((ch) => EN_TO_HE[ch] ?? ch).join("");
 }
 
+/** Final letters fold to their regular form so "שלום" matches "שלומ..." while typing. */
+const FOLD: Record<string, string> = { ך: "כ", ם: "מ", ן: "נ", ף: "פ", ץ: "צ" };
+const fold = (s: string) => [...s.toLowerCase()].map((c) => FOLD[c] ?? c).join("");
+
+/** `name` with the parts that match a query word in bold (case and final-letter insensitive). */
+export function Highlight({ text, query }: { text: string; query: string }) {
+  const words = query
+    .split(/[\s,]+/)
+    .map((w) => fold(w.replace(/["'׳״]/g, "")))
+    .filter((w) => w.length >= 2);
+  if (!words.length) return <>{text}</>;
+  const f = fold(text);
+  const marks = new Array<boolean>(text.length).fill(false);
+  for (const w of words) {
+    let i = f.indexOf(w);
+    while (i >= 0) {
+      for (let k = i; k < i + w.length && k < marks.length; k++) marks[k] = true;
+      i = f.indexOf(w, i + w.length);
+    }
+  }
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  while (i < text.length) {
+    let j = i;
+    while (j < text.length && marks[j] === marks[i]) j++;
+    out.push(marks[i] ? <b key={i} className="font-semibold">{text.slice(i, j)}</b> : text.slice(i, j));
+    i = j;
+  }
+  return <>{out}</>;
+}
+
+/** The results answer something else than what was typed (fuzzy street / city match): no query
+ *  word of 3+ letters occurs in the best result. */
+function reinterpreted(q: string, r: GeoResult | undefined): string | null {
+  if (!r) return null;
+  const words = q.split(/[\s,]+/).filter((w) => w.length >= 3 && !/\d/.test(w)).map(fold);
+  if (!words.length) return null;
+  const label = fold(resultLabel(r));
+  return words.some((w) => label.includes(w)) ? null : resultLabel(r);
+}
+
 const PRECISION_KEY: Record<GeoResult["precision"], I18nKey> = {
   exact: "precisionExact",
   interpolated: "precisionInterpolated",
@@ -163,6 +204,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
     return out;
   }, [text, results, favorites, history, noLocation]);
 
+  // the best result clearly beats the next one (score ratio above 1.6): mark it as "best match"
+  const best = results.length > 0 && (results.length === 1 || (results[0].score ?? 0) > 1.6 * Math.max(results[1].score ?? 0, 1e-9));
   // the backend silently retries a Latin query as Hebrew typed on the wrong layout: say so
   const fixedQuery = useMemo(() => {
     const fixed = keyboardFix(text.trim());
@@ -271,10 +314,20 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
       {open && (rows.length > 0 || loading || text.trim()) && (
         <div className="absolute z-40 mt-1.5 w-full popover rounded-[var(--radius-card)] overflow-hidden max-h-80 scroll-y py-1 fade-in" role="listbox" onMouseDown={(e) => e.preventDefault()}>
           {loading && rows.length === 0 && <div className="progress-line mx-3 my-3" role="progressbar" aria-busy="true" />}
-          {fixedQuery && (
+          {fixedQuery ? (
             <div className="px-3 pt-1.5 pb-1 text-xs text-muted">
               {t("keyboardFixed")} <bdi className="font-medium text-fg">{fixedQuery}</bdi>
             </div>
+          ) : (
+            text.trim() &&
+            !loading &&
+            // the backend says how it read the query (abbreviation, typo, category + place);
+            // otherwise fall back to the local guess
+            (results[0]?.interpretation ?? reinterpreted(text.trim(), results[0])) && (
+              <div className="px-3 pt-1.5 pb-1 text-xs text-muted">
+                {t("showingFor")} <bdi className="font-medium text-fg">{results[0]?.interpretation ?? reinterpreted(text.trim(), results[0])}</bdi>
+              </div>
+            )
           )}
           {!loading && text.trim() && rows.length === 0 && (
             <div className="px-3 py-3 text-sm">
@@ -328,8 +381,13 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
                   {isMe ? <LocateFixed size={16} strokeWidth={1.75} /> : isFav ? favIcon(row.f.icon) : row.type === "recent" ? <Clock size={16} strokeWidth={1.75} /> : kindIcon(r!.kind)}
                 </span>
                 <span className="flex-1 min-w-0">
-                  <span className="block truncate text-base">{name}</span>
-                  {secondary && <span className="block truncate text-xs text-muted">{secondary}</span>}
+                  <span className="block truncate text-base">{row.type === "result" ? <Highlight text={name} query={fixedQuery ?? text} /> : name}</span>
+                  {(secondary || (row.type === "result" && i === 0 && best && rows.length > 1)) && (
+                    <span className="block truncate text-xs text-muted">
+                      {row.type === "result" && i === 0 && best && rows.length > 1 && <span className="text-accent font-medium">{t("bestMatch")}{secondary ? " · " : ""}</span>}
+                      {secondary}
+                    </span>
+                  )}
                 </span>
                 {/* precision is news only when it is not exact */}
                 {r && r.kind === "address" && r.precision !== "exact" && (
