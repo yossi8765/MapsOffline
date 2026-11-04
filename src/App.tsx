@@ -1,8 +1,11 @@
 import { useEffect } from "react";
-import { api, type DataProgress } from "./lib/api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api, apiX, type DataProgress, type SystemAccent } from "./lib/api";
 import { useTauriEvent } from "./lib/useTauriEvent";
 import { resolveTheme, useStore } from "./lib/store";
-import { isRtl } from "./lib/i18n";
+import { isRtl, translate } from "./lib/i18n";
+import { isBrowserKey, matchShortcut } from "./lib/shortcuts";
+import { askConfirm } from "./lib/format";
 import { MapView } from "./components/MapView";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toast";
@@ -10,7 +13,28 @@ import { PrintSheet } from "./components/PrintSheet";
 import { LayersPopover } from "./components/LayersPopover";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { NearbyList } from "./components/NearbyList";
-import { printPage } from "./lib/print";
+import { CommandPalette } from "./components/CommandPalette";
+import { ShareDialog } from "./components/ShareDialog";
+import { BatchGeocodeDialog } from "./components/BatchGeocodeDialog";
+import { TeachingTip } from "./components/TeachingTip";
+
+/** Elements where the browser's own context menu stays (copy / paste in text fields). */
+function wantsNativeMenu(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  return !!el.closest("input, textarea, [contenteditable=true], [contenteditable='']");
+}
+
+function applySystemAccent(a: SystemAccent | null) {
+  const root = document.documentElement.style;
+  if (!a) {
+    for (const k of ["--sys-accent", "--sys-light1", "--sys-light2", "--sys-dark1"]) root.removeProperty(k);
+    return;
+  }
+  root.setProperty("--sys-accent", a.accent);
+  root.setProperty("--sys-light1", a.light1);
+  root.setProperty("--sys-light2", a.light2);
+  root.setProperty("--sys-dark1", a.dark1);
+}
 
 export default function App() {
   const theme = useStore((s) => s.settings.theme);
@@ -27,9 +51,10 @@ export default function App() {
       api.dataPreload(true).catch(() => {});
     })();
     // program update: on every start, a few seconds in (the window is drawn first), when the setting allows it
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       const s = useStore.getState();
-      if (!s.settings.autoCheckAppUpdates || !navigator.onLine) return;
+      if (!s.settings.autoCheckAppUpdates) return;
+      if (!(await s.checkConnectivity())) return;
       void s.checkAppUpdate(true);
     }, 5_000);
     return () => window.clearTimeout(timer);
@@ -43,26 +68,39 @@ export default function App() {
     void st.refreshTiles();
   });
 
-  // connectivity (gates online-only actions such as "open in Google Maps")
+  // connectivity: the OS events are a hint, the backend probe decides (gates "open in Google
+  // Maps", websites, the online map). Re-checked every 2 minutes.
   useEffect(() => {
-    const sync = () => {
-      useStore.setState({ online: navigator.onLine });
+    const sync = async () => {
+      const was = useStore.getState().online;
+      const ok = await useStore.getState().checkConnectivity();
       // back online without a local map: fetch the online map now
       const s = useStore.getState();
-      if (navigator.onLine && s.tilesChecked && !s.tilesUrl && !s.onlineTilesUrl) void s.refreshTiles();
+      if (ok && !was && s.tilesChecked && !s.tilesUrl && !s.onlineTilesUrl) void s.refreshTiles();
     };
-    window.addEventListener("online", sync);
-    window.addEventListener("offline", sync);
-    sync();
+    const onChange = () => void sync();
+    window.addEventListener("online", onChange);
+    window.addEventListener("offline", onChange);
+    void sync();
+    const timer = window.setInterval(onChange, 120_000);
     return () => {
-      window.removeEventListener("online", sync);
-      window.removeEventListener("offline", sync);
+      window.removeEventListener("online", onChange);
+      window.removeEventListener("offline", onChange);
+      window.clearInterval(timer);
     };
   }, []);
 
-  // theme
+  // theme – the page and the Windows title bar / frame together
   useEffect(() => {
-    const apply = () => document.documentElement.setAttribute("data-theme", resolveTheme(theme));
+    const apply = () => {
+      const resolved = resolveTheme(theme);
+      document.documentElement.setAttribute("data-theme", resolved);
+      // "auto" leaves the frame to Windows; a forced theme paints it to match (needs the
+      // core:window:allow-set-theme permission; an older build just keeps the system frame)
+      getCurrentWindow()
+        .setTheme(theme === "auto" ? null : resolved)
+        .catch(() => {});
+    };
     apply();
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     mq.addEventListener("change", apply);
@@ -74,13 +112,55 @@ export default function App() {
     };
   }, [theme]);
 
-  // accent colour (light theme only; the CSS ignores it in dark mode)
+  // accent colour; "system" follows the Windows accent and its changes
   const accent = useStore((s) => s.settings.accent);
   useEffect(() => {
     // `?accent=pastel` previews a scheme without touching the settings (headless screenshots)
     const preview = typeof location !== "undefined" ? new URLSearchParams(location.search).get("accent") : null;
-    document.documentElement.setAttribute("data-accent", preview || accent || "blue");
+    const value = preview || accent || "blue";
+    document.documentElement.setAttribute("data-accent", value);
+    if (value !== "system") {
+      applySystemAccent(null);
+      return;
+    }
+    let dead = false;
+    let un: (() => void) | undefined;
+    apiX
+      .systemAccent()
+      .then((a) => !dead && applySystemAccent(a))
+      .catch(() => {});
+    apiX
+      .onSystemAccent((a) => applySystemAccent(a))
+      .then((f) => (dead ? f() : (un = f)))
+      .catch(() => {});
+    return () => {
+      dead = true;
+      un?.();
+    };
   }, [accent]);
+
+  // text size (Settings → appearance): a factor on every type / control token
+  const uiScale = useStore((s) => s.settings.uiScale);
+  useEffect(() => {
+    const set = (f: number) => document.documentElement.style.setProperty("--ui-scale", String(Math.min(1.25, Math.max(1, f))));
+    if (uiScale !== "system") {
+      set(Number(uiScale) || 1);
+      return;
+    }
+    let dead = false;
+    const read = () =>
+      apiX
+        .systemTextScale()
+        .then((f) => !dead && set(f))
+        .catch(() => !dead && set(1));
+    void read();
+    // Windows has no event for the text-size slider here: look again when the window comes back
+    window.addEventListener("focus", read);
+    return () => {
+      dead = true;
+      window.removeEventListener("focus", read);
+    };
+  }, [uiScale]);
 
   // direction / lang
   useEffect(() => {
@@ -88,53 +168,43 @@ export default function App() {
     document.documentElement.setAttribute("dir", isRtl(lang) ? "rtl" : "ltr");
   }, [lang]);
 
-  // global shortcuts – by physical key (e.code), so they work in the Hebrew layout too
-  // (D = ג, L = ך, N = מ, T = א, / = .). Single keys only when no field has the focus.
+  // The WebView's own context menu (back, reload, save as, print, devtools…) is not part of the
+  // app: only text fields keep it for copy / paste. The map has its own menu.
+  useEffect(() => {
+    const onMenu = (e: MouseEvent) => {
+      if (!wantsNativeMenu(e.target)) e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onMenu);
+    return () => document.removeEventListener("contextmenu", onMenu);
+  }, []);
+
+  // global shortcuts (lib/shortcuts.ts – the same table the shortcuts dialog shows)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // reload / history navigation would reset the whole app
+      if (isBrowserKey(e)) {
+        e.preventDefault();
+        return;
+      }
       const s = useStore.getState();
       const el = e.target as HTMLElement | null;
       const typing = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
-      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-        if (e.code === "KeyF" || e.code === "KeyK") {
+      if (e.key === "Escape") {
+        if (s.contextMenu) {
+          s.setContextMenu(null);
+          return;
+        }
+        if (s.navigation && !typing) {
           e.preventDefault();
-          s.focusSearch();
-        } else if (e.code === "KeyR") {
-          e.preventDefault();
-          s.clearRoute();
-          s.setPanel("route");
-        } else if (e.code === "KeyH") {
-          e.preventDefault();
-          s.setPanel("history");
-        } else if (e.code === "KeyP") {
-          // print through printPage (light theme, map overview); without a route there is
-          // nothing to print, and the browser would print an empty page (5.62)
-          e.preventDefault();
-          if (s.routes.length) void printPage();
+          const t = (k: Parameters<typeof translate>[1]) => translate(s.settings.language, k);
+          void askConfirm(t("navEndConfirm"), t("navEnd"), t("cancel"), t("appName")).then((ok) => ok && void useStore.getState().stopNavigation());
         }
         return;
       }
-      if (e.key === "Escape") {
-        s.setContextMenu(null);
-        if (s.shortcutsOpen) useStore.setState({ shortcutsOpen: false });
-        return;
-      }
-      if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
-      if (e.code === "Slash" && e.shiftKey) {
-        e.preventDefault();
-        useStore.setState({ shortcutsOpen: !s.shortcutsOpen });
-      } else if (e.code === "Slash") {
-        e.preventDefault();
-        s.focusSearch();
-      } else if (e.code === "KeyD") {
-        s.setPanel("route");
-      } else if (e.code === "KeyL") {
-        void s.locate(true);
-      } else if (e.code === "KeyN") {
-        useStore.setState({ northUpTick: s.northUpTick + 1 });
-      } else if (e.code === "KeyT") {
-        s.setLayers({ buildings3d: !s.layers.buildings3d });
-      }
+      const sc = matchShortcut(e, typing);
+      if (!sc?.run) return;
+      e.preventDefault();
+      sc.run(s);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -148,6 +218,10 @@ export default function App() {
         <LayersPopover />
         <NearbyList />
         <ShortcutsDialog />
+        <CommandPalette />
+        <ShareDialog />
+        <BatchGeocodeDialog />
+        <TeachingTip />
         <Toasts />
       </div>
       <PrintSheet />

@@ -1,4 +1,5 @@
-import { api, type Favorite, type FavoriteKind, type GeoResult, type HistoryItem, type LineRef, type LineShape, type LonLat } from "../api";
+import { api, apiX, type Favorite, type FavoriteKind, type GeoResult, type HistoryItem, type LineRef, type LineShape, type LonLat } from "../api";
+import { routeArrow } from "../format";
 import type { SliceCreator } from "./types";
 
 /** Favorites, the favorite-line preview and the search / route history. */
@@ -17,6 +18,15 @@ export interface SavedSlice {
   clearLine: () => void;
   loadHistory: () => Promise<void>;
   addHistory: (kind: "search" | "route", label: string, payload: unknown) => Promise<void>;
+  /** Group names in use (favorites panel sections / picker). */
+  favoriteGroups: string[];
+  loadFavoriteGroups: () => Promise<void>;
+  /** Change name / icon / group / colour / note; null clears a field. */
+  patchFavorite: (id: number, patch: { name?: string; icon?: string; group?: string | null; color?: string | null; note?: string | null; address?: string | null }) => Promise<void>;
+  /** Delete with a 5 s "undo" toast: the row disappears at once, the database delete waits. */
+  removeFavorite: (f: Favorite) => void;
+  /** Save the current route request (points, mode, avoid options) as a favorite. */
+  saveRouteFavorite: (name?: string) => Promise<void>;
 }
 
 /** The favorite saved at this spot (within ~10 cm), if any. */
@@ -37,6 +47,7 @@ export const createSavedSlice: SliceCreator<SavedSlice> = (set, get) => ({
   favorites: [],
   linePreview: null,
   history: [],
+  favoriteGroups: [],
 
   toggleFavorite: async (p) => {
     const t = get().t;
@@ -98,9 +109,78 @@ export const createSavedSlice: SliceCreator<SavedSlice> = (set, get) => ({
   clearLine: () => set({ linePreview: null }),
   loadFavorites: async () => {
     try {
-      set({ favorites: await api.favoritesList() });
+      const favorites = await api.favoritesList();
+      // groups are derived locally too, so an older backend without favorites_groups still works
+      const groups = [...new Set(favorites.map((f) => f.group).filter((g): g is string => !!g))];
+      set({ favorites, favoriteGroups: groups.sort((a, b) => a.localeCompare(b, "he")) });
     } catch (e) {
-      console.warn("favorites_list failed", e);
+      get().toastError(e);
+    }
+  },
+  loadFavoriteGroups: async () => {
+    try {
+      const groups = await apiX.favoritesGroups();
+      set({ favoriteGroups: groups });
+    } catch {
+      /* derived in loadFavorites */
+    }
+  },
+  patchFavorite: async (id, patch) => {
+    try {
+      await apiX.favoritesPatch(id, patch);
+    } catch (e) {
+      // older backend: name / icon through the old command; the new fields need the update
+      if (patch.group === undefined && patch.color === undefined && patch.note === undefined) {
+        const f = get().favorites.find((x) => x.id === id);
+        try {
+          await api.favoritesUpdate(id, patch.name ?? f?.name ?? "", patch.icon ?? f?.icon ?? "star");
+        } catch (e2) {
+          get().toastError(e2);
+        }
+      } else get().toastError(e);
+    }
+    await get().loadFavorites();
+  },
+  removeFavorite: (f) => {
+    const t = get().t;
+    set((s) => ({ favorites: s.favorites.filter((x) => x.id !== f.id) }));
+    if (get().linePreview?.favId === f.id) set({ linePreview: null });
+    let undone = false;
+    const timer = window.setTimeout(async () => {
+      if (undone) return;
+      try {
+        await api.favoritesDelete(f.id);
+      } catch (e) {
+        get().toastError(e);
+      }
+      await get().loadFavorites();
+    }, 5000);
+    get().toast("info", `${t("favoriteRemoved")}: ${f.name}`, {
+      duration: 5000,
+      action: {
+        label: t("undo"),
+        run: () => {
+          undone = true;
+          window.clearTimeout(timer);
+          void get().loadFavorites();
+        },
+      },
+    });
+  },
+  saveRouteFavorite: async (name) => {
+    const s = get();
+    const req = s.lastRequest;
+    const pts = s.waypoints;
+    if (!req || pts.some((p) => !p)) return;
+    const labels = pts.map((p) => p!.label);
+    const title = name?.trim() || `${labels[0]} ${routeArrow(s.settings.language)} ${labels[labels.length - 1]}`;
+    const icon = req.mode === "transit" ? "bus" : "route";
+    try {
+      const fav = await api.favoritesAdd(title, icon, pts[0]!.lon, pts[0]!.lat, labels.join(" · "), "route", { request: req, labels });
+      await get().loadFavorites();
+      s.toast("success", `${s.t("favoriteAdded")}: ${fav.name}`);
+    } catch (e) {
+      s.toastError(e);
     }
   },
   loadHistory: async () => {
@@ -112,8 +192,12 @@ export const createSavedSlice: SliceCreator<SavedSlice> = (set, get) => ({
   },
   addHistory: async (kind, label, payload) => {
     try {
-      await api.historyAdd(kind, label, payload);
-      void get().loadHistory();
+      const item = await api.historyAdd(kind, label, payload);
+      // insert locally (same label replaces the older entry, like the database does) instead of
+      // reloading 200 rows after every search and route
+      if (item && typeof item === "object" && "id" in item) {
+        set((s) => ({ history: [item, ...s.history.filter((h) => h.id !== item.id && !(h.kind === item.kind && h.label === item.label))].slice(0, 200) }));
+      } else void get().loadHistory();
     } catch (e) {
       console.warn("history_add failed", e);
     }

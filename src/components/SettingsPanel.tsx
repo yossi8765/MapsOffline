@@ -1,14 +1,34 @@
 import clsx from "clsx";
 import { useState } from "react";
-import { ChevronDown, FolderOpen, RotateCcw, Download, RefreshCw } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, FileText, FolderOpen, RefreshCw, RotateCcw } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useStore } from "../lib/store";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { Icon } from "./Icon";
+import { DEFAULT_SETTINGS, useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
 import { getScrollMode, setScrollMode, type ScrollMode } from "../lib/gestures";
 import { Toggle } from "./RoutePanel";
-import { SHORTCUTS } from "./ShortcutsDialog";
-import { DATA_COMPONENTS } from "../lib/api";
-import { fmtDateTime } from "../lib/format";
+import { ShortcutList } from "./ShortcutsDialog";
+import { apiX, DATA_COMPONENTS, type CoordFormat, type Settings } from "../lib/api";
+import { askConfirm, fmtDateTime } from "../lib/format";
+import { CREDITS } from "../lib/credits";
+import { formatCoord } from "../lib/coords";
+
+const ACCENTS = ["system", "blue", "green", "purple", "orange", "teal", "rose", "slate", "pastel"] as const;
+
+/** Every `mapsoffline.*` key in localStorage (layers, view, nearby, scroll mode…). */
+function clearLocalPrefs() {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith("mapsoffline.")) keys.push(k);
+    }
+    keys.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export function SettingsPanel() {
   const t = useT();
@@ -22,21 +42,24 @@ export function SettingsPanel() {
   const appUpdate = useStore((s) => s.appUpdate);
   const updateBusy = useStore((s) => s.appUpdateBusy);
   const updateProgress = useStore((s) => s.appUpdateProgress);
+  const online = useStore((s) => s.online);
   const { checkAppUpdate, installAppUpdate } = useStore.getState();
   const update = useStore((s) => s.updateSettings);
   const statusDir = useStore((s) => s.dataStatus?.dir);
   const dataStatus = useStore((s) => s.dataStatus);
+  const lang = settings.language;
   // "נתונים: OSM 2026-11-01 · עודכנו 03/11/2026": the source date of the map / routing data and
   // when data was last installed here
   const dataStamp = (() => {
     const osm = [dataStatus?.routing?.version, dataStatus?.geocode?.version].map((v) => /OSM (\d{4}-\d{2}-\d{2})/.exec(v ?? "")?.[1]).find(Boolean);
     const times = DATA_COMPONENTS.map((c) => dataStatus?.[c]?.updatedIso).filter((x): x is string => !!x).sort();
-    const built = times.length ? fmtDateTime(times[times.length - 1]).split(" ")[0] : "";
+    const built = times.length ? fmtDateTime(times[times.length - 1], lang).split(" ")[0] : "";
     if (!osm && !built) return "";
     const parts = [osm ? t("dataStampOsm").replace("{d}", osm) : "", built ? t("dataStampBuilt").replace("{d}", built) : ""].filter(Boolean);
     return `${t("dataStamp")}: ${parts.join(" · ")}`;
   })();
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
 
   const chooseDir = async () => {
     try {
@@ -45,6 +68,21 @@ export function SettingsPanel() {
     } catch (e) {
       useStore.getState().toastError(e);
     }
+  };
+  const openLogs = async () => {
+    try {
+      await openPath(await apiX.logsDir());
+    } catch (e) {
+      useStore.getState().toastError(e);
+    }
+  };
+  const resetAll = async () => {
+    if (!(await askConfirm(t("resetSettingsConfirm"), t("resetSettings"), t("cancel"), t("appName")))) return;
+    clearLocalPrefs();
+    // the data folder stays: resetting it would hide every installed component
+    const keep: Partial<Settings> = { dataDir: settings.dataDir, teachingTipsSeen: settings.teachingTipsSeen };
+    await update({ ...DEFAULT_SETTINGS, ...keep });
+    useStore.getState().toast("success", t("resetSettingsDone"));
   };
 
   return (
@@ -71,7 +109,7 @@ export function SettingsPanel() {
         </Row>
         <Row label={t("accentColor")} hint={t("accentColorHint")}>
           <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label={t("accentColor")}>
-            {(["blue", "green", "purple", "orange", "teal", "rose", "slate", "pastel"] as const).map((a) => (
+            {ACCENTS.map((a) => (
               <button
                 key={a}
                 type="button"
@@ -86,6 +124,15 @@ export function SettingsPanel() {
             ))}
           </div>
         </Row>
+        <Row label={t("textSize")} hint={t("textSizeHint")}>
+          <div className="seg seg-sm seg-fit">
+            {(["system", 1, 1.12, 1.25] as const).map((v) => (
+              <button key={String(v)} aria-pressed={settings.uiScale === v} onClick={() => void update({ uiScale: v })}>
+                <span>{t(v === "system" ? "textSizeSystem" : v === 1 ? "textSizeNormal" : v === 1.12 ? "textSizeLarge" : "textSizeXLarge")}</span>
+              </button>
+            ))}
+          </div>
+        </Row>
         <Row label={t("units")}>
           <div className="seg seg-sm seg-fit">
             <button aria-pressed={settings.units === "metric"} onClick={() => void update({ units: "metric" })}>
@@ -94,6 +141,15 @@ export function SettingsPanel() {
             <button aria-pressed={settings.units === "imperial"} onClick={() => void update({ units: "imperial" })}>
               <span>{t("unitsImperial")}</span>
             </button>
+          </div>
+        </Row>
+        <Row label={t("coordFormat")} hint={formatCoord(34.78, 32.08, settings.coordFormat ?? "dd")}>
+          <div className="seg seg-sm seg-fit">
+            {(["dd", "dms", "itm", "utm"] as CoordFormat[]).map((f) => (
+              <button key={f} aria-pressed={(settings.coordFormat ?? "dd") === f} onClick={() => void update({ coordFormat: f })}>
+                <span>{t(`coord_${f}` as I18nKey)}</span>
+              </button>
+            ))}
           </div>
         </Row>
       </Section>
@@ -141,94 +197,124 @@ export function SettingsPanel() {
         </Row>
       </Section>
 
-      <Section title={t("shortcuts")} hint={t("shortcutsNote")}>
-        {SHORTCUTS.map(([k, label]) => (
-          <div key={k} className="row min-h-10 justify-between">
-            <span className="text-base">{t(label)}</span>
-            <kbd className="kbd" dir="ltr">
-              {k}
-            </kbd>
-          </div>
-        ))}
-      </Section>
-
-      {/* rarely changed: data folder, touchpad behaviour */}
       <section className="flex flex-col gap-2">
-        <button
-          type="button"
-          className="flex items-center gap-1 section-label m-0 self-start hover:text-fg transition-colors"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((v) => !v)}
-        >
+        <h2 className="section-label m-0">{t("shortcuts")}</h2>
+        <ShortcutList />
+        <p className="m-0 text-xs text-muted px-0.5">{t("shortcutsNote")}</p>
+      </section>
+
+      {/* rarely changed: data folder, touchpad behaviour, logs, reset */}
+      <section className="flex flex-col gap-2">
+        <button type="button" className="flex items-center gap-1 section-label m-0 self-start hover:text-fg transition-colors" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((v) => !v)}>
           {t("advanced")}
-          <ChevronDown size={14} className={clsx("transition-transform duration-150", advancedOpen && "rotate-180")} />
+          <Icon as={ChevronDown} size={14} className={clsx("transition-transform duration-150", advancedOpen && "rotate-180")} />
         </button>
         {advancedOpen && (
           <div className="flex flex-col gap-5 fade-in">
-      <Section title={t("gestures")} hint={t("gesturesHint")}>
-        <Row label={t("twoFingerScroll")}>
-          <div className="seg seg-sm seg-fit">
-            {(["pan", "zoom"] as const).map((m) => (
-              <button key={m} aria-pressed={scrollMode === m} onClick={() => pickScroll(m)}>
-                <span>{t(m === "pan" ? "scrollPan" : "scrollZoom")}</span>
-              </button>
-            ))}
-          </div>
-        </Row>
-      </Section>
+            <Section title={t("gestures")} hint={t("gesturesHint")}>
+              <Row label={t("twoFingerScroll")}>
+                <div className="seg seg-sm seg-fit">
+                  {(["pan", "zoom"] as const).map((m) => (
+                    <button key={m} aria-pressed={scrollMode === m} onClick={() => pickScroll(m)}>
+                      <span>{t(m === "pan" ? "scrollPan" : "scrollZoom")}</span>
+                    </button>
+                  ))}
+                </div>
+              </Row>
+            </Section>
 
-      <Section title={t("dataDir")}>
-        <div className="row">
-          <bdi dir="ltr" className="flex-1 min-w-0 text-xs text-muted truncate selectable" title={settings.dataDir || statusDir || ""}>
-            {settings.dataDir || statusDir || "\u2014"}
-          </bdi>
-        </div>
-        <div className="row gap-2">
-          <button className="btn btn-sm flex-1" onClick={() => void chooseDir()}>
-            <FolderOpen size={14} strokeWidth={1.75} /> {t("chooseFolder")}
-          </button>
-          <button className="btn btn-sm btn-ghost text-muted" disabled={!settings.dataDir} onClick={() => void update({ dataDir: null })}>
-            <RotateCcw size={14} strokeWidth={1.75} /> {t("resetFolder")}
-          </button>
-        </div>
-      </Section>
+            <Section title={t("dataDir")}>
+              <div className="row">
+                <bdi dir="ltr" className="flex-1 min-w-0 text-xs text-muted truncate selectable">
+                  {settings.dataDir || statusDir || "—"}
+                </bdi>
+              </div>
+              <div className="row gap-2">
+                <button className="btn btn-sm flex-1" onClick={() => void chooseDir()}>
+                  <Icon as={FolderOpen} size={14} /> {t("chooseFolder")}
+                </button>
+                <button className="btn btn-sm btn-ghost text-muted" disabled={!settings.dataDir} onClick={() => void update({ dataDir: null })}>
+                  <Icon as={RotateCcw} size={14} /> {t("resetFolder")}
+                </button>
+              </div>
+            </Section>
+
+            <Section title={t("troubleshooting")} hint={t("logsHint")}>
+              <div className="row gap-2 flex-wrap">
+                <button className="btn btn-sm" onClick={() => void openLogs()}>
+                  <Icon as={FileText} size={14} /> {t("openLogs")}
+                </button>
+                <button className="btn btn-sm btn-danger" onClick={() => void resetAll()}>
+                  <Icon as={RotateCcw} size={14} /> {t("resetSettings")}
+                </button>
+              </div>
+            </Section>
           </div>
         )}
       </section>
 
-      <div className="flex flex-col gap-1 px-0.5 text-sm">
+      <div className="flex flex-col gap-1 px-0.5">
         <h2 className="section-label m-0 p-0 mb-1">{t("about")}</h2>
         <div className="font-semibold">
           {t("appName")} {version && <span className="text-subtle font-normal num">v{version}</span>}
         </div>
         <p className="m-0 text-muted">{t("aboutText")}</p>
         {dataStamp && <p className="m-0 text-xs text-muted num">{dataStamp}</p>}
+        <button className="self-start flex items-center gap-1 text-accent hover:underline underline-offset-2 mt-1" aria-expanded={creditsOpen} onClick={() => setCreditsOpen((v) => !v)}>
+          {t("creditsTitle")}
+          <Icon as={ChevronDown} size={14} className={clsx("transition-transform duration-150", creditsOpen && "rotate-180")} />
+        </button>
+        {creditsOpen && (
+          <ul className="m-0 p-0 list-none group-list mt-1 fade-in">
+            {CREDITS.map((c) => (
+              <li key={c.id} className="px-3 py-2 flex flex-col gap-0.5">
+                <span className="flex items-center gap-1.5">
+                  <bdi className="font-medium">{c.name}</bdi>
+                  {c.url && online && (
+                    <button className="text-subtle hover:text-accent" aria-label={`${c.name} – ${t("openWebsite")}`} onClick={() => void openUrl(c.url).catch(() => {})}>
+                      <Icon as={ExternalLink} size={12} />
+                    </button>
+                  )}
+                </span>
+                <span className="text-xs text-muted">
+                  {t(c.use)} · <bdi>{c.licence}</bdi>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="group-list mt-2">
           <Toggle label={t("autoCheckAppUpdates")} checked={settings.autoCheckAppUpdates} onChange={(v) => void update({ autoCheckAppUpdates: v })} />
           <div className="row gap-2 flex-wrap">
             <button className="btn btn-sm" disabled={!!updateBusy} onClick={() => void checkAppUpdate(false)}>
-              <RefreshCw size={14} strokeWidth={1.75} className={clsx(updateBusy === "check" && "animate-spin")} />
+              <Icon as={RefreshCw} size={14} className={clsx(updateBusy === "check" && "animate-spin")} />
               {updateBusy === "check" ? t("checking") : t("checkAppUpdates")}
             </button>
             {appUpdate?.available && !updateBusy && (
               <button className="btn btn-sm btn-primary" onClick={() => void installAppUpdate()}>
-                <Download size={14} strokeWidth={2} /> {t("installUpdate")} {appUpdate.latest}
+                <Icon as={Download} size={14} /> {t("installUpdate")} {appUpdate.latest}
               </button>
             )}
-            {appUpdate?.available && (
-              <a className="text-xs text-accent underline-offset-2 hover:underline" href={appUpdate.pageUrl} target="_blank" rel="noreferrer">
+            {appUpdate?.available && appUpdate.pageUrl && (
+              <button className="text-xs text-accent underline-offset-2 hover:underline" onClick={() => void openUrl(appUpdate.pageUrl).catch(() => {})}>
                 {t("releaseNotes")}
-              </a>
+              </button>
             )}
           </div>
           {appUpdate && !updateBusy && (
             <div className="px-3 py-2 text-xs">
               {appUpdate.error ? (
-                <span className="text-danger">{t("checkFailed")}: {appUpdate.error}</span>
+                <span className="text-danger">
+                  {t("checkFailed")}: {appUpdate.error}
+                </span>
               ) : appUpdate.available ? (
-                <span className="text-fg">{t("updateAvailableToast")} <span className="num">{appUpdate.latest}</span> ({t("installedVersion")} <span className="num">{appUpdate.current}</span>)</span>
+                <span className="text-fg">
+                  {t("updateAvailableToast")} <span className="num">{appUpdate.latest}</span> ({t("installedVersion")} <span className="num">{appUpdate.current}</span>)
+                </span>
               ) : (
-                <span className="text-muted">{t("appUpToDate")} <span className="num">{appUpdate.current}</span></span>
+                <span className="text-muted">
+                  {t("appUpToDate")} <span className="num">{appUpdate.current}</span>
+                </span>
               )}
             </div>
           )}
@@ -238,8 +324,11 @@ export function SettingsPanel() {
                 <span className="truncate text-muted">{updateProgress.message || t("downloadingUpdate")}</span>
                 {updateProgress.total > 0 && <span className="num shrink-0">{Math.min(100, Math.round((updateProgress.done / updateProgress.total) * 100))}%</span>}
               </div>
-              <div className="h-1 rounded-full bg-surface-2 overflow-hidden">
-                <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300", updateProgress.total === 0 && "animate-pulse w-1/3")} style={updateProgress.total > 0 ? { width: `${Math.min(100, (updateProgress.done / updateProgress.total) * 100)}%` } : undefined} />
+              <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-label={t("downloadingUpdate")}>
+                <div
+                  className={clsx("h-full bg-accent rounded-full transition-[width] duration-300", updateProgress.total === 0 && "animate-pulse w-1/3")}
+                  style={updateProgress.total > 0 ? { width: `${Math.min(100, (updateProgress.done / updateProgress.total) * 100)}%` } : undefined}
+                />
               </div>
             </div>
           )}
@@ -250,6 +339,8 @@ export function SettingsPanel() {
 }
 
 const ACCENT_SWATCH: Record<string, string> = {
+  // the Windows accent: the swatch shows a Windows-blue / system gradient
+  system: "linear-gradient(135deg, #0067c0 0 50%, #4cc2ff 50% 100%)",
   blue: "#1a66d9",
   green: "#15803d",
   purple: "#6d28d9",
@@ -277,8 +368,12 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5 [&>.seg]:w-full">
       <span className="flex flex-col">
-        <span className="text-base">{label}</span>
-        {hint && <span className="text-xs text-muted">{hint}</span>}
+        <span>{label}</span>
+        {hint && (
+          <span className="text-xs text-muted" dir="auto">
+            {hint}
+          </span>
+        )}
       </span>
       {children}
     </div>

@@ -4,19 +4,20 @@ import clsx from "clsx";
 import { api, errorText, type InstalledRegion, type RegionEntry, type RegionLocate, type RegionPart, type RegionProgress } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useTauriEvent } from "../lib/useTauriEvent";
-import { useT } from "../lib/i18n";
+import { translate, useT, type I18nKey } from "../lib/i18n";
 import { askConfirm, fmtBytes, fmtDateTime } from "../lib/format";
 
-const CONTINENTS_HE: Record<string, string> = {
-  africa: "אפריקה",
-  antarctica: "אנטארקטיקה",
-  asia: "אסיה",
-  "australia-oceania": "אוסטרליה ואוקיאניה",
-  "central-america": "מרכז אמריקה",
-  europe: "אירופה",
-  "north-america": "צפון אמריקה",
-  "south-america": "דרום אמריקה",
-  russia: "רוסיה",
+/** Geofabrik continent ids → i18n keys (the names are translated in lib/i18n.ts). */
+const CONTINENT_KEY: Record<string, I18nKey> = {
+  africa: "continent_africa",
+  antarctica: "continent_antarctica",
+  asia: "continent_asia",
+  "australia-oceania": "continent_australia_oceania",
+  "central-america": "continent_central_america",
+  europe: "continent_europe",
+  "north-america": "continent_north_america",
+  "south-america": "continent_south_america",
+  russia: "continent_russia",
 };
 
 const PARTS: RegionPart[] = ["map", "search", "routing"];
@@ -35,7 +36,7 @@ function localName(lang: string, id: string, iso: string | null, name: string, i
       /* fall through to the English name */
     }
   }
-  if (isContinent && CONTINENTS_HE[id]) return CONTINENTS_HE[id];
+  if (isContinent && CONTINENT_KEY[id]) return translate(lang, CONTINENT_KEY[id]);
   return name;
 }
 
@@ -248,7 +249,7 @@ export function RegionsSection() {
               aria-expanded={open}
               onClick={() => toggle(e.id)}
             >
-              {open ? <ChevronDown size={14} strokeWidth={2} /> : <ChevronRight size={14} strokeWidth={2} className="rtl:-scale-x-100" />}
+              {open ? <ChevronDown size={14} strokeWidth={1.75} /> : <ChevronRight size={14} strokeWidth={1.75} className="rtl:-scale-x-100" />}
             </button>
           ) : (
             <span className="w-7 shrink-0" />
@@ -281,7 +282,7 @@ export function RegionsSection() {
         <h2 className="section-label m-0 p-0">{t("regTitle")}</h2>
         {!pickerOpen && (
           <button className="btn btn-sm -me-1" onClick={() => setPickerOpen(true)}>
-            <Plus size={14} strokeWidth={2} /> {t("regAdd")}
+            <Plus size={14} strokeWidth={1.75} /> {t("regAdd")}
           </button>
         )}
       </div>
@@ -336,7 +337,7 @@ export function RegionsSection() {
               />
             </div>
             <button className="btn btn-ghost btn-icon btn-sm text-muted shrink-0" onClick={() => setPickerOpen(false)} title={t("regClose")} aria-label={t("regClose")}>
-              <X size={15} strokeWidth={2} />
+              <X size={15} strokeWidth={1.75} />
             </button>
           </div>
 
@@ -533,7 +534,7 @@ function ProgressBlock({ title, prog, onCancel }: { title?: string; prog?: PartP
       })}
       {onCancel && (
         <button className="btn btn-sm btn-danger self-start" onClick={onCancel}>
-          <X size={14} strokeWidth={2} /> {t("regCancel")}
+          <X size={14} strokeWidth={1.75} /> {t("regCancel")}
         </button>
       )}
     </div>

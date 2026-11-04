@@ -1,4 +1,4 @@
-import { api, type Avoid, type Mode, type Route, type RouteRequest, type RouteSource, type TimeSpec } from "../api";
+import { api, apiX, type Avoid, type LonLat, type Mode, type Route, type RouteRequest, type RouteSource, type ServiceNotice, type TimeSpec, type TripStop } from "../api";
 import { describeError } from "../errors";
 import type { NavState } from "../nav";
 import { sortTransit } from "../transitSort";
@@ -28,6 +28,16 @@ export interface RouteSlice {
   lastRequest: RouteRequest | null;
   /** live navigation session (src/lib/nav.ts), null when not navigating */
   navigation: NavState | null;
+  /** Why transit found little or nothing (Shabbat, holiday, night), from the last response. */
+  routeNotice: ServiceNotice | null;
+  /** Truck dimensions (mode "truck"). */
+  vehicle: { heightM?: number; weightT?: number; widthM?: number };
+  /** Transit: wheelchair-accessible trips and stops only. */
+  accessible: boolean;
+  /** Trip planner: stay / time window per waypoint (aligned with `waypoints`). */
+  tripStops: TripStop[];
+  /** Planned arrival times per waypoint after "plan by times". */
+  tripArrivals: string[] | null;
 
   setWaypoint: (index: number, p: RoutePoint | null) => void;
   setFrom: (p: RoutePoint) => void;
@@ -52,9 +62,33 @@ export interface RouteSlice {
   loadRequest: (req: RouteRequest, labels?: string[]) => void;
   /** Reorder the via stops for the shortest trip (origin fixed; destination fixed when `fixedEnd`). */
   optimizeOrder: (fixedEnd: boolean) => Promise<void>;
+  /** Plan the order with stays and time windows (up to 25 stops). */
+  optimizeTrip: (fixedEnd: boolean) => Promise<void>;
+  setTripStop: (index: number, patch: Partial<TripStop>) => void;
+  setVehicle: (v: Partial<RouteSlice["vehicle"]>) => void;
+  setAccessible: (on: boolean) => void;
+  /** "Avoid this road": the road nearest the point is left out; recomputes. Undo via the toast. */
+  avoidRoadAt: (at: LonLat) => void;
+  /** Most waypoints the current settings allow (25 with one route, else 7). */
+  maxWaypoints: () => number;
 }
 
 let routeSeq = 0;
+
+/** Every field of a route result: cleared together so nothing of an old result lingers
+ *  (transitAll, the source line, the request) when the points change or a request fails. */
+const EMPTY_RESULT = {
+  routes: [] as Route[],
+  transitAll: [] as Route[],
+  selectedRouteId: null,
+  routeError: null,
+  routeSource: null,
+  routeProvider: null,
+  routeNotice: null,
+  highlight: null,
+  lastRequest: null,
+  detailsOpen: false,
+};
 
 export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
   waypoints: [null, null],
@@ -75,6 +109,11 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
   highlight: null,
   lastRequest: null,
   navigation: null,
+  routeNotice: null,
+  vehicle: {},
+  accessible: false,
+  tripStops: [],
+  tripArrivals: null,
 
   startNavigation: async (routeId, simulate) => {
     const m = await import("../nav");
@@ -95,19 +134,23 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
   setTo: (p) => get().setWaypoint(get().waypoints.length - 1, p),
   addVia: (p) => {
     const wps = [...get().waypoints];
-    if (wps.length >= 7) return;
+    if (wps.length >= get().maxWaypoints()) return;
     wps.splice(wps.length - 1, 0, p ?? null);
-    set({ waypoints: wps });
+    const stops = [...get().tripStops];
+    if (stops.length) stops.splice(wps.length - 2, 0, {});
+    set({ waypoints: wps, tripStops: stops, tripArrivals: null });
     if (p) void get().computeRoute();
   },
   removeWaypoint: (index) => {
     const wps = [...get().waypoints];
+    const stops = [...get().tripStops];
     if (wps.length <= 2) {
       wps[index] = null;
     } else {
       wps.splice(index, 1);
+      stops.splice(index, 1);
     }
-    set({ waypoints: wps });
+    set({ waypoints: wps, tripStops: stops, tripArrivals: null });
     void get().computeRoute();
   },
   moveWaypoint: (index, dir) => {
@@ -115,7 +158,9 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
     const j = index + dir;
     if (j < 0 || j >= wps.length) return;
     [wps[index], wps[j]] = [wps[j], wps[index]];
-    set({ waypoints: wps });
+    const stops = [...get().tripStops];
+    if (stops.length > Math.max(index, j)) [stops[index], stops[j]] = [stops[j], stops[index]];
+    set({ waypoints: wps, tripStops: stops, tripArrivals: null });
     void get().computeRoute();
   },
   swapEnds: () => {
@@ -143,7 +188,8 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
     const s = get();
     const pts = s.waypoints;
     if (pts.some((p) => !p) || pts.length < 2) {
-      set({ routes: [], selectedRouteId: null, routeError: null, highlight: null });
+      routeSeq++;
+      set({ ...EMPTY_RESULT, routeLoading: false });
       return;
     }
     const req: RouteRequest = {
@@ -152,9 +198,11 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
       time: s.time.kind === "now" ? { kind: "now" } : s.time,
       avoid: s.avoid,
       alternatives: s.mode === "transit" ? Math.max(s.alternativesCount, 3) : s.alternativesCount,
+      ...(s.mode === "truck" ? { vehicle: s.vehicle } : {}),
+      ...(s.mode === "transit" && s.accessible ? { accessible: true } : {}),
     };
     const seq = ++routeSeq;
-    set({ routeLoading: true, routeError: null, lastRequest: req });
+    set({ routeLoading: true, routeError: null, routeNotice: null, lastRequest: req });
     try {
       const resp = await api.route(req);
       if (seq !== routeSeq) return;
@@ -174,6 +222,7 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
         routeTick: get().routeTick + 1,
         fitRouteTick: get().fitRouteTick + 1,
         highlight: null,
+        routeNotice: resp.notice ?? null,
       });
       if (routes.length) {
         const label = `${pts[0]!.label} ${get().settings.language === "en" ? "→" : "←"} ${pts[pts.length - 1]!.label}`;
@@ -188,7 +237,17 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
       if (seq !== routeSeq) return;
       // the code's own message; an unclassified failure shows its text as it came
       const d = describeError(e, get().t);
-      set({ routes: [], selectedRouteId: null, routeLoading: false, routeError: d.known ? d.title : (d.details ?? d.title) });
+      // NO_SERVICE carries the notice (Shabbat / holiday / night) as JSON in details
+      let notice: ServiceNotice | null = null;
+      if (d.code === "NO_SERVICE" && d.details) {
+        try {
+          const m = /\{[\s\S]*\}/.exec(d.details);
+          if (m) notice = JSON.parse(m[0]) as ServiceNotice;
+        } catch {
+          /* plain text details */
+        }
+      }
+      set({ ...EMPTY_RESULT, routeLoading: false, routeNotice: notice, routeError: notice ? null : d.known ? d.title : (d.details ?? d.title) });
     }
   },
   selectRoute: (selectedRouteId) => set({ selectedRouteId, highlight: null }),
@@ -199,14 +258,15 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
   },
   clearRoute: () => {
     routeSeq++;
+    const a = get().avoid;
     set({
+      ...EMPTY_RESULT,
       waypoints: [null, null],
-      routes: [],
-      selectedRouteId: null,
-      routeError: null,
       routeLoading: false,
-      highlight: null,
-      lastRequest: null,
+      tripStops: [],
+      tripArrivals: null,
+      // roads / areas avoided for this trip only
+      avoid: { ...a, points: undefined, polygons: undefined },
     });
   },
   setHighlight: (highlight) => set({ highlight }),
@@ -242,7 +302,8 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
     try {
       const order = await api.optimizeOrder(req, fixedEnd);
       const changed = order.some((o, i) => o !== i);
-      set({ waypoints: order.map((i) => pts[i]) });
+      const stops = get().tripStops;
+      set({ waypoints: order.map((i) => pts[i]), tripStops: stops.length ? order.map((i) => stops[i] ?? {}) : stops, tripArrivals: null });
       if (!changed) get().toast("info", get().t("orderAlreadyBest"));
       await get().computeRoute();
     } catch (e) {
@@ -250,4 +311,54 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
       get().toastError(e);
     }
   },
+  optimizeTrip: async (fixedEnd) => {
+    const s = get();
+    const pts = s.waypoints;
+    if (pts.some((p) => !p) || pts.length < 3) return;
+    const req: RouteRequest = {
+      waypoints: pts.map((p) => ({ lon: p!.lon, lat: p!.lat, name: p!.label })),
+      mode: s.mode,
+      time: s.time.kind === "now" ? { kind: "depart", iso: new Date().toISOString() } : s.time,
+      avoid: s.avoid,
+      alternatives: 1,
+    };
+    const stops = pts.map((_, i) => s.tripStops[i] ?? {});
+    set({ routeLoading: true });
+    try {
+      const plan = await apiX.optimizeTrip(req, fixedEnd, stops);
+      set({ waypoints: plan.order.map((i) => pts[i]), tripStops: plan.order.map((i) => stops[i]), tripArrivals: plan.arrivals });
+      await get().computeRoute();
+    } catch (e) {
+      set({ routeLoading: false });
+      get().toastError(e);
+    }
+  },
+  setTripStop: (index, patch) => {
+    const stops = get().waypoints.map((_, i) => get().tripStops[i] ?? {});
+    stops[index] = { ...stops[index], ...patch };
+    set({ tripStops: stops, tripArrivals: null });
+  },
+  setVehicle: (v) => {
+    set({ vehicle: { ...get().vehicle, ...v } });
+    if (get().mode === "truck") void get().computeRoute();
+  },
+  setAccessible: (accessible) => {
+    set({ accessible });
+    if (get().mode === "transit") void get().computeRoute();
+  },
+  avoidRoadAt: (at) => {
+    const before = get().avoid.points ?? [];
+    set({ avoid: { ...get().avoid, points: [...before, at] } });
+    void get().computeRoute();
+    get().toast("info", get().t("roadAvoided"), {
+      action: {
+        label: get().t("undo"),
+        run: () => {
+          set({ avoid: { ...get().avoid, points: before.length ? before : undefined } });
+          void get().computeRoute();
+        },
+      },
+    });
+  },
+  maxWaypoints: () => (get().alternativesCount === 1 ? 25 : 7),
 });
