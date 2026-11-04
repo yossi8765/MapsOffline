@@ -88,36 +88,41 @@ pub fn latest(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
     Ok(Latest { version, age_days, manifest, sha256 })
 }
 
+/// The version of `c` this program would take from the package (compatible format, the kind of
+/// imagery the user wants), or None.
+pub fn package_version(l: &Latest, c: DataComponent, settings: &crate::types::Settings) -> Option<String> {
+    if l.age_days > MAX_AGE_DAYS || !PUBLISHED.contains(&c) {
+        return None;
+    }
+    let v = l.manifest.entry(c)?.version.clone()?;
+    if format_suffix(c).is_some_and(|s| !v.ends_with(&s)) {
+        return None;
+    }
+    // packages built by older versions carry the 2017 AWS terrarium DEM; this program
+    // builds Mapterhorn (512 px WebP) and must not replace it with the old data
+    if c == DataComponent::Terrain && !v.starts_with("mapterhorn ") {
+        return None;
+    }
+    // the package's imagery: Sentinel-2 at the "low" zoom; only for a user who wants exactly that
+    if c == DataComponent::Satellite
+        && !(settings.satellite_source == "sentinel"
+            && v.starts_with("s2cloudless")
+            && v.ends_with(&format!(" z{}", super::satellite::quality_zoom(&settings.satellite_quality))))
+    {
+        return None;
+    }
+    Some(v)
+}
+
 /// Which of `comps` the package should provide: version different from the installed one,
 /// compatible format, file present.
 pub fn usable(paths: &DataPaths, l: &Latest, comps: &[DataComponent]) -> Vec<(DataComponent, String)> {
-    if l.age_days > MAX_AGE_DAYS {
-        return Vec::new();
-    }
     let local = Manifest::load(paths);
     let settings = crate::state::load_settings(paths);
-    // the package's imagery: Sentinel-2 at the "low" zoom; only for a user who wants exactly that
-    let sat_ok = |v: &str| {
-        settings.satellite_source == "sentinel"
-            && v.starts_with("s2cloudless")
-            && v.ends_with(&format!(" z{}", super::satellite::quality_zoom(&settings.satellite_quality)))
-    };
     comps
         .iter()
-        .filter(|c| PUBLISHED.contains(c))
         .filter_map(|&c| {
-            let v = l.manifest.entry(c)?.version.clone()?;
-            if format_suffix(c).is_some_and(|s| !v.ends_with(&s)) {
-                return None;
-            }
-            // packages built by older versions carry the 2017 AWS terrarium DEM; this program
-            // builds Mapterhorn (512 px WebP) and must not replace it with the old data
-            if c == DataComponent::Terrain && !v.starts_with("mapterhorn ") {
-                return None;
-            }
-            if c == DataComponent::Satellite && !sat_ok(&v) {
-                return None;
-            }
+            let v = package_version(l, c, &settings)?;
             let same = local.entry(c).and_then(|e| e.version.as_deref()) == Some(v.as_str()) && paths.component_file(c).exists();
             (!same).then_some((c, v))
         })

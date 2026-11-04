@@ -249,8 +249,35 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             error: None,
         },
     };
+    // With ready-made data on, the weekly package is the source the user chose: a component
+    // installed exactly as the package has it is up to date, even when the servers already have
+    // a day or two newer data (an update would only install the same package again).
+    let settings = crate::state::load_settings(paths);
+    if settings.use_prebuilt_data {
+        if let Ok(l) = download::http_client().and_then(|c| prebuilt::latest(&c)) {
+            let m = manifest::Manifest::load(paths);
+            for (c, u) in [
+                (DataComponent::Tiles, &mut out.tiles),
+                (DataComponent::World, &mut out.world),
+                (DataComponent::Satellite, &mut out.satellite),
+                (DataComponent::Terrain, &mut out.terrain),
+                (DataComponent::Routing, &mut out.routing),
+                (DataComponent::Geocode, &mut out.geocode),
+                (DataComponent::Transit, &mut out.transit),
+                (DataComponent::Trails, &mut out.trails),
+                (DataComponent::Minyanim, &mut out.minyanim),
+            ] {
+                if let Some(v) = prebuilt::package_version(&l, c, &settings) {
+                    if m.entry(c).and_then(|e| e.version.as_deref()) == Some(v.as_str()) && paths.component_file(c).exists() {
+                        u.available = false;
+                        u.remote_version = Some(v);
+                    }
+                }
+            }
+        }
+    }
     // components the user does not want are never offered (Settings.wantedComponents)
-    if let Some(wanted) = crate::state::load_settings(paths).wanted_components {
+    if let Some(wanted) = settings.wanted_components {
         for (c, u) in [
             (DataComponent::Tiles, &mut out.tiles),
             (DataComponent::World, &mut out.world),
