@@ -103,6 +103,7 @@ fn real_gtfs_tel_aviv_jerusalem() {
         accessible: false,
         avoid: Default::default(),
         alternatives: 5,
+        ..Default::default()
     };
     let mk_via = |kind: TimeKind, hhmm: &str, pts: &[[f64; 2]]| {
         let mut r = mk(kind, hhmm, pts[0], pts[pts.len() - 1]);

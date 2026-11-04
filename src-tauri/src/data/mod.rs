@@ -523,7 +523,9 @@ fn update_rest(
                     });
                     build(DataComponent::Transit, &src, &|progress| {
                         let tmp = paths.transit_file().with_extension("bin.tmp");
-                        crate::transit::build(&paths.gtfs_zip(), &tmp, progress)?;
+                        // transfers are walked on the road network when the graph is installed
+                        let g = crate::routing::load_graph(&paths.graph_file()).ok();
+                        crate::transit::build_with_graph(&paths.gtfs_zip(), &tmp, progress, g.as_ref())?;
                         crate::paths::atomic_replace(&paths.transit_file(), &tmp)?;
                         // The 149 MB zip is not needed any more: transit.bin holds everything, and
                         // its meta (kept) is enough to tell next time whether the server has a newer

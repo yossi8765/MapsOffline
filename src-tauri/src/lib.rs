@@ -176,6 +176,11 @@ pub fn run() {
             commands::nav::nav_stop,
             commands::nav::speak,
             commands::nav::voices_list,
+            commands::route::optimize_trip,
+            commands::route::isochrone,
+            commands::route::match_track,
+            commands::nav::track_start,
+            commands::nav::track_stop,
             // [R2] new commands above
             // ---- R3 transit (commands/transit.rs)
             commands::transit::transit_stops,

@@ -143,6 +143,7 @@ fn req(t: &Transit, from: &str, to: &str, kind: TimeKind, iso: &str) -> RouteReq
         accessible: false,
         avoid: Default::default(),
         alternatives: 3,
+        ..Default::default()
     }
 }
 
@@ -309,6 +310,7 @@ fn via_req(t: &Transit, codes: &[&str], kind: TimeKind, iso: &str) -> RouteReque
         accessible: false,
         avoid: Default::default(),
         alternatives: 3,
+        ..Default::default()
     }
 }
 

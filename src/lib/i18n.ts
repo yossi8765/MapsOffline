@@ -935,6 +935,11 @@ const he = {
   logsFolder: "תיקיית היומן",
 
   // ===== [R2] =====
+  err_NO_ROUTE: "לא נמצא מסלול בין הנקודות.",
+  err_MODE_NOT_SUPPORTED: "אמצעי התחבורה הזה אינו זמין לפעולה הזו.",
+  err_NO_ISOCHRONE_MINUTES: "יש לבחור לפחות זמן נסיעה אחד.",
+  err_ISOCHRONE_TOO_LONG: "אפשר לחשב טווח הגעה של עד שלוש שעות.",
+  err_ROUTE_EMPTY: "המסלול ריק ואי אפשר לנווט בו.",
 
   // ===== [R3] =====
   noticeNextService: "היציאה הראשונה: {time}",
@@ -1873,6 +1878,11 @@ const en: Record<I18nKey, string> = {
   logsFolder: "Log folder",
 
   // ===== [R2] =====
+  err_NO_ROUTE: "No route was found between the points.",
+  err_MODE_NOT_SUPPORTED: "This mode of travel is not available here.",
+  err_NO_ISOCHRONE_MINUTES: "Choose at least one travel time.",
+  err_ISOCHRONE_TOO_LONG: "Reachability can be computed for up to three hours.",
+  err_ROUTE_EMPTY: "The route is empty and cannot be navigated.",
 
   // ===== [R3] =====
   noticeNextService: "First departure: {time}",

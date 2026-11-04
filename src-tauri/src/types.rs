@@ -122,6 +122,33 @@ pub enum Mode {
     Foot,
     Bike,
     Transit,
+    /// Heavy goods vehicle: car network minus hgv=no, with the request's `vehicle` dimensions
+    /// checked against maxheight / maxweight / maxwidth (local engine only).
+    Truck,
+    /// Walking for wheelchair users: no steps, no wheelchair=no, steep / unpaved ways avoided
+    /// (local engine only).
+    Wheelchair,
+}
+
+impl Mode {
+    /// car-like modes (vehicle network, turn costs, restrictions)
+    pub fn is_vehicle(self) -> bool {
+        matches!(self, Mode::Car | Mode::Truck)
+    }
+    /// pedestrian-like modes (foot network; transit access legs)
+    pub fn is_pedestrian(self) -> bool {
+        matches!(self, Mode::Foot | Mode::Wheelchair | Mode::Transit)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Car => "car",
+            Mode::Foot => "foot",
+            Mode::Bike => "bike",
+            Mode::Transit => "transit",
+            Mode::Truck => "truck",
+            Mode::Wheelchair => "wheelchair",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +198,34 @@ pub struct Avoid {
     /// Avoid difficult junctions: left turns and U-turns at junctions without traffic signals.
     #[serde(default)]
     pub hard_turns: bool,
+    /// Avoid the road nearest each point ("avoid this road" on a route step), local engine only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<LonLat>,
+    /// Areas drawn by the user (lon/lat rings, closed or open): never entered, local engine only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub polygons: Vec<Vec<LonLat>>,
+    /// bike / foot / wheelchair: prefer flatter ways (needs the DEM sampled into graph v7).
+    #[serde(default)]
+    pub hills: bool,
+}
+
+impl Avoid {
+    /// Options only the local engine can honour (online routes ignore them).
+    pub fn needs_local(&self) -> bool {
+        !self.points.is_empty() || !self.polygons.is_empty() || self.hills
+    }
+}
+
+/// Truck dimensions checked against maxheight / maxweight / maxwidth.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleDims {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_t: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,10 +253,19 @@ pub struct RouteRequest {
     /// Max number of routes to return (>=1).
     #[serde(default = "default_alternatives")]
     pub alternatives: u32,
+    /// Truck dimensions (mode "truck").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<VehicleDims>,
 }
 
 fn default_alternatives() -> u32 {
     3
+}
+
+impl Default for RouteRequest {
+    fn default() -> Self {
+        Self { waypoints: Vec::new(), mode: Mode::Car, time: TimeSpec::default(), avoid: Avoid::default(), alternatives: default_alternatives(), vehicle: None, accessible: false }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +301,38 @@ pub struct Step {
     pub duration_sec: f64,
     /// Index into the leg geometry where this step starts.
     pub geometry_start: usize,
+    /// Road number of the street of this step ("1", "443").
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub road_ref: Option<String>,
+    /// Motorway exit number (junction:ref) taken at this maneuver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
+    /// Signposted destination of the way taken ("ירושלים").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// Posted speed limit at the start of this step (km/h), when tagged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_limit_kmh: Option<u32>,
+    /// Lanes on the approach to this maneuver, left to right.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lanes: Vec<Lane>,
+}
+
+/// One lane before a maneuver (OSM turn:lanes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lane {
+    /// turn:lanes values of this lane: "left", "through", "right", "slight_right", "none", ...
+    pub directions: Vec<String>,
+    /// this lane leads along the route
+    pub active: bool,
+}
+
+impl Step {
+    /// A step with only the basic fields set (the R2 extras empty).
+    pub fn basic(instruction: String, maneuver: Maneuver, roundabout_exit: Option<u32>, street: Option<String>, distance_m: f64, duration_sec: f64, geometry_start: usize) -> Self {
+        Step { instruction, maneuver, roundabout_exit, street, distance_m, duration_sec, geometry_start, road_ref: None, exit: None, destination: None, speed_limit_kmh: None, lanes: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1043,6 +1139,50 @@ pub struct PackageInfo {
 
 // ===== [R2] routing + navigation =====
 
+/// One reachability band of an isochrone: lon/lat rings (outer rings counter-clockwise, holes
+/// clockwise; each hole follows its outer ring).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IsochroneBand {
+    pub minutes: f64,
+    pub rings: Vec<Vec<LonLat>>,
+}
+
+/// Per-stop options of a multi-stop trip (aligned with the request's waypoints).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TripStop {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stay_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_start_iso: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_end_iso: Option<String>,
+}
+
+/// Visiting order (indices into the waypoints) and the arrival time at each of them, in order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TripPlan {
+    pub order: Vec<usize>,
+    pub arrivals: Vec<String>,
+}
+
+/// Progress of a track recording (event "track-update").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackUpdate {
+    /// lon, lat, elevation (m, when the DEM is installed)
+    pub points: Vec<(f64, f64, Option<f32>)>,
+    pub distance_m: f64,
+    pub duration_sec: f64,
+    pub ascent_m: f64,
+}
+
+
+/// The track recorder returns the saved user layer.
+pub type TrackLayer = UserLayer;
+
 // ===== [R3] transit =====
 
 /// One ticket of a transit fare estimate.
@@ -1089,13 +1229,6 @@ pub struct TransitVehiclePos {
     pub updated_iso: String,
 }
 
-/// One band of an isochrone: everything reachable within `minutes`, as closed lon/lat rings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IsochroneBand {
-    pub minutes: u32,
-    pub rings: Vec<Vec<LonLat>>,
-}
 
 // ===== [R4] geocode =====
 

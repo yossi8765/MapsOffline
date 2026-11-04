@@ -195,3 +195,33 @@ None are required for the results above (no new dependencies). Optional, for the
    the cost of a slower incremental compile of the app crate. Not measured.
 3. `rstar` is no longer used by the router (only by `geocode/builder.rs`); `bincode` is now only used
    by transit. Both stay for now.
+
+## Graph v7 (2026-11-04, R2 stream)
+
+Built with `mapsoffline-data graph-build <pbf> <out> --dem <terrain.pmtiles>` from the installed
+Israel extract (OSM 2026-11-03): 804,158 vertices, 1,089,008 edges, 6.1 s total (elevation sampling
+of every edge from the Mapterhorn DEM: 0.9 s in parallel). File 83.2 MB (v6: 74.1 MB). New data:
+98,033 tagged speed limits, 50,773 edges with ref / exit / destination / turn lanes, 1,195 truck
+limits, 152 speed cameras, 1,275 via-way restrictions (all dropped before), 437 restrictions that
+could not be resolved, 2 conditional-only restrictions ignored.
+
+`bench --routing-only --iters 5 --graph <v7>` (release, same machine as above):
+
+| case | median |
+|---|---|
+| graph load | 54 ms |
+| car TLV–JLM, 3 alternatives / 1 | 38–42 ms / 10–11 ms |
+| car Eilat–Kiryat Shmona, 3 alternatives | 66–69 ms |
+| truck TLV–Haifa | 5.8 ms |
+| wheelchair TLV urban | 0.3 ms |
+| walk_times_from, 30 targets (transit access) | 1.5 ms |
+| isochrone foot 5/10/15 min | 1.1 ms |
+| isochrone car 10/20/30 min | 158 ms |
+
+Hierarchy pruning check (`bench --verify 400`: random car pairs > 30 km, pruned vs full search):
+before 32 of 400 routes were worse (worst +13.2 %, mean +0.34 %, both worst cases ending in
+Gaza, where the way in at a crossing is a minor road). Searches that start or end in Area A / B /
+Gaza are no longer pruned: 9 of 400 worse, worst +11.4 % (Taibe → Wadi Ara), mean +0.09 %;
+pruned searches take 31 ms vs 67 ms unpruned on that random mix. Larger radii did not remove the
+worst cases (tried up to local 8–30 km / wide 30–80 km: +10 % worst, 50 % slower), so the radii
+stay. The CLI build reads `MO_PRUNE=a,b,c,d,e,f` to try other radii.

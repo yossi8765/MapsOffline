@@ -1,13 +1,23 @@
-//! Cost profiles for car / foot / bike: access, traversal cost, turn cost, heuristic bound.
-use crate::routing::graph::{flags, Class, Graph};
-use crate::types::{Avoid, Mode};
+//! Cost profiles for car / truck / foot / wheelchair / bike: access, traversal cost, turn cost,
+//! heuristic bound. Costs are per directed state (`edge * 2 + dir`) because speeds, limits and
+//! climbing differ by direction.
+use std::sync::Arc;
+
+use crate::routing::graph::{flags, rmask, Class, Graph};
+use crate::types::{Avoid, Mode, VehicleDims};
 
 const KMH: f32 = 1.0 / 3.6;
 pub const FOOT_SPEED: f32 = 5.0 * KMH; // m/s
+pub const WHEELCHAIR_SPEED: f32 = 4.0 * KMH;
 pub const BIKE_SPEED: f32 = 15.0 * KMH;
 pub const CAR_MAX_SPEED: f32 = 130.0 * KMH;
+/// Trucks: motorway / trunk cap and the cap elsewhere (Israeli HGV limits).
+pub const TRUCK_MAX_KMH: f32 = 90.0;
+pub const TRUCK_OTHER_KMH: f32 = 80.0;
 /// An unpaved edge (segment between junctions) longer than this counts as a "long" dirt road.
 pub const UNPAVED_LONG_M: f32 = 300.0;
+/// `access=destination` roads are free within this distance (m) of a waypoint.
+pub const DESTINATION_FREE_M: f32 = 500.0;
 
 /// Extra seconds for an unsignalised left turn / U-turn when avoiding difficult junctions,
 /// by the most important road involved (crossed or entered).
@@ -20,12 +30,52 @@ pub fn hard_turn_penalty(class: Class) -> f32 {
     }
 }
 
+/// Preference factors per road class (index = `Class as u8`). Foot: `foot` without a sidewalk,
+/// `foot_sw` with one; footways have their own factor.
+#[derive(Clone, Copy, Debug)]
+pub struct ClassParams {
+    pub car: f32,
+    pub truck: f32,
+    pub bike: f32,
+    pub foot: f32,
+    pub foot_sw: f32,
+}
+
+const fn cp(car: f32, truck: f32, bike: f32, foot: f32, foot_sw: f32) -> ClassParams {
+    ClassParams { car, truck, bike, foot, foot_sw }
+}
+
+pub const CLASS_TABLE: [ClassParams; 17] = [
+    cp(1.0, 1.0, 3.0, 3.0, 3.0),   // Motorway
+    cp(1.0, 1.0, 1.8, 1.4, 1.05),  // Trunk
+    cp(1.0, 1.0, 1.4, 1.15, 1.0),  // Primary
+    cp(1.0, 1.1, 1.2, 1.15, 1.0),  // Secondary
+    cp(1.0, 1.3, 1.05, 1.05, 1.05), // Tertiary
+    cp(1.0, 1.6, 1.0, 1.0, 1.0),   // Unclassified
+    cp(1.0, 2.0, 1.0, 1.0, 1.0),   // Residential
+    cp(1.4, 2.5, 1.0, 1.0, 1.0),   // Service
+    cp(1.3, 4.0, 1.0, 1.0, 1.0),   // LivingStreet
+    cp(2.5, 6.0, 1.0, 1.1, 1.1),   // Track
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Pedestrian
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Footway
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Path
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Cycleway
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Steps
+    cp(1.5, 2.0, 1.0, 1.0, 1.0),   // Road
+    cp(1.0, 1.0, 1.0, 1.0, 1.0),   // Other (ferries)
+];
+
 #[derive(Clone, Debug)]
 pub struct Profile {
     pub mode: Mode,
     pub avoid: Avoid,
     /// edge flags that make an edge impassable (restricted territories), from `avoid`
     pub forbid: u32,
+    /// per-request forbidden edges (bitset over edges): avoided roads / areas, truck limits
+    pub forbid_edges: Option<Arc<Vec<u64>>>,
+    /// projected waypoints: `access=destination` roads near them cost nothing extra
+    pub free_points: Vec<[f32; 2]>,
+    pub vehicle: Option<VehicleDims>,
 }
 
 impl Profile {
@@ -33,46 +83,66 @@ impl Profile {
         // transit uses foot for access/egress
         let mode = if mode == Mode::Transit { Mode::Foot } else { mode };
         let forbid = (if avoid.area_a { flags::AREA_A } else { 0 }) | (if avoid.area_b { flags::AREA_B } else { 0 });
-        Self { mode, avoid, forbid }
+        Self { mode, avoid, forbid, forbid_edges: None, free_points: Vec::new(), vehicle: None }
     }
 
     /// Same profile without the territory restriction (used to tell "no road" from "road is
     /// in an avoided territory").
     pub fn without_areas(&self) -> Self {
-        Self { mode: self.mode, avoid: self.avoid.clone(), forbid: 0 }
+        Self { forbid: 0, ..self.clone() }
     }
 
     pub fn avoids_areas(&self) -> bool {
         self.forbid != 0
     }
 
+    #[inline]
+    fn vehicle_mask(&self) -> u8 {
+        match self.mode {
+            Mode::Car => rmask::CAR,
+            Mode::Truck => rmask::TRUCK,
+            Mode::Bike => rmask::BIKE,
+            _ => 0,
+        }
+    }
+
     /// Lower bound of cost per meter (seconds/m) used by the A* heuristic. For cars it uses the
     /// highest speed actually present in the graph (tighter than a fixed 130 km/h bound).
     pub fn heuristic_spm(&self, g: &Graph) -> f32 {
+        let vmax = if g.max_car_kmh >= 5 { (g.max_car_kmh as f32 * KMH).min(CAR_MAX_SPEED) } else { CAR_MAX_SPEED };
         let v = match self.mode {
-            Mode::Car => {
-                let vmax = if g.max_car_kmh >= 5 { (g.max_car_kmh as f32 * KMH).min(CAR_MAX_SPEED) } else { CAR_MAX_SPEED };
-                1.0 / vmax
-            }
-            Mode::Foot => 0.9 / FOOT_SPEED,
+            Mode::Car => 1.0 / vmax,
+            Mode::Truck => 1.0 / vmax.min(TRUCK_MAX_KMH * KMH),
+            Mode::Foot | Mode::Transit => 0.9 / FOOT_SPEED,
+            Mode::Wheelchair => 0.8 / WHEELCHAIR_SPEED,
             Mode::Bike => 0.8 / BIKE_SPEED,
-            Mode::Transit => 0.9 / FOOT_SPEED,
         };
         v * 0.97 * g.proj0.hscale as f32 // projection error margin; east-west shrink away from the centre latitude
+    }
+
+    #[inline]
+    fn edge_forbidden(&self, e: u32) -> bool {
+        match &self.forbid_edges {
+            Some(b) => b.get((e >> 6) as usize).is_some_and(|w| w & (1u64 << (e & 63)) != 0),
+            None => false,
+        }
     }
 
     /// May the directed state `s` be traversed?
     #[inline]
     pub fn allowed(&self, g: &Graph, s: u32) -> bool {
-        let f = g.e_flags[(s >> 1) as usize];
-        if f & self.forbid != 0 {
+        let e = s >> 1;
+        let f = g.e_flags[e as usize];
+        if f & self.forbid != 0 || self.edge_forbidden(e) {
             return false;
         }
         let fwd = s & 1 == 0;
         match self.mode {
             Mode::Car => f & (if fwd { flags::CAR_FWD } else { flags::CAR_BWD }) != 0,
+            Mode::Truck => f & (if fwd { flags::CAR_FWD } else { flags::CAR_BWD }) != 0 && f & flags::HGV_NO == 0,
             Mode::Bike => f & (if fwd { flags::BIKE_FWD } else { flags::BIKE_BWD }) != 0,
-            _ => f & flags::FOOT != 0,
+            Mode::Wheelchair => f & flags::FOOT != 0 && f & flags::WHEELCHAIR_NO == 0 && (f & flags::STEPS == 0 || f & flags::WHEELCHAIR_YES != 0),
+            Mode::Foot | Mode::Transit => f & flags::FOOT != 0,
         }
     }
 
@@ -82,18 +152,28 @@ impl Profile {
         self.allowed(g, e * 2) || self.allowed(g, e * 2 + 1)
     }
 
-    /// Real traversal time in seconds (no preferences).
+    /// Real traversal time in seconds of directed state `s` (no preferences).
     #[inline]
-    pub fn traverse_time(&self, g: &Graph, e: u32) -> f32 {
-        let ei = e as usize;
+    pub fn traverse_time(&self, g: &Graph, s: u32) -> f32 {
+        let ei = (s >> 1) as usize;
         let len = g.e_len[ei];
         let f = g.e_flags[ei];
         let class = Class::from_u8(g.e_class[ei]);
+        if f & flags::FERRY != 0 {
+            return len / (g.speed_s(s).max(3) as f32 * KMH);
+        }
+        let (up, down) = g.climb_s(s);
         match self.mode {
-            Mode::Car => {
-                let v = (g.e_speed[ei].max(5) as f32) * KMH;
+            Mode::Car | Mode::Truck => {
+                let mut v = (g.speed_s(s).max(5) as f32) * KMH;
                 // tracks / unpaved are slower than their nominal speed
-                let v = if f & flags::UNPAVED != 0 { v.min(25.0 * KMH) } else { v };
+                if f & flags::UNPAVED != 0 {
+                    v = v.min(25.0 * KMH);
+                }
+                if self.mode == Mode::Truck {
+                    let cap = if matches!(class, Class::Motorway | Class::Trunk) { TRUCK_MAX_KMH } else { TRUCK_OTHER_KMH };
+                    v = v.min(cap * KMH);
+                }
                 len / v
             }
             Mode::Bike => {
@@ -106,36 +186,42 @@ impl Profile {
                 } else {
                     BIKE_SPEED
                 };
-                len / v
+                // ~4 s per metre climbed; braking on steep descents
+                let steep_down = if down > 0.08 * len { down * 1.0 } else { 0.0 };
+                len / v + up * 4.0 + steep_down
             }
-            _ => {
+            Mode::Wheelchair => len / WHEELCHAIR_SPEED + up * 10.0 + down * 2.0,
+            Mode::Foot | Mode::Transit => {
                 let v = if f & flags::STEPS != 0 { 2.0 * KMH } else { FOOT_SPEED };
-                len / v
+                // Naismith: ~1 h per 600 m of ascent; steep descents slow down too
+                let steep_down = if down > 0.1 * len { down * 2.0 } else { 0.0 };
+                len / v + up * 6.0 + steep_down
             }
         }
     }
 
-    /// Search cost (seconds × preference factors) of traversing edge `e`.
+    /// Search cost (seconds × preference factors) of traversing directed state `s`.
     #[inline]
-    pub fn cost(&self, g: &Graph, e: u32) -> f32 {
-        let t = self.traverse_time(g, e);
-        let ei = e as usize;
+    pub fn cost(&self, g: &Graph, s: u32) -> f32 {
+        let t = self.traverse_time(g, s);
+        let ei = (s >> 1) as usize;
         let f = g.e_flags[ei];
-        let class = Class::from_u8(g.e_class[ei]);
+        let class = g.e_class[ei] as usize;
+        let row = CLASS_TABLE[class.min(16)];
         // "avoid unpaved" either applies to every unpaved edge or only to long stretches
         let avoid_unpaved = self.avoid.unpaved && (!self.avoid.unpaved_long_only || g.e_len[ei] > UNPAVED_LONG_M);
         let mut k = 1.0f32;
+        if f & flags::FERRY != 0 && self.avoid.ferry {
+            k *= 10.0;
+        }
         match self.mode {
-            Mode::Car => {
-                match class {
-                    Class::Service => k *= 1.4,
-                    Class::LivingStreet => k *= 1.3,
-                    Class::Track => k *= 2.5,
-                    Class::Road => k *= 1.5,
-                    _ => {}
-                }
+            Mode::Car | Mode::Truck => {
+                k *= if self.mode == Mode::Truck { row.truck } else { row.car };
                 if f & flags::UNPAVED != 0 {
                     k *= if avoid_unpaved { 5.0 } else { 1.5 };
+                    if self.mode == Mode::Truck {
+                        k *= 2.0;
+                    }
                 }
                 if f & flags::TOLL != 0 && self.avoid.toll {
                     k *= 5.0;
@@ -143,39 +229,59 @@ impl Profile {
                 if f & flags::MOTORWAY != 0 && self.avoid.motorway {
                     k *= 3.0;
                 }
-                if f & flags::FERRY != 0 && self.avoid.ferry {
-                    k *= 10.0;
+                if f & flags::DESTINATION != 0 && !self.free_points.is_empty() {
+                    let v = g.vproj(g.e_from[ei]);
+                    let r2 = DESTINATION_FREE_M * DESTINATION_FREE_M;
+                    if !self.free_points.iter().any(|p| (p[0] - v[0]) * (p[0] - v[0]) + (p[1] - v[1]) * (p[1] - v[1]) < r2) {
+                        k *= 3.0;
+                    }
                 }
             }
             Mode::Bike => {
                 if f & flags::CYCLEWAY != 0 {
                     k *= 0.8;
                 } else {
-                    match class {
-                        Class::Primary => k *= 1.4,
-                        Class::Secondary => k *= 1.2,
-                        Class::Tertiary => k *= 1.05,
-                        Class::Trunk => k *= 1.8,
-                        Class::Motorway => k *= 3.0,
-                        _ => {}
-                    }
+                    k *= row.bike;
                 }
                 if f & flags::UNPAVED != 0 {
                     k *= if avoid_unpaved { 4.0 } else { 1.3 };
                 }
+                if self.avoid.hills {
+                    let (up, _) = g.climb_s(s);
+                    k *= 1.0 + 10.0 * (up / g.e_len[ei].max(1.0)).min(0.3);
+                }
             }
-            _ => {
+            Mode::Wheelchair => {
+                if f & flags::WHEELCHAIR_YES != 0 {
+                    k *= 0.85;
+                } else if f & flags::FOOTWAY != 0 {
+                    k *= 0.95;
+                } else {
+                    k *= if f & flags::SIDEWALK != 0 { row.foot_sw } else { row.foot };
+                }
+                if f & flags::UNPAVED != 0 || Class::from_u8(g.e_class[ei]) == Class::Track {
+                    k *= 3.0;
+                }
+                if Class::from_u8(g.e_class[ei]) == Class::Path {
+                    k *= 1.5;
+                }
+                let (up, down) = g.climb_s(s);
+                let grade = up.max(down) / g.e_len[ei].max(1.0);
+                if grade > 0.10 {
+                    k *= 8.0;
+                } else if grade > 0.06 {
+                    k *= 3.0;
+                }
+            }
+            Mode::Foot | Mode::Transit => {
                 if f & flags::FOOTWAY != 0 {
                     k *= 0.9;
                 } else {
-                    match class {
-                        Class::Primary | Class::Secondary => k *= if f & flags::SIDEWALK != 0 { 1.0 } else { 1.15 },
-                        Class::Tertiary => k *= 1.05,
-                        Class::Trunk => k *= if f & flags::SIDEWALK != 0 { 1.05 } else { 1.4 },
-                        Class::Motorway => k *= 3.0,
-                        Class::Track => k *= 1.1,
-                        _ => {}
-                    }
+                    k *= if f & flags::SIDEWALK != 0 { row.foot_sw } else { row.foot };
+                }
+                if self.avoid.hills {
+                    let (up, _) = g.climb_s(s);
+                    k *= 1.0 + 5.0 * (up / g.e_len[ei].max(1.0)).min(0.4);
                 }
             }
         }
@@ -203,12 +309,13 @@ impl Profile {
         let ea = a >> 1;
         let eb = b >> 1;
         let via = g.head(a);
+        let pedestrian = self.mode.is_pedestrian();
         if ea == eb {
             // reversing on the same edge
             return match self.mode {
-                Mode::Car => {
+                Mode::Car | Mode::Truck => {
                     if g.degree(via) <= 1 {
-                        Some((20.0, 0.0))
+                        Some((if self.mode == Mode::Truck { 40.0 } else { 20.0 }, 0.0))
                     } else {
                         None
                     }
@@ -217,25 +324,26 @@ impl Profile {
                 _ => Some((0.0, 0.0)),
             };
         }
-        if self.mode != Mode::Foot && self.mode != Mode::Transit {
-            let bike = self.mode == Mode::Bike;
+        if !pedestrian {
+            let m = self.vehicle_mask();
+            let (mut only_any, mut only_ok) = (false, false);
             for r in g.restrictions_at(via) {
-                if bike && !r.bike {
-                    continue;
-                }
-                if r.from_edge != ea {
+                if r.mask & m == 0 || r.from_edge != ea {
                     continue;
                 }
                 if r.only {
-                    if r.to_edge != eb {
-                        return None;
-                    }
+                    // several only_* from the same edge (one per lane group): any of them is fine
+                    only_any = true;
+                    only_ok |= r.to_edge == eb;
                 } else if r.to_edge == eb {
                     return None;
                 }
             }
+            if only_any && !only_ok {
+                return None;
+            }
         }
-        if self.mode == Mode::Foot || self.mode == Mode::Transit {
+        if pedestrian {
             return Some((0.0, 0.0));
         }
         let d = turn_delta(g.bearing_in(a), g.bearing_out(b));
@@ -269,19 +377,30 @@ impl Profile {
         // crosses it twice; both are cheap at traffic lights and inside roundabouts.
         // (a preference, not time: it steers the search but stays out of the ETA)
         let mut pref = 0.0;
-        if self.avoid.hard_turns
-            && (d < -45.0 || d.abs() >= 160.0)
-            && (fa | fb) & flags::ROUNDABOUT == 0
-            && !g.has_signal(via)
-        {
+        if self.avoid.hard_turns && (d < -45.0 || d.abs() >= 160.0) && (fa | fb) & flags::ROUNDABOUT == 0 && !g.has_signal(via) {
             let biggest = Class::from_u8(g.e_class[ea as usize].min(g.e_class[eb as usize]));
             pref += hard_turn_penalty(biggest);
         }
-        if self.mode == Mode::Bike {
-            c *= 0.5;
-            pref *= 0.5;
+        match self.mode {
+            Mode::Bike => {
+                c *= 0.5;
+                pref *= 0.5;
+            }
+            Mode::Truck => c *= 1.5,
+            _ => {}
         }
         Some((c, pref))
+    }
+
+    /// Via-way restrictions apply to this profile?
+    #[inline]
+    pub fn uses_multi(&self, g: &Graph) -> bool {
+        !g.multi.is_empty() && !self.mode.is_pedestrian()
+    }
+
+    #[inline]
+    pub fn multi_applies(&self, mask: u8) -> bool {
+        mask & self.vehicle_mask() != 0
     }
 
     /// Road hierarchy tier used to prune long searches: tier 0 edges are always searched,
@@ -290,8 +409,12 @@ impl Profile {
     #[inline]
     pub fn prune_tier(&self, g: &Graph, e: u32) -> u8 {
         let class = g.e_class[e as usize];
+        let f = g.e_flags[e as usize];
+        if f & flags::FERRY != 0 {
+            return 0;
+        }
         match self.mode {
-            Mode::Car => {
+            Mode::Car | Mode::Truck => {
                 if class <= Class::Secondary as u8 {
                     0
                 } else if class <= Class::Tertiary as u8 {
@@ -301,7 +424,7 @@ impl Profile {
                 }
             }
             Mode::Bike => {
-                if class <= Class::Unclassified as u8 || g.e_flags[e as usize] & flags::CYCLEWAY != 0 {
+                if class <= Class::Unclassified as u8 || f & flags::CYCLEWAY != 0 {
                     0
                 } else {
                     2
@@ -356,5 +479,16 @@ mod tests {
         assert!(!is_hard(turn_delta(0, 330))); // slight left (lane change / fork) is not hard
         assert!(hard_turn_penalty(Class::Primary) > hard_turn_penalty(Class::Secondary));
         assert!(hard_turn_penalty(Class::Tertiary) > hard_turn_penalty(Class::Residential));
+    }
+
+    #[test]
+    fn class_table_matches_classes() {
+        assert_eq!(CLASS_TABLE.len(), Class::Other as usize + 1);
+        assert_eq!(CLASS_TABLE[Class::Service as usize].car, 1.4);
+        assert!(CLASS_TABLE[Class::Residential as usize].truck > CLASS_TABLE[Class::Primary as usize].truck);
+        // the A* heuristic stays admissible: no factor below the bound used there
+        for r in CLASS_TABLE {
+            assert!(r.car >= 1.0 && r.truck >= 1.0 && r.bike >= 1.0 && r.foot >= 1.0 && r.foot_sw >= 1.0);
+        }
     }
 }

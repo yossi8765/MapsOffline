@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::geo::polyline_length_m;
 use crate::routing::alternatives::resolve_times;
-use crate::routing::instructions::instruction_text;
+use crate::routing::instructions::{exit_text, instruction_text, merge_roundabout_exits};
 use crate::types::*;
 
 #[derive(Deserialize)]
@@ -49,8 +49,30 @@ struct OsrmStep {
     reference: Option<String>,
     #[serde(default)]
     rotary_name: Option<String>,
+    /// signposted destinations of the way taken ("Jerusalem, Tel Aviv")
+    #[serde(default)]
+    destinations: Option<String>,
+    /// exit numbers of an off ramp
+    #[serde(default)]
+    exits: Option<String>,
+    #[serde(default)]
+    intersections: Vec<OsrmIntersection>,
     geometry: Geometry,
     maneuver: OsrmManeuver,
+}
+
+#[derive(Deserialize, Default)]
+struct OsrmIntersection {
+    #[serde(default)]
+    lanes: Vec<OsrmLane>,
+}
+
+#[derive(Deserialize)]
+struct OsrmLane {
+    #[serde(default)]
+    indications: Vec<String>,
+    #[serde(default)]
+    valid: bool,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +149,14 @@ fn street_name(s: &OsrmStep) -> Option<String> {
     }
 }
 
+/// "Jerusalem: Tel Aviv, Haifa" (ref: names) → the names part, first entries.
+fn destinations_text(d: Option<&str>) -> Option<String> {
+    let d = d?.trim();
+    let names = d.split_once(':').map(|(_, n)| n).unwrap_or(d).trim();
+    let v: Vec<&str> = names.split(',').map(str::trim).filter(|x| !x.is_empty()).take(2).collect();
+    (!v.is_empty()).then(|| v.join(", "))
+}
+
 fn convert_steps(leg: &OsrmLeg) -> Vec<Step> {
     let mut out = Vec::with_capacity(leg.steps.len());
     let mut geometry_start = 0usize;
@@ -134,19 +164,26 @@ fn convert_steps(leg: &OsrmLeg) -> Vec<Step> {
         let m = maneuver(&s.maneuver);
         let street = street_name(s);
         let exit = if m == Maneuver::Roundabout { s.maneuver.exit } else { None };
-        out.push(Step {
-            instruction: instruction_text(m, street.as_deref(), exit),
-            maneuver: m,
-            roundabout_exit: exit,
-            street,
-            distance_m: s.distance,
-            duration_sec: s.duration,
-            geometry_start,
-        });
+        let off_ramp = s.maneuver.kind == "off ramp";
+        let junction = if off_ramp { s.exits.as_deref().and_then(|e| e.split(';').next()).map(|e| e.trim().to_string()).filter(|e| !e.is_empty()) } else { None };
+        let destination = if off_ramp || s.maneuver.kind == "fork" { destinations_text(s.destinations.as_deref()) } else { None };
+        let instruction = exit_text(junction.as_deref(), destination.as_deref(), street.as_deref()).unwrap_or_else(|| instruction_text(m, street.as_deref(), exit));
+        let mut st = Step::basic(instruction, m, exit, street, s.distance, s.duration, geometry_start);
+        st.road_ref = s.reference.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+        st.exit = junction;
+        st.destination = destination;
+        // lanes at the maneuver: the first intersection of the step
+        if let Some(i) = s.intersections.first() {
+            st.lanes = i.lanes.iter().map(|l| Lane { directions: l.indications.iter().map(|d| d.replace(' ', "_")).collect(), active: l.valid }).collect();
+            if st.lanes.iter().all(|l| l.active) {
+                st.lanes.clear(); // no lane advice when every lane works
+            }
+        }
+        out.push(st);
         // Consecutive step geometries share their boundary vertex.
         geometry_start += s.geometry.coordinates.len().saturating_sub(1);
     }
-    out
+    merge_roundabout_exits(out)
 }
 
 pub fn route(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse> {
@@ -165,6 +202,7 @@ pub fn route(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse
             exclude.push("ferry");
         }
     }
+    anyhow::ensure!(matches!(req.mode, Mode::Car | Mode::Bike | Mode::Foot), "OSRM has no {} profile", req.mode.as_str());
     let base = base_url.trim_end_matches('/');
     let mut url = format!(
         "{base}/{}/route/v1/driving/{}?overview=full&geometries=geojson&steps=true&alternatives={}",
@@ -271,6 +309,27 @@ mod tests {
         assert_eq!(m("new name", Some("straight")), Maneuver::Straight);
     }
 
+    #[test]
+    fn steps_with_exits_lanes_and_roundabouts() {
+        let json = r#"{"distance":1000,"duration":100,"steps":[
+          {"distance":100,"duration":10,"name":"הרצל","geometry":{"coordinates":[[34.0,32.0],[34.001,32.0]]},"maneuver":{"type":"depart"}},
+          {"distance":60,"duration":6,"name":"","geometry":{"coordinates":[[34.001,32.0],[34.002,32.0]]},"maneuver":{"type":"roundabout","modifier":"right","exit":2}},
+          {"distance":652,"duration":40,"name":"","ref":"45","geometry":{"coordinates":[[34.002,32.0],[34.003,32.0]]},"maneuver":{"type":"exit roundabout","modifier":"right"}},
+          {"distance":100,"duration":5,"name":"","destinations":"1: ירושלים, תל אביב","exits":"5","geometry":{"coordinates":[[34.003,32.0],[34.004,32.0]]},"maneuver":{"type":"off ramp","modifier":"slight right"},
+           "intersections":[{"lanes":[{"indications":["straight"],"valid":false},{"indications":["slight right"],"valid":true}]}]},
+          {"distance":0,"duration":0,"name":"","geometry":{"coordinates":[[34.004,32.0]]},"maneuver":{"type":"arrive"}}]}"#;
+        let leg: OsrmLeg = serde_json::from_str(json).unwrap();
+        let steps = convert_steps(&leg);
+        assert_eq!(steps.len(), 4, "{steps:#?}");
+        assert_eq!(steps[1].maneuver, Maneuver::Roundabout);
+        assert!((steps[1].distance_m - 712.0).abs() < 1e-9);
+        assert_eq!(steps[1].instruction, "היכנס לכיכר וצא ביציאה השנייה לכביש 45");
+        assert_eq!(steps[2].instruction, "צא ביציאה 5 לכיוון ירושלים, תל אביב");
+        assert_eq!(steps[2].lanes.len(), 2);
+        assert!(!steps[2].lanes[0].active && steps[2].lanes[1].active);
+        assert_eq!(steps[2].lanes[1].directions, vec!["slight_right"]);
+    }
+
     /// Hits the public FOSSGIS server – run with `cargo test -- --ignored`.
     #[test]
     #[ignore]
@@ -282,6 +341,7 @@ mod tests {
             accessible: false,
             avoid: Avoid::default(),
             alternatives: 3,
+            ..Default::default()
         };
         let r = route(&req, "https://routing.openstreetmap.de").unwrap();
         assert!(!r.routes.is_empty());

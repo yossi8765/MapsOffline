@@ -53,7 +53,7 @@ pub fn transit_isochrone(t: &Transit, origin: LonLat, time: &TimeSpec, minutes: 
                 }
             }
         }
-        out.push(IsochroneBand { minutes: m, rings: union_rings(&circles) });
+        out.push(IsochroneBand { minutes: f64::from(m), rings: union_rings(&circles) });
     }
     Ok(out)
 }

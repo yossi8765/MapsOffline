@@ -74,17 +74,10 @@ pub const TRANSFER_WALK_MAX_S: f32 = 1800.0;
 
 /// Walking seconds from `origin` to each target on the road network, None when there is no way
 /// within `max_sec`.
-// MERGE: switch to routing::walk_times_from (R2's one-to-many foot Dijkstra). Until then this is
-// the straight-line estimate the model always used (distance / 1.2 m/s), so the build behaves
-// exactly as before.
-pub fn walk_times_from(_graph: &crate::routing::Graph, origin: LonLat, targets: &[LonLat], max_sec: f32) -> Vec<Option<f32>> {
-    targets
-        .iter()
-        .map(|&t| {
-            let s = (crate::geo::haversine_m(origin, t) / model::TRANSFER_SPEED_MPS) as f32;
-            (s <= max_sec).then_some(s)
-        })
-        .collect()
+/// Walking seconds from `origin` to each target over the road network (one-to-many foot
+/// Dijkstra in routing/); None = farther than `max_sec` or unreachable.
+pub fn walk_times_from(graph: &crate::routing::Graph, origin: LonLat, targets: &[LonLat], max_sec: f32) -> Vec<Option<f32>> {
+    crate::routing::walk_times_from(graph, origin, targets, max_sec)
 }
 
 pub use notice::attach_notice;
