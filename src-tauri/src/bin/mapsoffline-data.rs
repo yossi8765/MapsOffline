@@ -136,6 +136,15 @@ enum Cmd {
         /// Rank by distance from this point: lon,lat
         #[arg(long)]
         near: Option<String>,
+        /// Another address index file (default: the installed one)
+        #[arg(long)]
+        index: Option<std::path::PathBuf>,
+    },
+    /// Offline Wikipedia summary from the address index: "he:Title" or a Wikidata id
+    Wiki {
+        tag: String,
+        #[arg(long)]
+        index: Option<std::path::PathBuf>,
     },
     /// Which restricted territory (Area A / B) contains a point, and the flags of the nearest road
     Area {
@@ -591,7 +600,14 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Cmd::Search { query, near } => {
+        Cmd::Wiki { tag, index } => {
+            let g = mapsoffline_lib::geocode::open(&index.unwrap_or_else(|| paths.geocode_file()))?;
+            match g.wiki(&tag)? {
+                Some(w) => println!("{} [{}] {}\n{}", w.title, w.lang, w.url, w.extract),
+                None => println!("no summary for {tag}"),
+            }
+        }
+        Cmd::Search { query, near, index } => {
             let near = match near {
                 Some(s) => {
                     let w = parse_ll(&s)?;
@@ -599,7 +615,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            let g = mapsoffline_lib::geocode::open(&paths.geocode_file())?;
+            let g = mapsoffline_lib::geocode::open(&index.unwrap_or_else(|| paths.geocode_file()))?;
             let t0 = std::time::Instant::now();
             let geo = g.search(&query, near, 10)?;
             let geo_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -622,6 +638,24 @@ fn main() -> anyhow::Result<()> {
                     r.lat,
                     r.score
                 );
+                if let Some(e) = r.extra.as_ref() {
+                    let parts: Vec<String> = [
+                        ("interpretation", &e.interpretation),
+                        ("phone", &e.phone),
+                        ("website", &e.website),
+                        ("address", &e.address),
+                        ("brand", &e.brand),
+                        ("operator", &e.operator),
+                        ("wikipedia", &e.wikipedia),
+                        ("extra", &e.extra_info),
+                    ]
+                    .iter()
+                    .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}={v}")))
+                    .collect();
+                    if !parts.is_empty() {
+                        println!("    {}", parts.join("  "));
+                    }
+                }
             }
             println!("geocoder {geo_ms:.1} ms, stops {stop_ms:.1} ms");
         }

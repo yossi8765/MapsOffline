@@ -85,6 +85,26 @@ pub struct GeoExtra {
     /// nearby list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_label: Option<String>,
+    // ---- R4: more POI details (OSM tags, data.gov.il registers)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    /// Street address of a POI ("הרצל 12, תל אביב-יפו").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// OSM `wikipedia` tag ("he:Title").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikipedia: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikidata: Option<String>,
+    /// One line of kind-specific details (charging stations: "4 עמדות · Type 2, CCS").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_info: Option<String>,
 }
 
 impl GeoExtra {
@@ -1011,3 +1031,15 @@ pub struct PackageInfo {
 // ===== [R3] transit =====
 
 // ===== [R4] geocode =====
+
+/// Offline Wikipedia summary of a place (`wiki_summary`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WikiSummary {
+    pub title: String,
+    /// plain-text introduction, shortened to a few sentences
+    pub extract: String,
+    pub url: String,
+    /// "he" | "en"
+    pub lang: String,
+}

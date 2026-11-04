@@ -939,6 +939,26 @@ const he = {
   // ===== [R3] =====
 
   // ===== [R4] =====
+  grpNature: "טבע וטיולים",
+  grpEmergency: "חירום ובטיחות",
+  catSpring: "מעיינות",
+  catViewpoint: "תצפיות",
+  catCampSite: "חניוני לילה",
+  catPlayground: "גני שעשועים",
+  catToilets: "שירותים ציבוריים",
+  catDrinkingWater: "ברזיות",
+  catShelter: "מקלטים ציבוריים",
+  catDefibrillator: "דפיברילטורים",
+  poiPhone: "טלפון",
+  poiWebsite: "אתר אינטרנט",
+  poiAddress: "כתובת",
+  poiBrand: "רשת",
+  poiOperator: "מפעיל",
+  poiWikipedia: "מתוך ויקיפדיה",
+  coordItm: "רשת ישראל החדשה (ITM)",
+  coordUtm: "UTM",
+  coordDms: "מעלות, דקות ושניות",
+  coordPlus: "Plus Code",
 
 };
 
@@ -1851,6 +1871,26 @@ const en: Record<I18nKey, string> = {
   // ===== [R3] =====
 
   // ===== [R4] =====
+  grpNature: "Nature & hiking",
+  grpEmergency: "Emergency & safety",
+  catSpring: "Springs",
+  catViewpoint: "Viewpoints",
+  catCampSite: "Campsites",
+  catPlayground: "Playgrounds",
+  catToilets: "Public toilets",
+  catDrinkingWater: "Drinking water",
+  catShelter: "Public shelters",
+  catDefibrillator: "Defibrillators",
+  poiPhone: "Phone",
+  poiWebsite: "Website",
+  poiAddress: "Address",
+  poiBrand: "Brand",
+  poiOperator: "Operator",
+  poiWikipedia: "From Wikipedia",
+  coordItm: "Israeli grid (ITM)",
+  coordUtm: "UTM",
+  coordDms: "Degrees, minutes, seconds",
+  coordPlus: "Plus Code",
 
 };
 

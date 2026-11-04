@@ -6,6 +6,73 @@ use super::prelude::*;
 
 // ---------------------------------------------------------------- geocoding
 
+/// Typed coordinates in any supported format; bare numbers that fit both ways are read in the
+/// order that lands in Israel or a downloaded country.
+fn parse_coords(st: &AppState, q: &str, near: Option<LonLat>) -> Option<crate::coords::ParsedCoord> {
+    let regions = st.region_geocoders();
+    let known = |lon: f64, lat: f64| {
+        let inb = |b: &[f64; 4]| lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3];
+        inb(&crate::paths::BBOX_ISRAEL) || regions.iter().any(|(_, _, b)| inb(b))
+    };
+    crate::coords::parse(q, near, &known)
+}
+
+/// The search behind `geocode_search` / `geocode_batch`: coordinates, Israel and every downloaded
+/// country (the area around `near` first, the others interleaved after it), transit stops.
+fn search_all(st: &Arc<AppState>, query: &str, near: Option<LonLat>, limit: usize) -> R<Vec<GeoResult>> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Ok(vec![]);
+    }
+    if let Some(c) = parse_coords(st, &q, near) {
+        return Ok(vec![crate::geocode::coord_result(&c)]);
+    }
+    let mut out: Vec<GeoResult> = Vec::new();
+    let regions = st.region_geocoders();
+    let in_box = |b: &[f64; 4], p: &LonLat| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
+    let mut groups: Vec<(bool, Vec<GeoResult>)> = Vec::new();
+    match st.with_geocoder(|g| g.search(&q, near, limit)) {
+        Ok(v) => groups.push((near.is_none_or(|p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
+        Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
+        Err(e) if regions.is_empty() => return Err(err(e)),
+        Err(e) => log::warn!("geocode (Israel): {e:#}"),
+    }
+    for (id, path, bbox) in &regions {
+        match st.with_region_geocoder(path, |g| g.search(&q, near, limit)) {
+            Ok(v) => groups.push((near.is_some_and(|p| in_box(bbox, &p)), v)),
+            Err(e) => log::warn!("geocode ({id}): {e:#}"),
+        }
+    }
+    groups.sort_by_key(|(primary, _)| !*primary);
+    let mut iters: Vec<std::vec::IntoIter<GeoResult>> = Vec::new();
+    for (primary, v) in groups {
+        if primary {
+            out.extend(v);
+        } else {
+            iters.push(v.into_iter());
+        }
+    }
+    while out.len() < limit * 2 && !iters.is_empty() {
+        iters.retain_mut(|it| match it.next() {
+            Some(r) => {
+                out.push(r);
+                true
+            }
+            None => false,
+        });
+    }
+    // Transit stops by name / stop code. The model is loaded in the background on first
+    // use so a search never waits for it; until then results simply have no stops.
+    let stops = match st.transit.read().clone() {
+        Some(t) => t.search_stops(&q, near, 5),
+        None => {
+            st.transit_load_background();
+            Vec::new()
+        }
+    };
+    Ok(crate::geocode::merge_with_stops(out, stops, limit))
+}
+
 #[tauri::command]
 pub async fn geocode_search(
     state: State<'_, Arc<AppState>>,
@@ -15,60 +82,44 @@ pub async fn geocode_search(
 ) -> R<Vec<GeoResult>> {
     let st = state.inner().clone();
     let limit = limit.unwrap_or(10).clamp(1, 50);
+    tauri::async_runtime::spawn_blocking(move || search_all(&st, &query, near, limit)).await.map_err(err)?
+}
+
+/// Best result of each query (CSV import of an address list); None where nothing was found.
+/// At most 5000 queries per call.
+#[tauri::command]
+pub async fn geocode_batch(state: State<'_, Arc<AppState>>, queries: Vec<String>, near: Option<LonLat>) -> R<Vec<Option<GeoResult>>> {
+    let st = state.inner().clone();
+    if queries.len() > 5000 {
+        return Err(AppError::new("TOO_MANY_QUERIES", format!("TOO_MANY_QUERIES: {} (max 5000)", queries.len())));
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let q = query.trim().to_string();
-        if q.is_empty() {
-            return Ok(vec![]);
+        let mut out = Vec::with_capacity(queries.len());
+        for q in &queries {
+            // one bad line must not fail the whole list
+            out.push(search_all(&st, q, near, 1).ok().and_then(|v| v.into_iter().next()));
         }
-        let mut out: Vec<GeoResult> = Vec::new();
-        if let Some(c) = parse_coord(&q) {
-            out.push(c);
-        }
-        // Israel and every downloaded country; the area around `near` comes first, the others
-        // are interleaved after it.
-        let regions = st.region_geocoders();
-        let in_box = |b: &[f64; 4], p: &LonLat| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
-        let mut groups: Vec<(bool, Vec<GeoResult>)> = Vec::new();
-        match st.with_geocoder(|g| g.search(&q, near, limit)) {
-            Ok(v) => groups.push((near.is_none_or(|p| in_box(&crate::paths::BBOX_ISRAEL, &p)), v)),
-            Err(e) if e.to_string() == "NO_GEOCODE_DATA" => {}
-            Err(e) if regions.is_empty() => return Err(err(e)),
-            Err(e) => log::warn!("geocode (Israel): {e:#}"),
-        }
-        for (id, path, bbox) in &regions {
-            match st.with_region_geocoder(path, |g| g.search(&q, near, limit)) {
-                Ok(v) => groups.push((near.is_some_and(|p| in_box(bbox, &p)), v)),
-                Err(e) => log::warn!("geocode ({id}): {e:#}"),
-            }
-        }
-        groups.sort_by_key(|(primary, _)| !*primary);
-        let mut iters: Vec<std::vec::IntoIter<GeoResult>> = Vec::new();
-        for (primary, v) in groups {
-            if primary {
-                out.extend(v);
-            } else {
-                iters.push(v.into_iter());
-            }
-        }
-        while out.len() < limit * 2 && !iters.is_empty() {
-            iters.retain_mut(|it| match it.next() {
-                Some(r) => {
-                    out.push(r);
-                    true
-                }
-                None => false,
-            });
-        }
-        // Transit stops by name / stop code. The model is loaded in the background on first
-        // use so a search never waits for it; until then results simply have no stops.
-        let stops = match st.transit.read().clone() {
-            Some(t) => t.search_stops(&q, near, 5),
-            None => {
-                st.transit_load_background();
-                Vec::new()
-            }
-        };
-        Ok(crate::geocode::merge_with_stops(out, stops, limit))
+        Ok(out)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Coordinates typed in any supported format (decimal, DMS, ITM, UTM, plus codes) or None.
+#[tauri::command]
+pub async fn coords_parse(state: State<'_, Arc<AppState>>, text: String) -> R<Option<crate::coords::ParsedCoord>> {
+    Ok(parse_coords(state.inner(), &text, None))
+}
+
+/// Offline Wikipedia summary of a `wikipedia` tag ("he:Title") or Wikidata id, from the Israel
+/// address index (built with summaries since builder revision 4); None when not available.
+#[tauri::command]
+pub async fn wiki_summary(state: State<'_, Arc<AppState>>, tag: String) -> R<Option<WikiSummary>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || match st.with_geocoder(|g| g.wiki(&tag)) {
+        Ok(v) => Ok(v),
+        Err(e) if e.to_string() == "NO_GEOCODE_DATA" => Ok(None),
+        Err(e) => Err(err(e)),
     })
     .await
     .map_err(err)?
@@ -133,38 +184,4 @@ pub async fn poi_layer(state: State<'_, Arc<AppState>>, cats: Vec<String>, bbox:
     })
     .await
     .map_err(err)?
-}
-
-/// Parse "32.08, 34.78" / "34.78 32.08" (lat,lon preferred when ambiguous) into a coordinate result.
-fn parse_coord(q: &str) -> Option<GeoResult> {
-    let parts: Vec<&str> = q.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let a: f64 = parts[0].parse().ok()?;
-    let b: f64 = parts[1].parse().ok()?;
-    // Israel: lat ~29..34, lon ~34..36. Decide by range.
-    let (lat, lon) = if (29.0..=34.0).contains(&a) && (34.0..=36.0).contains(&b) {
-        (a, b)
-    } else if (29.0..=34.0).contains(&b) && (34.0..=36.0).contains(&a) {
-        (b, a)
-    } else if a.abs() <= 90.0 && b.abs() <= 180.0 {
-        (a, b)
-    } else {
-        return None;
-    };
-    Some(GeoResult {
-        id: format!("coord:{lon},{lat}"),
-        name: format!("{:.5}, {:.5}", lat, lon),
-        kind: GeoKind::Coord,
-        precision: GeoPrecision::Exact,
-        lon,
-        lat,
-        city: None,
-        street: None,
-        house_number: None,
-        category: None,
-        score: 100.0,
-        extra: None,
-    })
 }

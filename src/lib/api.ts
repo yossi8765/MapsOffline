@@ -972,3 +972,9 @@ export const apiR1 = {
 // ===== [R3] =====
 
 // ===== [R4] =====
+/** R4 addition to the contract (declaration merging): one line of kind-specific details of a POI,
+ *  e.g. a charging station's capacity and plug types. */
+export interface GeoResult {
+  extraInfo?: string;
+}
+

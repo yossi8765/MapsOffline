@@ -1,6 +1,7 @@
 //! Extra points of interest from Israel's open-data portal (data.gov.il, CKAN datastore API),
 //! for kinds OpenStreetMap often lacks: kindergartens / day-care / schools, sports facilities,
-//! bank branches, fire stations and declared beaches. Fetched during the Israel geocoder
+//! bank branches, fire stations, declared beaches and the energy ministry's register of fuel
+//! stations (brand, address, phone). Fetched during the Israel geocoder
 //! build and merged into its `pois` (an OSM point of the same category within ~100 m wins).
 //! A dataset that cannot be fetched is skipped; the build never fails because of it.
 use std::time::Duration;
@@ -8,7 +9,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use serde_json::{Map, Value};
 
-use crate::data::orthophoto::itm;
+use super::info::PoiInfo;
+use crate::coords::itm;
 
 const API: &str = "https://data.gov.il/api/3/action/datastore_search";
 /// The portal's content filter answered 418 for very large pages; 5000 passes.
@@ -21,6 +23,8 @@ pub struct ExtPoi {
     pub cat: &'static str,
     pub lon: f64,
     pub lat: f64,
+    /// Details from the register; also completes an OSM point of the same kind nearby.
+    pub info: Option<PoiInfo>,
 }
 
 fn records(client: &reqwest::blocking::Client, resource: &str) -> anyhow::Result<Vec<Map<String, Value>>> {
@@ -91,7 +95,7 @@ fn education(rs: &[Map<String, Value>]) -> Vec<ExtPoi> {
             } else {
                 "school"
             };
-            Some(ExtPoi { name: s(r, "SHEM_MOSAD").to_string(), cat, lon, lat })
+            Some(ExtPoi { name: s(r, "SHEM_MOSAD").to_string(), cat, lon, lat, info: None })
         })
         .collect()
 }
@@ -113,7 +117,7 @@ fn sports(rs: &[Map<String, Value>]) -> Vec<ExtPoi> {
             let (lon, lat) = from_itm(num(r, "ציר X"), num(r, "ציר Y"))?;
             let name = s(r, "שם המתקן");
             let name = if name.is_empty() { kind.split(['–', '-']).next().unwrap_or(kind).trim() } else { name };
-            Some(ExtPoi { name: name.to_string(), cat, lon, lat })
+            Some(ExtPoi { name: name.to_string(), cat, lon, lat, info: None })
         })
         .collect()
 }
@@ -126,7 +130,7 @@ fn banks(rs: &[Map<String, Value>]) -> Vec<ExtPoi> {
             let (lat, lon) = (num(r, "X_Coordinate")?, num(r, "Y_Coordinate")?);
             in_israel(lon, lat).then(|| {
                 let bank = s(r, "Bank_Name").trim_end_matches("בע\"מ").trim();
-                ExtPoi { name: format!("{bank} – סניף {}", s(r, "Branch_Name")), cat: "bank", lon, lat }
+                ExtPoi { name: format!("{bank} – סניף {}", s(r, "Branch_Name")), cat: "bank", lon, lat, info: None }
             })
         })
         .collect()
@@ -137,7 +141,7 @@ fn fire(rs: &[Map<String, Value>]) -> Vec<ExtPoi> {
     rs.iter()
         .filter_map(|r| {
             let (lat, lon) = (num(r, "Geo_Lat")?, num(r, "Geo_Lon")?);
-            in_israel(lon, lat).then(|| ExtPoi { name: format!("תחנת כיבוי והצלה {}", s(r, "Station")), cat: "fire_station", lon, lat })
+            in_israel(lon, lat).then(|| ExtPoi { name: format!("תחנת כיבוי והצלה {}", s(r, "Station")), cat: "fire_station", lon, lat, info: None })
         })
         .collect()
 }
@@ -154,10 +158,53 @@ fn beaches(rs: &[Map<String, Value>]) -> Vec<ExtPoi> {
             };
             let name = s(r, "שם החוף");
             let name = if name.starts_with("חוף") { name.to_string() } else { format!("חוף {name}") };
-            Some(ExtPoi { name, cat: "beach", lon, lat })
+            Some(ExtPoi { name, cat: "beach", lon, lat, info: None })
         })
         .collect()
 }
+
+/// Public fuel stations (Ministry of Energy, "gas-station": company, name, address, WGS84 and
+/// ITM) joined by station number with the register that has the phone ("fuelstationbynumber").
+fn fuel(rs: &[Map<String, Value>], phones: &[Map<String, Value>]) -> Vec<ExtPoi> {
+    let phone_of: rustc_hash::FxHashMap<i64, String> = phones
+        .iter()
+        .filter_map(|r| Some((num(r, "station_number")? as i64, s(r, "telephone").to_string())))
+        .filter(|(_, p)| !p.is_empty())
+        .collect();
+    rs.iter()
+        .filter_map(|r| {
+            let (lon, lat) = match (num(r, "נ.צ. אורך"), num(r, "נ.צ. רוחב")) {
+                (Some(lon), Some(lat)) if in_israel(lon, lat) => (lon, lat),
+                _ => from_itm(num(r, "X"), num(r, "Y"))?,
+            };
+            let company = s(r, "חברה");
+            let station = s(r, "שם_תחנה");
+            let name = match (company.is_empty(), station.is_empty()) {
+                (false, false) if station.starts_with(company) => station.to_string(),
+                (false, false) => format!("{company} {station}"),
+                (false, true) => company.to_string(),
+                (true, _) => station.to_string(),
+            };
+            let town = s(r, "רשות_מקומית");
+            let addr = s(r, "כתובת");
+            let address = match (addr.is_empty(), town.is_empty() || addr.contains(town)) {
+                (true, _) => None,
+                (false, true) => Some(addr.to_string()),
+                (false, false) => Some(format!("{addr}, {town}")),
+            };
+            let info = PoiInfo {
+                brand: (!company.is_empty()).then(|| company.to_string()),
+                address,
+                phone: num(r, "מס_מינהל_הדלק").and_then(|n| phone_of.get(&(n as i64)).cloned()),
+                ..Default::default()
+            };
+            Some(ExtPoi { name, cat: "fuel", lon, lat, info: Some(info) })
+        })
+        .collect()
+}
+
+const FUEL_STATIONS: &str = "5537a0ef-3eeb-449c-90c8-51e27564f0cb";
+const FUEL_PHONES: &str = "ff3b653c-d268-4eb7-a86b-6de69e77043a";
 
 type Parser = fn(&[Map<String, Value>]) -> Vec<ExtPoi>;
 
@@ -184,6 +231,19 @@ pub fn fetch_all(report: &dyn Fn(&str)) -> Vec<ExtPoi> {
             }
             Err(e) => log::warn!("data.gov.il {label} skipped: {e:#}"),
         }
+    }
+    report("מוריד נקודות עניין מ-data.gov.il: תחנות דלק");
+    match records(&client, FUEL_STATIONS) {
+        Ok(rs) => {
+            let phones = records(&client, FUEL_PHONES).unwrap_or_else(|e| {
+                log::warn!("data.gov.il fuel phones skipped: {e:#}");
+                Vec::new()
+            });
+            let pts = fuel(&rs, &phones);
+            log::info!("data.gov.il fuel stations: {} records → {} points", rs.len(), pts.len());
+            out.extend(pts);
+        }
+        Err(e) => log::warn!("data.gov.il fuel stations skipped: {e:#}"),
     }
     out
 }
@@ -287,5 +347,15 @@ mod tests {
 
         let sp = sports(&[rec(json!({"סוג מתקן": "בריכת שחיה - 25X12.5 מ'", "שם המתקן": "בריכה עירונית", "ציר X": "210525", "ציר Y": "634529"}))]);
         assert_eq!(sp[0].cat, "swimming_pool");
+
+        let f = fuel(
+            &[rec(json!({"מס_מינהל_הדלק": 878, "חברה": "טן", "שם_תחנה": "טבריה", "כתובת": "רח' ויצמן", "רשות_מקומית": "טבריה", "X": 247265, "Y": 742945, "נ.צ. אורך": 35.50056731, "נ.צ. רוחב": 32.78044499}))],
+            &[rec(json!({"station_number": 878, "telephone": "04-6737146"}))],
+        );
+        assert_eq!(f[0].name, "טן טבריה");
+        let i = f[0].info.as_ref().unwrap();
+        assert_eq!(i.brand.as_deref(), Some("טן"));
+        assert_eq!(i.phone.as_deref(), Some("04-6737146"));
+        assert_eq!(i.address.as_deref(), Some("רח' ויצמן, טבריה"));
     }
 }

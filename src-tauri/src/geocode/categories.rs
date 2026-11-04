@@ -188,6 +188,29 @@ const LEXICON: &[(&str, &[&str])] = &[
     ("חוף ים", &["beach"]),
     ("חוף רחצה", &["beach"]),
     ("מעיין", &["spring"]),
+    ("מעיינות", &["spring"]),
+    ("תצפיות", &["viewpoint"]),
+    ("חניון לילה", &["camp_site"]),
+    ("חניוני לילה", &["camp_site"]),
+    ("קמפינג", &["camp_site"]),
+    ("חניון קמפינג", &["camp_site"]),
+    // facilities & emergency
+    ("שירותים ציבוריים", &["toilets"]),
+    ("שירותי ציבור", &["toilets"]),
+    ("בית שימוש", &["toilets"]),
+    ("טואלט", &["toilets"]),
+    ("ברזייה", &["drinking_water"]),
+    ("ברזיה", &["drinking_water"]),
+    ("ברזיית", &["drinking_water"]),
+    ("מי שתייה", &["drinking_water"]),
+    ("מקלט", &["shelter"]),
+    ("מקלט ציבורי", &["shelter"]),
+    ("מקלטים", &["shelter"]),
+    ("דפיברילטור", &["defibrillator"]),
+    ("דפיברילטורים", &["defibrillator"]),
+    ("מכשיר החייאה", &["defibrillator"]),
+    ("מסגדים", &["place_of_worship:muslim"]),
+    ("כנסיות", &["place_of_worship:christian"]),
     ("תצפית", &["viewpoint"]),
     ("נקודת תצפית", &["viewpoint"]),
     ("מצפה", &["viewpoint", "observatory"]),
@@ -268,6 +291,11 @@ pub fn label(cat: &str) -> String {
         "beach" => "חוף",
         "peak" => "פסגה",
         "spring" => "מעיין",
+        "camp_site" => "חניון לילה",
+        "toilets" => "שירותים ציבוריים",
+        "drinking_water" => "ברזייה",
+        "shelter" => "מקלט",
+        "defibrillator" => "דפיברילטור",
         "monument" => "אנדרטה",
         "memorial" => "אנדרטת זיכרון",
         "archaeological_site" => "אתר ארכאולוגי",
@@ -420,5 +448,15 @@ mod tests {
         assert!(matches("place_of_worship:jewish", &["place_of_worship:jewish"]));
         assert!(!matches("place_of_worship:muslim", &["place_of_worship:jewish"]));
         assert!(!matches("school", &["place_of_worship"]));
+        assert_eq!(label("defibrillator"), "דפיברילטור");
+        assert_eq!(label("drinking_water"), "ברזייה");
+    }
+
+    #[test]
+    fn new_categories() {
+        for (q, c) in [("ברזייה", "drinking_water"), ("דפיברילטור", "defibrillator"), ("מקלט", "shelter"), ("חניון לילה", "camp_site"), ("שירותים ציבוריים", "toilets"), ("מסגדים", "place_of_worship:muslim")] {
+            let m = detect(&t(q)).unwrap_or_else(|| panic!("{q}"));
+            assert!(m.cats.contains(&c), "{q}: {:?}", m.cats);
+        }
     }
 }

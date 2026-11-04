@@ -3,6 +3,7 @@
 // and builders take many plain parameters; callback types are spelled out where used).
 #![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub mod commands;
+pub mod coords;
 pub mod data;
 pub mod error;
 pub mod logging;
@@ -188,6 +189,9 @@ pub fn run() {
             commands::geo::geocode_search,
             commands::geo::geocode_reverse,
             commands::geo::poi_layer,
+            commands::geo::geocode_batch,
+            commands::geo::coords_parse,
+            commands::geo::wiki_summary,
             // [R4] new commands above
         ])
         .build(tauri::generate_context!())

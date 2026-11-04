@@ -52,13 +52,33 @@ fn join_day_lists(raw: &str) -> String {
     out
 }
 
+/// Parsed values by raw text: "open now" over a category in a wide area evaluates thousands of
+/// POIs, and most of them share a few dozen distinct values. Unreadable values are cached as None.
+/// The map is emptied when it grows past [`CACHE_MAX`] (a cheap bound instead of a full LRU).
+static PARSED: std::sync::OnceLock<parking_lot::Mutex<rustc_hash::FxHashMap<String, Option<std::sync::Arc<OpeningHours>>>>> = std::sync::OnceLock::new();
+const CACHE_MAX: usize = 20_000;
+
+fn parsed(raw: &str) -> Option<std::sync::Arc<OpeningHours>> {
+    let m = PARSED.get_or_init(Default::default);
+    if let Some(v) = m.lock().get(raw) {
+        return v.clone();
+    }
+    let v = join_day_lists(raw).parse::<OpeningHours>().ok().map(std::sync::Arc::new);
+    let mut g = m.lock();
+    if g.len() >= CACHE_MAX {
+        g.clear();
+    }
+    g.insert(raw.to_string(), v.clone());
+    v
+}
+
 /// Evaluate `raw` at `now`. Changes more than 8 days away are not reported.
 pub fn eval(raw: &str, now: NaiveDateTime) -> HoursNow {
     let raw = raw.trim();
     if raw.is_empty() || raw.len() > 400 {
         return HoursNow::default();
     }
-    let Ok(oh) = join_day_lists(raw).parse::<OpeningHours>() else { return HoursNow::default() };
+    let Some(oh) = parsed(raw) else { return HoursNow::default() };
     let (kind, _) = oh.state(now);
     let horizon = now + chrono::Duration::days(8);
     let next = oh.next_change(now).filter(|t| *t <= horizon);
