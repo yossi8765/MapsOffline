@@ -297,12 +297,14 @@ export function sortTransit(routes: Route[], pref: TransitPreference, timeKind: 
   const time = (a: Route, b: Route) => (timeKind === "arrive" ? departure(b) - departure(a) : arrival(a) - arrival(b)) || a.durationSec - b.durationSec;
   const transfers = (r: Route) => Math.max(0, r.legs.filter((l) => l.kind === "transit").length - 1);
   const walk = (r: Route) => r.legs.filter((l) => l.kind === "walk").reduce((m, l) => m + l.distanceM, 0);
+  // "fastest" = the shortest trip (what the "fastest" tag marks too), not the earliest arrival:
+  // a 58-minute trip that leaves later beats an 82-minute one that arrives a little earlier
   const by =
     pref === "fewestTransfers"
       ? (a: Route, b: Route) => transfers(a) - transfers(b) || time(a, b)
       : pref === "leastWalking"
         ? (a: Route, b: Route) => walk(a) - walk(b) || time(a, b)
-        : time;
+        : (a: Route, b: Route) => a.durationSec - b.durationSec || time(a, b);
   return [...routes].sort(by);
 }
 
