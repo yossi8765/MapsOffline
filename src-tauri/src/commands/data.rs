@@ -511,12 +511,12 @@ pub async fn read_text_file(path: String) -> R<String> {
     let p = std::path::PathBuf::from(&path);
     let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     if !p.is_absolute() || !matches!(ext.as_deref(), Some("gpx" | "kml" | "geojson" | "json")) {
-        return Err(err("INVALID_PATH: only absolute .gpx / .kml / .geojson / .json files"));
+        return Err(AppError::from("INVALID_PATH: only absolute .gpx / .kml / .geojson / .json files"));
     }
     tauri::async_runtime::spawn_blocking(move || -> R<String> {
         let len = std::fs::metadata(&p).map_err(err)?.len();
         if len > 50 * 1024 * 1024 {
-            return Err(err("INVALID_PATH: file larger than 50 MB"));
+            return Err(AppError::from("INVALID_PATH: file larger than 50 MB"));
         }
         std::fs::read_to_string(&p).map_err(err)
     })
