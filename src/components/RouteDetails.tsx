@@ -527,7 +527,7 @@ function MoreMenu({ items, onClose }: { items: { label: string; icon: typeof Cop
     };
   }, [onClose]);
   return (
-    <div ref={ref} role="menu" className="absolute bottom-full mb-1 end-0 z-30 popover rounded-[var(--radius)] py-1 min-w-48 fade-in">
+    <div ref={ref} role="menu" className="absolute top-full mt-1 end-0 z-30 popover rounded-[var(--radius)] py-1 min-w-48 fade-in">
       {items.map((it) => (
         <button
           key={it.label}
@@ -570,24 +570,7 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
 
   return (
     <div className={clsx("flex flex-col gap-3", embedded ? "pt-1" : "fade-in pt-2")}>
-      {!embedded && <h2 className="section-label m-0">{t("steps")}</h2>}
-      <div className={clsx(embedded ? "-mx-3" : "card overflow-hidden", route.mode !== "transit" && "[&_li+li]:border-t [&_li+li]:border-line")}>
-        {route.mode === "transit" ? (
-          <div className="flex flex-col p-3">
-            {route.legs.map((leg, i) => (leg.transit ? <TransitLeg key={i} route={route} leg={leg} legIndex={i} /> : <WalkLeg key={i} route={route} leg={leg} legIndex={i} />))}
-          </div>
-        ) : (
-          route.legs.map((leg, i) => (
-            <div key={i}>
-              {route.legs.length > 1 && <div className={clsx("px-3 py-1.5 text-xs font-semibold text-muted bg-surface-2 num", i > 0 && "border-t border-line")}>{`${i + 1}/${route.legs.length}`}</div>}
-              <StepsList route={route} leg={leg} legIndex={i} />
-            </div>
-          ))
-        )}
-      </div>
-      <ElevationProfile route={route} />
-      <TransitDelays route={route} />
-      {/* command bar (WinUI CommandBar): the main action, three labelled commands, "more" */}
+      {/* command bar (WinUI CommandBar) first: "start navigation" must be at hand, not after a long step list */}
       {route.mode !== "transit" && (
         <button className="btn btn-primary w-full no-print" onClick={() => void st().startNavigation(route.id)}>
           <Icon as={Navigation} className="rtl:-scale-x-100" /> {t("navStart")}
@@ -610,6 +593,23 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
         </Tip>
         {more && <MoreMenu items={moreItems} onClose={() => setMore(false)} />}
       </div>
+      {!embedded && <h2 className="section-label m-0">{t("steps")}</h2>}
+      <div className={clsx(embedded ? "-mx-3" : "card overflow-hidden", route.mode !== "transit" && "[&_li+li]:border-t [&_li+li]:border-line")}>
+        {route.mode === "transit" ? (
+          <div className="flex flex-col p-3">
+            {route.legs.map((leg, i) => (leg.transit ? <TransitLeg key={i} route={route} leg={leg} legIndex={i} /> : <WalkLeg key={i} route={route} leg={leg} legIndex={i} />))}
+          </div>
+        ) : (
+          route.legs.map((leg, i) => (
+            <div key={i}>
+              {route.legs.length > 1 && <div className={clsx("px-3 py-1.5 text-xs font-semibold text-muted bg-surface-2 num", i > 0 && "border-t border-line")}>{`${i + 1}/${route.legs.length}`}</div>}
+              <StepsList route={route} leg={leg} legIndex={i} />
+            </div>
+          ))
+        )}
+      </div>
+      <ElevationProfile route={route} />
+      <TransitDelays route={route} />
     </div>
   );
 }
