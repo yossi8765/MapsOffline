@@ -257,7 +257,14 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     if !canon.starts_with(&dir) || canon != ok_path || sha256_file(&canon)? != ok_hash {
         bail!("UPDATE_FILE_INVALID");
     }
-    std::process::Command::new(&canon).spawn().with_context(|| format!("starting {}", canon.display()))?;
+    // Tauri NSIS flags, as RAF's "/VERYSILENT /RELAUNCH": /P = passive (a small progress window,
+    // no pages or questions), /UPDATE = the old version's uninstaller runs in update mode, which
+    // never deletes app data (the "delete app data" choice is skipped), /R = start the app again
+    // when the install is done. The data folder itself is outside the install folder anyway.
+    std::process::Command::new(&canon)
+        .args(["/P", "/UPDATE", "/R"])
+        .spawn()
+        .with_context(|| format!("starting {}", canon.display()))?;
     Ok(())
 }
 
