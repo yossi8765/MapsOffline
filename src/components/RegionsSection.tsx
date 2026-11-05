@@ -259,7 +259,7 @@ export function RegionsSection() {
   const [locating, setLocating] = useState(false);
   useEffect(() => {
     const text = query.trim();
-    if (text.length < 2 || !pickerOpen || tab !== "geofabrik") {
+    if (text.length < 2 || !pickerOpen) {
       setPlaces(null);
       return;
     }
@@ -386,6 +386,36 @@ export function RegionsSection() {
       return n;
     });
   const allObf = obfList ?? [];
+  // A place found by name (Nominatim: "ניו יורק", "Paris"…) → the OsmAnd files for it: its
+  // regions (smallest first) are matched by name against the OsmAnd file names, and the most
+  // specific region that has a file wins ("New York" state → "Us new-york").
+  const norm = (s: string) =>
+    ` ${s
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[-_'.,()]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()} `;
+  const obfPlaces = useMemo(() => {
+    if (tab !== "osmand" || !places?.length || !obfList) return [];
+    const files = obfList.map((e) => ({ e, n: norm(e.name) }));
+    const out: { place: RegionLocate; files: ObfCatalogEntry[] }[] = [];
+    for (const pl of places) {
+      for (const id of pl.regions) {
+        const r = byId.get(id);
+        if (!r || r.parent === null) continue; // a whole continent is not a file
+        const n = norm(r.name);
+        const hits = files.filter((f) => f.n.includes(n)).map((f) => f.e);
+        if (hits.length) {
+          out.push({ place: pl, files: hits.slice(0, 12) });
+          break;
+        }
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, places, obfList, byId]);
   const obfWorldState = groupState(allObf);
   const obfSelected = allObf.filter((e) => obfChecked.has(e.file));
   const obfBytes = obfSelected.reduce((n, e) => n + e.sizeBytes, 0);
@@ -690,7 +720,32 @@ export function RegionsSection() {
                     </button>
                   </div>
                 )}
-                {obfList && q && obfTree.length === 0 && <p className="m-0 px-2 py-3 text-xs text-muted">{t("regNoResults")}</p>}
+                {obfList && q && (locating || obfPlaces.length > 0) && (
+                  <div className="flex flex-col gap-1 pb-2 mb-1 border-b border-line">
+                    <div className="px-2 pt-1 text-xs text-muted">{locating && !places ? t("regLocating") : t("regPlaces")}</div>
+                    {obfPlaces.map(({ place, files }, i) => (
+                      <div key={i} className="px-2 py-1.5 flex flex-col gap-1.5">
+                        <div className="text-sm">
+                          <span className="font-medium">{place.name}</span>
+                          {place.detail && <span className="text-xs text-muted"> · {place.detail}</span>}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="text-xs text-muted">{t("regDownloadOne")}</span>
+                          {files.map((f) => (
+                            <button key={f.file} type="button" className="choice" aria-pressed={obfChecked.has(f.file)} onClick={() => setObf([f], !obfChecked.has(f.file))}>
+                              {obfLabel(f)}{" "}
+                              <bdi dir="ltr" className="num text-muted">
+                                {fmtBytes(f.sizeBytes)}
+                              </bdi>
+                              {installedIds.has(f.regionId) && " ✓"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {obfList && q && obfTree.length === 0 && !locating && obfPlaces.length === 0 && <p className="m-0 px-2 py-3 text-xs text-muted">{t("regNoResults")}</p>}
                 {obfTree.map((c) => {
                   const contFiles = c.groups.flatMap((g) => g.files);
                   const cKey = `obf:${c.key}`;
