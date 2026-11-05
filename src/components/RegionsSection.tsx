@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, FileUp, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, FileUp, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import clsx from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   api,
   errorText,
@@ -604,7 +605,15 @@ export function RegionsSection() {
 
       {pickerOpen && (
         <div className="group-list fade-in">
-          <div className="px-3 pt-2.5 text-xs text-muted">{t(tab === "geofabrik" ? "regTabDownload" : "regTabOsmand")}</div>
+          <div className="px-3 pt-2.5 flex items-center justify-between gap-2">
+            <span className="text-xs text-muted">{t(tab === "geofabrik" ? "regTabDownload" : "regTabOsmand")}</span>
+            {/* OsmAnd's own list in the browser; a file saved there comes in with "import an OsmAnd file" */}
+            {tab === "osmand" && (
+              <button className="btn btn-sm btn-ghost text-accent" onClick={() => void openUrl("https://download.osmand.net/list").catch((e) => useStore.getState().toastError(e))}>
+                <ExternalLink size={14} strokeWidth={1.75} /> {t("regOsmandBrowser")}
+              </button>
+            )}
+          </div>
           <div className="px-3 py-2.5 flex items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <Search size={14} strokeWidth={1.75} className="absolute top-1/2 -translate-y-1/2 start-2.5 text-muted pointer-events-none" />
