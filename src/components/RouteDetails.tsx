@@ -569,16 +569,20 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
       },
     },
     { label: t("saveRoute"), icon: Star, run: () => void st().saveRouteFavorite() },
-    ...(route.mode !== "transit" ? [{ label: t("navSimulate"), icon: Car, run: () => setSimPick(true) }] : []),
   ];
 
   return (
     <div className={clsx("flex flex-col gap-3", embedded ? "pt-1" : "fade-in pt-2")}>
       {/* command bar (WinUI CommandBar) first: "start navigation" must be at hand, not after a long step list */}
       {route.mode !== "transit" && (
-        <button className="btn btn-primary w-full no-print" onClick={() => void st().startNavigation(route.id)}>
-          <Icon as={Navigation} className="rtl:-scale-x-100" /> {t("navStart")}
-        </button>
+        <div className="flex items-center gap-2 no-print">
+          <button className="btn btn-primary flex-1" onClick={() => void st().startNavigation(route.id)}>
+            <Icon as={Navigation} className="rtl:-scale-x-100" /> {t("navStart")}
+          </button>
+          <button className={clsx("btn", simPick && "btn-primary")} aria-expanded={simPick} onClick={() => setSimPick((v) => !v)}>
+            <Icon as={Car} /> {t("navSimulate")}
+          </button>
+        </div>
       )}
       <div className="flex items-center gap-1 no-print relative" role="toolbar" aria-label={t("routeActions")}>
         <button className="btn btn-ghost btn-sm flex-1" onClick={() => void exportRoute(`${safe}.gpx`, "gpx", routeToGpx(route, name), t)}>

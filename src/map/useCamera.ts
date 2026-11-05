@@ -12,6 +12,15 @@ function panelPad(): number {
   return w && w > 0 ? Math.round(w) + 24 : 480;
 }
 
+/** Navigation: how long after the user's last pan / zoom the camera follows the vehicle again. */
+const FOLLOW_RESUME_MS = 5000;
+const RESUME_GLIDE_MS = 800;
+
+/** Navigation camera padding: the vehicle sits in the lower part of the view. */
+function followPadding(map: maplibregl.Map) {
+  return { top: Math.round(map.getContainer().clientHeight * 0.4), bottom: 0, left: 0, right: 0 };
+}
+
 /**
  * Camera reactions to the store: fly-to requests, fitting new routes, the "N" shortcut, tilting
  * for 3D buildings, and following the vehicle while navigating (heading-up, tilted; back to
@@ -86,6 +95,45 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
   const shown = useRef<{ at: LonLat; bearing: number } | null>(null);
   const lastFixAt = useRef(0);
   const frame = useRef(0);
+  // The user may pan / zoom / rotate while navigating: following pauses and comes back on its own
+  // FOLLOW_RESUME_MS after the last touch of the map (with a short glide back to the vehicle).
+  const pausedUntil = useRef(0);
+  const resumeTimer = useRef(0);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !navigating) return;
+    const follow = () => {
+      const s = shown.current;
+      if (!s || useStore.getState().navigation?.manualStep != null) return;
+      // the glide back must not be cut by the per-frame jumpTo
+      pausedUntil.current = performance.now() + RESUME_GLIDE_MS;
+      map.easeTo({ center: s.at, bearing: s.bearing, pitch: 50, zoom: 17, padding: followPadding(map), duration: RESUME_GLIDE_MS });
+    };
+    const touched = () => {
+      pausedUntil.current = performance.now() + FOLLOW_RESUME_MS;
+      window.clearTimeout(resumeTimer.current);
+      resumeTimer.current = window.setTimeout(follow, FOLLOW_RESUME_MS);
+    };
+    // the wheel / trackpad gestures (lib/gestures.ts) move the map without an originalEvent,
+    // so listen on the canvas itself; MapLibre's own handlers and zoom buttons carry one
+    const el = map.getCanvasContainer();
+    const byUser = (e: { originalEvent?: unknown }) => {
+      if (e.originalEvent) touched();
+    };
+    el.addEventListener("pointerdown", touched);
+    el.addEventListener("wheel", touched, { passive: true });
+    map.on("move", byUser);
+    map.on("zoomstart", byUser);
+    return () => {
+      el.removeEventListener("pointerdown", touched);
+      el.removeEventListener("wheel", touched);
+      map.off("move", byUser);
+      map.off("zoomstart", byUser);
+      window.clearTimeout(resumeTimer.current);
+      pausedUntil.current = 0;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigating, mapReady]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -125,9 +173,10 @@ export function useCamera(mapRef: RefObject<maplibregl.Map | null>, mapReady: bo
       shown.current = { at, bearing };
       meOverlay.showSnapped(map, at, vehicle, bearing);
       // browsing steps by hand: the vehicle still moves, the camera stays on the shown step
-      if (useStore.getState().navigation?.manualStep == null) {
+      // the user moving the map pauses following for a few seconds
+      if (useStore.getState().navigation?.manualStep == null && performance.now() >= pausedUntil.current) {
         // keep the vehicle in the lower part of the view, as navigation apps do
-        map.jumpTo({ center: at, bearing, pitch: 50, zoom: 17, padding: { top: Math.round(map.getContainer().clientHeight * 0.4), bottom: 0, left: 0, right: 0 } });
+        map.jumpTo({ center: at, bearing, pitch: 50, zoom: 17, padding: followPadding(map) });
       }
       if (k < 1) frame.current = requestAnimationFrame(step);
     };
