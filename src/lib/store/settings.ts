@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS: Settings = {
   transitPreference: "fastest",
   usePrebuiltData: true,
   mapSource: "standard",
+  kohanimLevel: 0,
   transitReliability: true,
   navVoice: true,
   navVoiceNiqqud: true,
@@ -53,10 +54,11 @@ export function avoidDefaults(s: Settings): Avoid {
     hardTurns: s.avoidHardTurns,
     areaA: s.avoidAreas !== "none",
     areaB: s.avoidAreas === "ab",
+    kohanim: s.kohanimLevel ?? 0,
   };
 }
 
-const NAV_SETTING_KEYS: (keyof Settings)[] = ["avoidTolls", "avoidAreas", "avoidMotorways", "avoidFerries", "unpaved", "avoidHardTurns"];
+const NAV_SETTING_KEYS: (keyof Settings)[] = ["avoidTolls", "avoidAreas", "avoidMotorways", "avoidFerries", "unpaved", "avoidHardTurns", "kohanimLevel"];
 
 export interface SettingsSlice {
   settingsLoaded: boolean;

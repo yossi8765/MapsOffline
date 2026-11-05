@@ -60,7 +60,7 @@ pub fn target_paths(paths: &DataPaths, target: &str) -> Vec<PathBuf> {
         "regions" => std::fs::read_dir(paths.regions_dir()).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default(),
         "areas" => vec![super::sat_areas::dir(paths)],
         "downloads" => vec![paths.downloads_dir()],
-        "cache" => vec![paths.usercache_dir(), paths.satellite_dir().join("live")],
+        "cache" => vec![paths.usercache_dir(), paths.satellite_dir().join("live"), paths.root.join("kohanim")],
         "personal" => {
             let h = paths.history_db();
             let mut v = vec![paths.userlayers_dir()];

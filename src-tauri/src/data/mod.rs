@@ -5,6 +5,7 @@ pub mod components;
 pub mod disk;
 pub mod download;
 pub mod jobs;
+pub mod kohanim;
 pub mod manifest;
 pub mod minyanim;
 pub mod obf_import;

@@ -78,6 +78,18 @@ export interface Avoid {
   polygons?: LonLat[][];
   /** bike / foot: prefer flatter ways (uses the DEM sampled into graph v7). */
   hills?: boolean;
+  /** Route for kohanim: 0 off, 1 basic, 2 Tahara of Kohanim standard, 3 strict (local engine). */
+  kohanim?: number;
+}
+
+/** An area a kohen must not pass (gps.hakohanim.org), level 1 = basic, 2 = association, 3 = strict. */
+export interface KohanimArea {
+  level: number;
+  name: string;
+  city: string;
+  street: string;
+  description: string;
+  ring: LonLat[];
 }
 
 export type AvoidAreas = "none" | "a" | "ab";
@@ -490,6 +502,8 @@ export interface Settings {
   usePrebuiltData: boolean;
   /** Maps, search and routing for Israel and every country: standard (Protomaps + Geofabrik) or OsmAnd files. */
   mapSource?: "standard" | "osmand";
+  /** Route for kohanim by default: 0 off, 1 basic, 2 association standard, 3 strict. */
+  kohanimLevel?: number;
   /** Show typical line delays from Open Bus Stride (online only). */
   transitReliability: boolean;
   /** live navigation speaks the instructions */
@@ -928,6 +942,8 @@ export const api = {
   regionSize: (id: string) => invoke<RegionSize>("region_size", { id }),
   /** Install or update a region (long running; progress on `region-progress`). Resolves when done. */
   regionInstall: (id: string, parts: RegionPart[], policy?: ConflictPolicy) => invoke<RegionInstallOutcome>("region_install", { id, parts, policy: policy ?? null }),
+  /** Kohanim areas for the map (refreshed from gps.hakohanim.org when old; KOHANIM_NO_DATA without a copy). */
+  kohanimAreas: () => invoke<KohanimArea[]>("kohanim_areas"),
   /** OsmAnd's map list (cached a week). */
   obfCatalog: (refresh = false) => invoke<ObfCatalogEntry[]>("obf_catalog", { refresh }),
   /** Download `file` from OsmAnd's list, or import a local `.obf` / `.obf.zip` at `path`. */

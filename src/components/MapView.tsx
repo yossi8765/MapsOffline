@@ -10,7 +10,7 @@ import { POI_CATEGORIES } from "../lib/poiCategories";
 import { CategoryPicker, LayersButton, LocateButton } from "./CategoryPicker";
 import { fmtCoords, fmtDistance } from "../lib/format";
 import type { StyleSpecification } from "maplibre-gl";
-import { api, apiX, errorCode } from "../lib/api";
+import { api, apiX, errorCode, type KohanimArea } from "../lib/api";
 import { ContextMenu } from "./ContextMenu";
 import { MapHoverCard } from "./MapHoverCard";
 import { NavigationView } from "./NavigationView";
@@ -18,7 +18,7 @@ import { routeImage } from "../lib/mapImage";
 import { setPrintMapProvider } from "../lib/print";
 import { hexColor, mapColors } from "../map/colors";
 import { BUS_ICON, drawBusIcon, loadPoiIcons } from "../map/icons";
-import { addAll, favorites as favOverlay, linePreview as lineOverlay, myLocation as meOverlay, pois as poiOverlay, routes as routeOverlay, transitStops as stopsOverlay, tools, waypoints as wpOverlay } from "../map/overlays";
+import { addAll, favorites as favOverlay, kohanim as kohanimOverlay, linePreview as lineOverlay, myLocation as meOverlay, pois as poiOverlay, routes as routeOverlay, transitStops as stopsOverlay, tools, waypoints as wpOverlay } from "../map/overlays";
 import { bindTrailPopup } from "../map/popups";
 import { toolActive, useHoverCard } from "../map/useHoverCard";
 import { useMapInstance } from "../map/useMapInstance";
@@ -225,6 +225,27 @@ export function MapView() {
     routeOverlay.sync(map, routes, selectedRouteId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routes, selectedRouteId, mapReady, styleLoads]);
+
+  // ---- route for kohanim: the areas the route avoids (loaded once, on first use)
+  const kohanimLevel = useStore((s) => s.avoid.kohanim ?? 0);
+  const [kohanimAreas, setKohanimAreas] = useState<KohanimArea[] | null>(null);
+  useEffect(() => {
+    if (kohanimLevel === 0 || kohanimAreas) return;
+    let alive = true;
+    api
+      .kohanimAreas()
+      .then((a) => alive && setKohanimAreas(a))
+      .catch((e) => alive && useStore.getState().toastError(e));
+    return () => {
+      alive = false;
+    };
+  }, [kohanimLevel, kohanimAreas]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    kohanimOverlay.sync(map, kohanimAreas, kohanimLevel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kohanimAreas, kohanimLevel, mapReady, styleLoads]);
 
   // ---- favorite line preview (+ its live vehicles when online)
   const linePreview = useStore((s) => s.linePreview);

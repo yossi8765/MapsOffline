@@ -185,6 +185,10 @@ pub fn settings_set(app: AppHandle, state: State<'_, Arc<AppState>>, settings: S
 
 /// Clamp values the webview sends to what the program understands.
 fn sanitize_settings(mut s: Settings) -> Settings {
+    s.kohanim_level = s.kohanim_level.min(3);
+    if !matches!(s.map_source.as_str(), "standard" | "osmand") {
+        s.map_source = "standard".into();
+    }
     if !matches!(s.color_scheme.as_str(), "white" | "sky" | "mint" | "lavender" | "peach" | "rose" | "sand" | "aqua") {
         s.color_scheme = crate::types::default_color_scheme();
     }

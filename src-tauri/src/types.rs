@@ -207,12 +207,16 @@ pub struct Avoid {
     /// bike / foot / wheelchair: prefer flatter ways (needs the DEM sampled into graph v7).
     #[serde(default)]
     pub hills: bool,
+    /// Route for kohanim: 0 = off, 1 = basic, 2 = Tahara of Kohanim standard, 3 = strict
+    /// (data::kohanim); the route command turns it into `polygons`. Local engine only.
+    #[serde(default)]
+    pub kohanim: u8,
 }
 
 impl Avoid {
     /// Options only the local engine can honour (online routes ignore them).
     pub fn needs_local(&self) -> bool {
-        !self.points.is_empty() || !self.polygons.is_empty() || self.hills
+        !self.points.is_empty() || !self.polygons.is_empty() || self.hills || self.kohanim > 0
     }
 }
 
@@ -852,6 +856,9 @@ pub struct Settings {
     /// "standard" (Protomaps + Geofabrik OpenStreetMap) | "osmand" (OsmAnd .obf files).
     #[serde(default = "default_map_source")]
     pub map_source: String,
+    /// Route for kohanim by default (route panel): 0 off, 1 basic, 2 association standard, 3 strict.
+    #[serde(default)]
+    pub kohanim_level: u8,
     /// Show how late a line usually is at the boarding stop (Open Bus Stride, online only).
     #[serde(default = "default_true")]
     pub transit_reliability: bool,
@@ -1001,6 +1008,7 @@ impl Default for Settings {
             transit_preference: default_transit_pref(),
             use_prebuilt_data: true,
             map_source: default_map_source(),
+            kohanim_level: 0,
             nav_voice: true,
             nav_voice_niqqud: true,
             nav_sim_speed_kmh: None,

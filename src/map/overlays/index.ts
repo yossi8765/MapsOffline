@@ -4,6 +4,7 @@ import type { StyleSpecification } from "maplibre-gl";
 import { firstSymbolLayer } from "../../lib/mapStyle";
 import { loadPoiIcons } from "../icons";
 import * as favorites from "./favorites";
+import * as kohanim from "./kohanim";
 import * as linePreview from "./linePreview";
 import * as myLocation from "./myLocation";
 import * as pois from "./pois";
@@ -12,7 +13,7 @@ import * as transitStops from "./transitStops";
 import * as tools from "./tools";
 import { cssVar } from "../colors";
 
-export { favorites, linePreview, myLocation, pois, routes, transitStops, tools };
+export { favorites, kohanim, linePreview, myLocation, pois, routes, transitStops, tools };
 export * as waypoints from "./waypoints";
 
 /**
@@ -22,6 +23,7 @@ export * as waypoints from "./waypoints";
  */
 export function addAll(map: maplibregl.Map, dark: boolean, onPoisReady: () => void): void {
   const firstSymbol = firstSymbolLayer(map.getStyle() as StyleSpecification);
+  kohanim.add(map, firstSymbol);
   transitStops.add(map, firstSymbol, dark);
   routes.add(map, firstSymbol, dark);
   linePreview.add(map, firstSymbol, dark);

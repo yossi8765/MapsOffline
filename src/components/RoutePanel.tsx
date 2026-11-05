@@ -357,6 +357,42 @@ export function RoutePanel() {
                 onChange={(v) => setAvoid({ areaA: v, areaB: v && avoidAreasPref !== "a" })}
               />
             )}
+            {mode !== "transit" && (
+              <>
+                <Toggle
+                  label={t("kohanimRoute")}
+                  info={t("kohanimHint")}
+                  checked={(avoid.kohanim ?? 0) > 0}
+                  onChange={(v) => {
+                    // remembered for the next routes; the association's standard to start with
+                    const level = v ? useStore.getState().settings.kohanimLevel || 2 : 0;
+                    setAvoid({ kohanim: level });
+                    void useStore.getState().updateSettings({ kohanimLevel: level });
+                  }}
+                />
+                {(avoid.kohanim ?? 0) > 0 && (
+                  <div className="flex flex-col gap-1.5 fade-in">
+                    <span id="kohanim-level" className="text-sm">
+                      {t("kohanimLevel")}
+                    </span>
+                    <div className="seg seg-sm" role="group" aria-labelledby="kohanim-level">
+                      {([1, 2, 3] as const).map((l) => (
+                        <button
+                          key={l}
+                          aria-pressed={avoid.kohanim === l}
+                          onClick={() => {
+                            setAvoid({ kohanim: l });
+                            void useStore.getState().updateSettings({ kohanimLevel: l });
+                          }}
+                        >
+                          <span>{t(l === 1 ? "kohanimBasic" : l === 2 ? "kohanimAssociation" : "kohanimStrict")}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
             {(avoid.points?.length ?? 0) > 0 && (
               <div className="row justify-between">
                 <span>{t("avoidedRoads").replace("{n}", String(avoid.points!.length))}</span>

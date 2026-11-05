@@ -202,6 +202,7 @@ pub fn run() {
             // [R1] new commands above
             // ---- R2 routing + navigation (commands/route.rs, commands/nav.rs)
             commands::route::route,
+            commands::route::kohanim_areas,
             commands::route::optimize_order,
             commands::route::elevation_profile,
             commands::nav::locate,

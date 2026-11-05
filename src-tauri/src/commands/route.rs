@@ -40,6 +40,19 @@ pub async fn route(state: State<'_, Arc<AppState>>, req: RouteRequest) -> R<Rout
 /// Requests only the local engine can answer (truck, wheelchair, avoided roads / areas, hills)
 /// go to it directly.
 pub fn route_hybrid(st: &AppState, req: &RouteRequest, settings: &Settings) -> R<RouteResponse> {
+    // route for kohanim: the association's areas of the chosen level become avoided polygons
+    // (local engine only: online services cannot avoid them)
+    if req.avoid.kohanim == 0 || req.mode == Mode::Transit {
+        return route_hybrid_inner(st, req, settings);
+    }
+    let areas = crate::data::kohanim::load(&st.paths(), settings.routing_mode != "offline").map_err(err)?;
+    let mut r = req.clone();
+    r.avoid.polygons.extend(crate::data::kohanim::rings_for(&areas, req.avoid.kohanim.min(3)));
+    // no way around the areas (e.g. the destination is on a forbidden street): say so
+    route_hybrid_inner(st, &r, settings).map_err(|e| if e.code.starts_with("NO_ROUTE") { AppError::new("KOHANIM_NO_ROUTE", e.message) } else { e })
+}
+
+fn route_hybrid_inner(st: &AppState, req: &RouteRequest, settings: &Settings) -> R<RouteResponse> {
     let mode = settings.routing_mode.as_str();
     if mode != "offline" && crate::online::supports(req) {
         match crate::online::route(req, settings) {
@@ -91,6 +104,19 @@ pub fn route_hybrid(st: &AppState, req: &RouteRequest, settings: &Settings) -> R
         }
     }
     route_offline(st, req)
+}
+
+/// The kohanim areas (Tahara of Kohanim association) for the map: levels 1..=3, outer rings.
+/// Refreshed from the site when old and going online is allowed; KOHANIM_NO_DATA without any copy.
+#[tauri::command]
+pub async fn kohanim_areas(state: State<'_, Arc<AppState>>) -> R<Vec<crate::data::kohanim::Area>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let online = st.settings.read().routing_mode != "offline";
+        crate::data::kohanim::load(&st.paths(), online).map_err(err)
+    })
+    .await
+    .map_err(err)?
 }
 
 pub fn route_offline(st: &AppState, req: &RouteRequest) -> R<RouteResponse> {
