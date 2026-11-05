@@ -86,6 +86,14 @@ export function DataPanel() {
   const busyComps = new Set<DataComponent>([...(status?.active ?? []), ...(status?.queued ?? [])]);
   const queuedComps = new Set<DataComponent>(status?.queued ?? []);
   const present = DATA_COMPONENTS.filter((c) => status?.[c]?.present);
+  // One download feeding several components (OSM extract → routing + addresses + trails, OsmAnd's
+  // file → map + routing + addresses) reports the same bytes to each: name the others, so the
+  // same "x / y MB" on three cards reads as one file and not three.
+  const sharedDownload = (c: DataComponent): DataComponent[] => {
+    const p = progress[c];
+    if (!p || p.phase !== "downloading" || !p.total) return [];
+    return DATA_COMPONENTS.filter((o) => o !== c && progress[o]?.phase === "downloading" && progress[o]?.total === p.total);
+  };
   const anyPresent = present.length > 0;
   const [advanced, setAdvanced] = useState(false);
   // Components excluded from the next export (everything installed is included by default).
@@ -374,6 +382,7 @@ export function DataPanel() {
               onUpdate={() => void startUpdate([c])}
               onCancel={() => void cancelUpdate(c)}
               onPause={(p) => void pauseUpdate(p)}
+              sharedWith={sharedDownload(c)}
               extra={
                 c === "satellite" ? (
                   <div className="flex flex-col gap-1.5 mt-1.5">
@@ -592,6 +601,7 @@ function ComponentCard({
   onCancel,
   onPause,
   extra,
+  sharedWith,
 }: {
   id: DataComponent;
   st?: ComponentStatus;
@@ -609,6 +619,8 @@ function ComponentCard({
   onPause: (paused: boolean) => void;
   /** Extra controls under the description (satellite source and quality), behind "options". */
   extra?: React.ReactNode;
+  /** other components fed by the same download running right now (OSM extract, OsmAnd file) */
+  sharedWith?: DataComponent[];
 }) {
   const t = useT();
   const m = META[id];
@@ -702,7 +714,15 @@ function ComponentCard({
           ) : (
             <>
               <div className="flex justify-between gap-2 text-xs mb-1.5">
-                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active ? (showPaused ? t("phasePaused") : waiting ? t("phaseWaitingSharedHint") : prog.message || t(PHASE_KEY[prog.phase])) : t(PHASE_KEY[prog.phase])}</span>
+                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active
+                    ? showPaused
+                      ? t("phasePaused")
+                      : waiting
+                        ? t("phaseWaitingSharedHint")
+                        : sharedWith?.length
+                          ? `${t("sharedDownload")} ${sharedWith.map((o) => t(META[o].label)).join(", ")}: ${prog.message || t(PHASE_KEY[prog.phase])}`
+                          : prog.message || t(PHASE_KEY[prog.phase])
+                    : t(PHASE_KEY[prog.phase])}</span>
                 {pct !== null && active && <span className="text-muted num shrink-0">{pct}%</span>}
               </div>
               {active && (

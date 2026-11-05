@@ -801,7 +801,16 @@ function InstalledCard({
 
 function ProgressBlock({ title, prog, onCancel }: { title?: string; prog?: PartProgress; onCancel?: () => void }) {
   const t = useT();
-  const entries = PARTS.map((p) => prog?.[p]).filter((p): p is RegionProgress => !!p);
+  const all = PARTS.map((p) => prog?.[p]).filter((p): p is RegionProgress => !!p);
+  // parts fed by one download (the OSM extract for search + routing, an OsmAnd file for all
+  // three) report the same bytes: one bar named after all of them instead of identical bars
+  const shared = (p: RegionProgress) => p.phase === "downloading" && p.total > 0;
+  const entries: (RegionProgress & { parts: RegionPart[] })[] = [];
+  for (const p of all) {
+    const same = shared(p) ? entries.find((e) => shared(e) && e.total === p.total) : undefined;
+    if (same) same.parts.push(p.part);
+    else entries.push({ ...p, parts: [p.part] });
+  }
   return (
     <div className={clsx("flex flex-col gap-2 fade-in", title && "px-3 py-3")}>
       {title && <div className="text-base font-semibold">{title}</div>}
@@ -813,7 +822,7 @@ function ProgressBlock({ title, prog, onCancel }: { title?: string; prog?: PartP
           <div key={p.part}>
             <div className="flex justify-between gap-2 text-xs mb-1.5">
               <span className={clsx(p.phase === "failed" ? "text-danger whitespace-normal break-words" : "text-muted truncate")}>
-                {t(PART_LABEL[p.part])}
+                {p.parts.length > 1 ? `${t("sharedDownloadOf")} ${p.parts.map((x) => t(PART_LABEL[x])).join(", ")}` : t(PART_LABEL[p.part])}
                 {": "}
                 {p.phase === "failed" ? `${t("phaseFailed")}${p.message ? ` - ${p.message}` : ""}` : p.message || t(p.phase === "queued" ? "phaseQueued" : "phaseDownloading")}
               </span>
