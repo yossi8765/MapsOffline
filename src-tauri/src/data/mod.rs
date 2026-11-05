@@ -446,7 +446,23 @@ pub fn update(
             return fin.skipped(c);
         }
         let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
-        fin.finish(c, job(paths, &progress, &rep.cancel));
+        let r = job(paths, &progress, &rep.cancel);
+        // The map, world map and elevation come from servers without an SLA (Protomaps builds,
+        // the volunteers' Mapterhorn): when they fail, the weekly ready-made package on GitLab
+        // holds the same file – take it from there before reporting a failure. (The govmap
+        // imagery is never in the package.)
+        let mirrored = matches!(c, DataComponent::Tiles | DataComponent::World | DataComponent::Terrain) && !(c == DataComponent::Tiles && settings.osmand_source());
+        if let Err(e) = &r {
+            if mirrored && !rep.cancel.is_cancelled() {
+                log::warn!("{c:?} from its server failed ({e:#}); trying the ready-made package");
+                rep.report(ProgressPhase::Processing, 0, 0, "השרת לא זמין – מוריד את העותק מחבילת הנתונים המוכנה");
+                // install() records the version and reports Done itself
+                if prebuilt::install(paths, &[c], &emit, cancel).contains(&c) {
+                    return;
+                }
+            }
+        }
+        fin.finish(c, r);
     };
 
     std::thread::scope(|outer| {

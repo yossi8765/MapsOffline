@@ -290,6 +290,9 @@ pub(crate) fn run_extract(
     drop(tx);
 
     let mut tail: Vec<String> = Vec::new();
+    // pmtiles writes its fatal error right after the progress bar, often on the same line:
+    // keep the last lines of every kind for the error message
+    let mut last_lines: Vec<String> = Vec::new();
     let mut last_pct = 0u64;
     let mut last_emit = Instant::now();
     let status = loop {
@@ -311,6 +314,12 @@ pub(crate) fn run_extract(
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(line) => {
                 let line = line.trim().to_string();
+                if !line.is_empty() {
+                    last_lines.push(line.clone());
+                    if last_lines.len() > 3 {
+                        last_lines.remove(0);
+                    }
+                }
                 if let Some(p) = parse_percent(&line) {
                     if p != last_pct || last_emit.elapsed() >= Duration::from_secs(2) {
                         last_pct = p;
@@ -334,7 +343,17 @@ pub(crate) fn run_extract(
     }
     if !status.success() {
         let _ = std::fs::remove_file(tmp);
-        bail!("pmtiles extract failed ({status}): {}", tail.join(" | "));
+        // the reason is in the last lines (a network error after the progress bar); the log lines
+        // before it only say what was being fetched
+        let mut why: Vec<String> = tail.iter().filter(|l| !l.contains("extract.go:4")).cloned().collect();
+        for l in last_lines {
+            if !why.contains(&l) {
+                why.push(l);
+            }
+        }
+        let why: Vec<String> = why.into_iter().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        log::warn!("pmtiles extract failed ({status}); output tail: {}", tail.join(" | "));
+        bail!("pmtiles extract failed ({status}): {}", why.join(" | "));
     }
     Ok(())
 }
