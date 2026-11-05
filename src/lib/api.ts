@@ -807,6 +807,44 @@ export interface InstalledRegion {
   updatedIso: string | null;
   /** an install / update of this region is running */
   busy: boolean;
+  /** null = downloaded here (Geofabrik / Protomaps), "osmand" = imported OsmAnd .obf file */
+  source: string | null;
+}
+
+/** Same area as an installed country: replace it, keep both (the smaller area is used first), or skip the new one. */
+export type ConflictPolicy = "replace" | "keepBoth" | "skip";
+
+export interface RegionConflict {
+  id: string;
+  name: string;
+  source: string | null;
+}
+
+/** One map of OsmAnd's list (download.osmand.net). */
+export interface ObfCatalogEntry {
+  file: string;
+  name: string;
+  continent: string;
+  country: string;
+  sizeBytes: number;
+  contentBytes: number;
+  date: string;
+  regionId: string;
+}
+
+export interface RegionInstallOutcome {
+  id: string;
+  skipped: boolean;
+  replaced: string[];
+  conflicts: RegionConflict[];
+}
+
+export interface ObfImportOutcome {
+  id: string;
+  name: string;
+  skipped: boolean;
+  replace: string[];
+  conflicts: RegionConflict[];
 }
 
 /** fastest = earliest arrival ("arrive by": latest departure); shortest = the shortest trip. */
@@ -887,7 +925,12 @@ export const api = {
   regionsInstalled: () => invoke<InstalledRegion[]>("regions_installed"),
   regionSize: (id: string) => invoke<RegionSize>("region_size", { id }),
   /** Install or update a region (long running; progress on `region-progress`). Resolves when done. */
-  regionInstall: (id: string, parts: RegionPart[]) => invoke<void>("region_install", { id, parts }),
+  regionInstall: (id: string, parts: RegionPart[], policy?: ConflictPolicy) => invoke<RegionInstallOutcome>("region_install", { id, parts, policy: policy ?? null }),
+  /** OsmAnd's map list (cached a week). */
+  obfCatalog: (refresh = false) => invoke<ObfCatalogEntry[]>("obf_catalog", { refresh }),
+  /** Download `file` from OsmAnd's list, or import a local `.obf` / `.obf.zip` at `path`. */
+  obfInstall: (src: { file?: string; path?: string }, policy?: ConflictPolicy) =>
+    invoke<ObfImportOutcome>("obf_install", { file: src.file ?? null, path: src.path ?? null, policy: policy ?? null }),
   regionCancel: (id: string) => invoke<void>("region_cancel", { id }),
   regionDelete: (id: string) => invoke<void>("region_delete", { id }),
   onRegionProgress: (cb: (p: RegionProgress) => void) => listen<RegionProgress>("region-progress", (e) => cb(e.payload)),

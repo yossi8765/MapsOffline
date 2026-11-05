@@ -83,6 +83,8 @@ enum Cmd {
     Check,
     /// Bring the local OSM extract up to date – daily Geofabrik diffs when possible – without rebuilding
     OsmUpdate,
+    /// OsmAnd files: `obf info <file.obf[.zip]>`, `obf pbf <file.obf[.zip]> <out.osm.pbf>`
+    Obf { action: String, args: Vec<String> },
     /// Pack installed data into one .mapsdata file (all components, or only the listed ones)
     Export {
         dest: String,
@@ -296,6 +298,28 @@ fn main() -> anyhow::Result<()> {
                     };
                     regions::install(&paths, id, &parts, &emit, &data::Cancel::default())?;
                     println!("installed {id} in {:?}", t0.elapsed());
+                }
+                // region import-obf <file.obf|file.obf.zip> [--keep-both|--skip]
+                "import-obf" => {
+                    let file = args.first().ok_or_else(|| anyhow::anyhow!("OsmAnd file missing"))?;
+                    let policy = if args.iter().any(|a| a == "--keep-both") {
+                        mapsoffline_lib::types::ConflictPolicy::KeepBoth
+                    } else if args.iter().any(|a| a == "--skip") {
+                        mapsoffline_lib::types::ConflictPolicy::Skip
+                    } else {
+                        mapsoffline_lib::types::ConflictPolicy::Replace
+                    };
+                    let t0 = std::time::Instant::now();
+                    let emit = |p: mapsoffline_lib::types::RegionProgress| {
+                        let pct = if p.total > 0 { format!("{:5.1}%", p.done as f64 * 100.0 / p.total as f64) } else { "     ".into() };
+                        eprintln!("[{} {:?}] {:?} {} {}", p.id, p.part, p.phase, pct, p.message);
+                    };
+                    let id = data::obf_import::region_id(file);
+                    let out = data::obf_import::import(&paths, std::path::Path::new(file), &id, policy, &emit, &data::Cancel::default())?;
+                    for r in &out.replace {
+                        regions::delete(&paths, r)?;
+                    }
+                    println!("{out:?} in {:?}", t0.elapsed());
                 }
                 "delete" => regions::delete(&paths, args.first().ok_or_else(|| anyhow::anyhow!("region id missing"))?)?,
                 "search" => {
@@ -630,6 +654,37 @@ fn main() -> anyhow::Result<()> {
                         println!("  -> {} [{} -> {}] {} min, {} departures: {} ...", d.headsign, d.from_stop, d.to_stop, d.duration_sec / 60, d.departures.len(), times.join(" "));
                     }
                 }
+            }
+        }
+        Cmd::Obf { action, args } => {
+            use mapsoffline_lib::obf::{map::MapSource, reader::ObfFile};
+            let file = args.first().ok_or_else(|| anyhow::anyhow!("obf {action} <file>"))?;
+            let work = std::env::temp_dir().join("mapsoffline-obf");
+            let t0 = std::time::Instant::now();
+            let obf = ObfFile::open_auto(std::path::Path::new(file), &work)?;
+            match action.as_str() {
+                "info" => {
+                    println!("{} (\"{}\"), version {}, created {}", obf.raw_name(), obf.display_name(), obf.version, obf.date_created);
+                    println!("bbox {:?}", obf.bbox());
+                    for s in &obf.sections {
+                        println!("  {:?} {:?} {:.1} MB at {}", s.kind, s.name, s.span.len() as f64 / 1e6, s.span.start);
+                    }
+                    for l in obf.levels() {
+                        println!("  map level z{}-{}", l.min_zoom, l.max_zoom);
+                    }
+                    println!("opened in {:?}", t0.elapsed());
+                }
+                "pbf" => {
+                    let out = args.get(1).ok_or_else(|| anyhow::anyhow!("obf pbf <file> <out.pbf>"))?;
+                    let progress = |_: ProgressPhase, d: u64, t: u64, m: &str| -> bool {
+                        eprintln!("{d}/{t} {m}");
+                        true
+                    };
+                    let s = mapsoffline_lib::obf::to_pbf::convert(&obf, std::path::Path::new(out), &progress)?;
+                    println!("{s:#?}
+in {:?}", t0.elapsed());
+                }
+                other => anyhow::bail!("unknown obf action {other} (info | pbf)"),
             }
         }
         Cmd::OsmUpdate => {

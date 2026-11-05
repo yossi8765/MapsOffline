@@ -101,15 +101,21 @@ pub fn connectivity() -> bool {
         }
     }
     static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
-    let client = CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent(crate::data::download::USER_AGENT)
-            .connect_timeout(Duration::from_millis(1500))
-            .timeout(Duration::from_millis(1500))
-            .build()
-            .ok()
-    });
-    let ok = client.as_ref().is_some_and(|c| c.head(PROBE_URL).send().is_ok());
+    // reqwest's blocking client must not be built or used on a tokio thread (the command runs on
+    // one): it panicked there on every call, so the app always believed it was offline – and the
+    // startup update check, which asks this first, never ran. A plain thread is safe.
+    let probe = || {
+        let client = CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent(crate::data::download::USER_AGENT)
+                .connect_timeout(Duration::from_millis(1500))
+                .timeout(Duration::from_millis(1500))
+                .build()
+                .ok()
+        });
+        client.as_ref().is_some_and(|c| c.head(PROBE_URL).send().is_ok())
+    };
+    let ok = std::thread::spawn(probe).join().unwrap_or(false);
     *LAST.lock() = Some((Instant::now(), ok));
     ok
 }

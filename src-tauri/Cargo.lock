@@ -2473,6 +2473,7 @@ dependencies = [
  "jpeg-encoder",
  "log",
  "md-5",
+ "memmap2",
  "opening-hours",
  "osmpbf",
  "parking_lot",

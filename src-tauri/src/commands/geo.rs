@@ -75,6 +75,9 @@ fn search_all(st: &Arc<AppState>, query: &str, near: Option<LonLat>, limit: usiz
             None => false,
         });
     }
+    // the same area installed twice (e.g. from Geofabrik and from OsmAnd, "keep both"): one
+    // result per name and place
+    dedupe_results(&mut out);
     // Transit stops by name / stop code. The model is loaded in the background on first
     // use so a search never waits for it; until then results simply have no stops.
     let stops = match st.transit.read().clone() {
@@ -90,6 +93,19 @@ fn search_all(st: &Arc<AppState>, query: &str, near: Option<LonLat>, limit: usiz
         return Err(AppError::from("NO_GEOCODE_DATA"));
     }
     Ok(merged)
+}
+
+/// Drop results with the same name (and house number) as an earlier one less than ~40 m away.
+fn dedupe_results(v: &mut Vec<GeoResult>) {
+    let mut kept: Vec<GeoResult> = Vec::with_capacity(v.len());
+    for r in v.drain(..) {
+        let near = |a: &GeoResult| (a.lat - r.lat).abs() < 0.0004 && ((a.lon - r.lon) * r.lat.to_radians().cos()).abs() < 0.0004;
+        let dup = kept.iter().any(|a| near(a) && a.name.eq_ignore_ascii_case(&r.name) && a.house_number == r.house_number);
+        if !dup {
+            kept.push(r);
+        }
+    }
+    *v = kept;
 }
 
 #[tauri::command]

@@ -1044,6 +1044,51 @@ pub struct InstalledRegion {
     pub routing: RegionPartStatus,
     pub updated_iso: Option<String>,
     pub busy: bool,
+    /// None = downloaded here (Geofabrik / Protomaps), "osmand" = imported OsmAnd file
+    pub source: Option<String>,
+}
+
+/// What to do when a new country covers the same area as one already installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictPolicy {
+    /// delete the installed one(s) once the new one is ready
+    #[default]
+    Replace,
+    /// keep both; the smaller (more specific) area is used first, then the newer
+    KeepBoth,
+    /// do not install the new one
+    Skip,
+}
+
+/// One entry of OsmAnd's map list (download.osmand.net).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObfCatalogEntry {
+    /// file name on the server, e.g. "Burundi_africa_2.obf.zip"
+    pub file: String,
+    /// readable name from the file name ("Us california san-diego")
+    pub name: String,
+    /// continent key from the file name: africa, asia, europe, northamerica, …
+    pub continent: String,
+    /// first word of the name (groups the parts of a split country: "Germany", "Us")
+    pub country: String,
+    /// download size (zip) and unpacked size in bytes
+    pub size_bytes: u64,
+    pub content_bytes: u64,
+    /// server date "DD.MM.YYYY"
+    pub date: String,
+    /// region id the import would use ("osmand/burundi_africa")
+    pub region_id: String,
+}
+
+/// An installed country that covers the same area as a candidate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionConflict {
+    pub id: String,
+    pub name: String,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

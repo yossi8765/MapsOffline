@@ -416,6 +416,19 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
   };
   let ls: LayerSpecification[] = applyTheme(withoutItalic(layers("protomaps", flavor, { lang: o.lang })), o.theme ?? "standard", o.flavor === "dark", flavor.earth);
   if (!o.poi) ls = ls.filter((l) => l.id !== "pois");
+  // House numbers: the basemap draws them at 12 px from zoom 18 only, hard to make out – larger,
+  // medium weight, a wider halo, and from zoom 17
+  const addr = ls.find((l) => l.id === "address_label");
+  if (addr && addr.type === "symbol") {
+    addr.minzoom = 17;
+    addr.layout = {
+      ...addr.layout,
+      "text-font": ["Noto Sans Medium"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 17, 12, 18, 14, 20, 17],
+      "text-padding": 1,
+    };
+    addr.paint = { ...addr.paint, "text-halo-width": 1.6 };
+  }
   // Road numbers as Israeli signs (as in hebrew-maps): freeways blue, 1-2 digit roads red,
   // 3 digit green, 4 digit white with a black frame; a rounded badge with the inner white frame
   // of the real signs, the number drawn into the image. MapView's missing-image resolver draws

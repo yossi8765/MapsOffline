@@ -13,6 +13,7 @@ pub mod history;
 pub mod location;
 pub mod map_tiles;
 pub mod nav;
+pub mod obf;
 pub mod voice;
 pub mod app_update;
 pub mod online_tiles;
@@ -156,6 +157,8 @@ pub fn run() {
             commands::data::region_install,
             commands::data::region_cancel,
             commands::data::region_delete,
+            commands::data::obf_catalog,
+            commands::data::obf_install,
             commands::data::map_tiles_available,
             commands::data::save_text_file,
             commands::data::read_text_file,

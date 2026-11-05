@@ -77,6 +77,8 @@ env_logger = { version = "0.11", default-features = false, features = ["humantim
 rstar = "0.12"
 rayon = "1"
 rustc-hash = "2"
+# OsmAnd .obf import: the (multi-GB) file is memory-mapped (already in the tree via other crates)
+memmap2 = "0.5"
 clap = { version = "4", optional = true, default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 dirs = "6"
 unicode-normalization = "0.1"

@@ -6,8 +6,10 @@ pub mod download;
 pub mod jobs;
 pub mod manifest;
 pub mod minyanim;
+pub mod obf_import;
 pub mod orthophoto;
 pub mod osmdiff;
+pub mod pbf_writer;
 pub mod prebuilt;
 pub mod regions;
 pub mod package;
@@ -341,7 +343,7 @@ impl Finisher<'_> {
             Ok(version) => {
                 let _g = self.manifest_lock.lock();
                 match manifest::Manifest::record(self.paths, c, version) {
-                    Ok(()) => ev(ProgressPhase::Done, 1, 1, "הושלם".into()),
+                    Ok(()) => ev(ProgressPhase::Done, 1, 1, "׳”׳•׳©׳׳".into()),
                     Err(e) => {
                         ev(ProgressPhase::Failed, 0, 0, format!("{e:#}"));
                         self.errors.lock().push(e);
@@ -518,7 +520,7 @@ fn update_rest(
             let src = h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("download thread panicked"))).map_err(|e| format!("{e:#}"));
             for &c in &osm_comps[1..] {
                 if src.is_ok() && !cancel.is_cancelled_for(c) {
-                    emit(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: "ממתין לעיבוד".into() });
+                    emit(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: "׳׳׳×׳™׳ ׳׳¢׳™׳‘׳•׳“".into() });
                 }
             }
             if wants(DataComponent::Routing) {
@@ -550,7 +552,7 @@ fn update_rest(
             match src {
                 // the timetable is the one transit.bin was built from: nothing to download or build
                 Ok(GtfsSource::Unchanged(v)) if !cancel.is_cancelled_for(DataComponent::Transit) => {
-                    emit(DataProgress { component: DataComponent::Transit, phase: ProgressPhase::Processing, done: 1, total: 1, message: "הקובץ כבר מעודכן".into() });
+                    emit(DataProgress { component: DataComponent::Transit, phase: ProgressPhase::Processing, done: 1, total: 1, message: "׳”׳§׳•׳‘׳¥ ׳›׳‘׳¨ ׳׳¢׳•׳“׳›׳".into() });
                     fin.finish(DataComponent::Transit, Ok(Some(build_tag(DataComponent::Transit, &v))));
                 }
                 src => {

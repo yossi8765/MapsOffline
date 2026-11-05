@@ -50,6 +50,82 @@ struct RegionMeta {
     #[serde(default)]
     routing_version: Option<String>,
     updated_iso: Option<String>,
+    /// where the data came from: None = Geofabrik + Protomaps (downloaded here), "osmand" = an
+    /// imported OsmAnd `.obf` file (its map is built here, so it has no Protomaps sidecar)
+    #[serde(default)]
+    source: Option<String>,
+    /// version of a map built here (OsmAnd imports: "obf YYYY-MM-DD")
+    #[serde(default)]
+    map_version: Option<String>,
+}
+
+/// Facts of a country imported from an OsmAnd file (written by `obf_import`).
+pub struct OsmandMeta<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub bbox: [f64; 4],
+    pub version: &'a str,
+    pub map: bool,
+    pub search: bool,
+    pub routing: bool,
+}
+
+/// Write `region.json` (and an outline = the bbox) for a country imported from an OsmAnd file.
+pub fn write_osmand_meta(paths: &DataPaths, m: &OsmandMeta) -> anyhow::Result<()> {
+    anyhow::ensure!(valid_region_id(m.id), "invalid region id {:?}", m.id);
+    let dir = paths.region_dir(m.id);
+    std::fs::create_dir_all(&dir)?;
+    let [w, s, e, n] = m.bbox;
+    let outline = serde_json::json!({"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]});
+    std::fs::write(dir.join("region.geojson"), serde_json::to_vec(&outline)?)?;
+    let v = Some(m.version.to_string());
+    let meta = RegionMeta {
+        id: m.id.to_string(),
+        name: m.name.to_string(),
+        iso: None,
+        bbox: m.bbox,
+        search_version: v.clone().filter(|_| m.search),
+        routing_version: v.clone().filter(|_| m.routing),
+        updated_iso: Some(chrono::Local::now().to_rfc3339()),
+        source: Some("osmand".into()),
+        map_version: v.filter(|_| m.map),
+    };
+    write_meta(&dir, &meta)
+}
+
+/// Area of a lon/lat box in square degrees scaled by cos(latitude) (only compared, never shown).
+fn box_area(b: &[f64; 4]) -> f64 {
+    let lat = ((b[1] + b[3]) / 2.0).to_radians().cos().abs().max(0.05);
+    ((b[2] - b[0]).max(0.0)) * ((b[3] - b[1]).max(0.0)) * lat
+}
+
+fn box_intersection(a: &[f64; 4], b: &[f64; 4]) -> [f64; 4] {
+    [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])]
+}
+
+/// Do two boxes describe the same area? (the overlap covers most of the larger one: a country
+/// from Geofabrik and the same country from OsmAnd; a state inside its country is not "the same")
+pub fn same_area(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    let i = box_intersection(a, b);
+    if i[0] >= i[2] || i[1] >= i[3] {
+        return false;
+    }
+    let big = box_area(a).max(box_area(b));
+    big > 0.0 && box_area(&i) / big >= 0.6
+}
+
+/// Installed countries covering the same area as `bbox` (see [`same_area`]), other than `except`:
+/// (id, name, source). Israel's built-in data counts as id "israel".
+pub fn same_area_regions(paths: &DataPaths, bbox: &[f64; 4], except: &str) -> Vec<(String, String, Option<String>)> {
+    let mut v: Vec<_> = metas(paths)
+        .iter()
+        .filter(|(_, m)| m.id != except && same_area(&m.bbox, bbox))
+        .map(|(_, m)| (m.id.clone(), m.name.clone(), m.source.clone()))
+        .collect();
+    if same_area(&crate::paths::BBOX_ISRAEL, bbox) {
+        v.push(("israel".into(), "Israel".into(), Some("builtin".into())));
+    }
+    v
 }
 
 fn catalog_file(paths: &DataPaths) -> PathBuf {
@@ -370,7 +446,8 @@ pub fn installed(paths: &DataPaths, busy: &dyn Fn(&str) -> bool) -> Vec<Installe
         let Some(m) = read_meta(&dir) else { continue };
         let entry = RegionEntry { id: m.id.clone(), parent: None, name: m.name.clone(), iso: m.iso.clone(), bbox: m.bbox, builtin: false };
         let ex = map_extract(&dir, &entry);
-        let map_version = ex.installed_build();
+        // an OsmAnd import builds its own map: no Protomaps sidecar to check
+        let map_version = if m.source.as_deref() == Some("osmand") { m.map_version.clone().filter(|_| ex.file.exists()) } else { ex.installed_build() };
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let gf = geocode_file(&dir);
         let rf = graph_file(&dir);
@@ -384,6 +461,7 @@ pub fn installed(paths: &DataPaths, busy: &dyn Fn(&str) -> bool) -> Vec<Installe
             iso: m.iso,
             bbox: m.bbox,
             updated_iso: m.updated_iso,
+            source: m.source,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -399,7 +477,9 @@ pub fn ready_maps(paths: &DataPaths) -> Vec<(String, PathBuf, [f64; 4])> {
             v.push((m.id.clone(), f, m.bbox));
         }
     }
-    v.sort_by(|a, b| a.0.cmp(&b.0));
+    // the tile server takes a tile from the first archive that has it: the most specific
+    // (smallest) country first, so a state imported inside its country shows its own map
+    v.sort_by(|a, b| box_area(&a.2).total_cmp(&box_area(&b.2)).then_with(|| a.0.cmp(&b.0)));
     v
 }
 

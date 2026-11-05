@@ -583,10 +583,49 @@ pub async fn region_size(state: State<'_, Arc<AppState>>, id: String) -> R<crate
     tauri::async_runtime::spawn_blocking(move || crate::data::regions::size(&paths, &id).map_err(err)).await.map_err(err)?
 }
 
+/// Result of installing a country: skipped (same area already installed, policy Skip) and the
+/// countries removed because the new one replaced them.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionInstallOutcome {
+    pub id: String,
+    pub skipped: bool,
+    pub replaced: Vec<String>,
+    pub conflicts: Vec<crate::types::RegionConflict>,
+}
+
 /// Install / update a country's map and / or search index; progress on `region-progress`.
+/// `policy` (default Replace) decides what happens when an installed country (e.g. one imported
+/// from OsmAnd) covers the same area.
 #[tauri::command]
-pub async fn region_install(app: AppHandle, state: State<'_, Arc<AppState>>, id: String, parts: Vec<crate::types::RegionPart>) -> R<()> {
+pub async fn region_install(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    parts: Vec<crate::types::RegionPart>,
+    policy: Option<crate::types::ConflictPolicy>,
+) -> R<RegionInstallOutcome> {
+    use crate::types::ConflictPolicy;
     let st = state.inner().clone();
+    let policy = policy.unwrap_or_default();
+    // the same area from another source (an update of this very country is not a conflict)
+    let (paths, id0) = (st.paths(), id.clone());
+    let conflicts: Vec<crate::types::RegionConflict> = tauri::async_runtime::spawn_blocking(move || {
+        crate::data::regions::find(&paths, &id0)
+            .map(|f| {
+                crate::data::regions::same_area_regions(&paths, &f.entry.bbox, &id0)
+                    .into_iter()
+                    .filter(|(_, _, s)| s.as_deref() != Some("builtin"))
+                    .map(|(id, name, source)| crate::types::RegionConflict { id, name, source })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(err)?;
+    if !conflicts.is_empty() && policy == ConflictPolicy::Skip {
+        return Ok(RegionInstallOutcome { id, skipped: true, replaced: vec![], conflicts });
+    }
     let cancel = crate::data::Cancel::default();
     {
         let mut jobs = st.region_jobs.lock();
@@ -612,23 +651,24 @@ pub async fn region_install(app: AppHandle, state: State<'_, Arc<AppState>>, id:
     })
     .await
     .map_err(err)?;
-    res.map_err(err)
-}
-
-#[tauri::command]
-pub fn region_cancel(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
-    if let Some(c) = state.region_jobs.lock().get(&id) {
-        c.cancel();
+    res.map_err(err)?;
+    let mut replaced = Vec::new();
+    if policy == ConflictPolicy::Replace {
+        for c in &conflicts {
+            if delete_region(&st, &c.id).await.is_ok() {
+                replaced.push(c.id.clone());
+            }
+        }
     }
-    Ok(())
+    Ok(RegionInstallOutcome { id, skipped: false, replaced, conflicts })
 }
 
-#[tauri::command]
-pub async fn region_delete(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
-    let st = state.inner().clone();
-    if st.region_busy(&id) {
+/// Remove a country's folder: out of the map source and the search pools first.
+async fn delete_region(st: &Arc<AppState>, id: &str) -> R<()> {
+    if st.region_busy(id) {
         return Err("REGION_BUSY".into());
     }
+    let (st, id) = (st.clone(), id.to_string());
     tauri::async_runtime::spawn_blocking(move || {
         st.unload_regions();
         // leave the map source first so no request reads the file being removed
@@ -646,6 +686,103 @@ pub async fn region_delete(state: State<'_, Arc<AppState>>, id: String) -> R<()>
     })
     .await
     .map_err(err)?
+}
+
+/// OsmAnd's map list (download.osmand.net), cached for a week.
+#[tauri::command]
+pub async fn obf_catalog(state: State<'_, Arc<AppState>>, refresh: Option<bool>) -> R<Vec<crate::types::ObfCatalogEntry>> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::obf_import::catalog(&paths, refresh.unwrap_or(false)).map_err(err)).await.map_err(err)?
+}
+
+/// Download a map from OsmAnd's list (`file`) or take a local `.obf` / `.obf.zip` (`path`) and
+/// import it as a country. Progress on `region-progress` (id = the new country's id).
+#[tauri::command]
+pub async fn obf_install(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    file: Option<String>,
+    path: Option<String>,
+    policy: Option<crate::types::ConflictPolicy>,
+) -> R<crate::data::obf_import::ImportOutcome> {
+    use crate::types::{ProgressPhase, RegionPart, RegionProgress};
+    let st = state.inner().clone();
+    let policy = policy.unwrap_or_default();
+    let source = match (&file, &path) {
+        (Some(f), _) => f.clone(),
+        (None, Some(p)) => p.clone(),
+        (None, None) => return Err("file or path required".into()),
+    };
+    let id = crate::data::obf_import::region_id(&source);
+    let cancel = crate::data::Cancel::default();
+    {
+        let mut jobs = st.region_jobs.lock();
+        if jobs.contains_key(&id) {
+            return Err("REGION_BUSY".into());
+        }
+        jobs.insert(id.clone(), cancel.clone());
+    }
+    st.refresh_map_files();
+    st.unload_regions();
+    let (st2, id2) = (st.clone(), id.clone());
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let emit = move |p: RegionProgress| {
+            let _ = app.emit("region-progress", p);
+        };
+        let r = (|| -> anyhow::Result<crate::data::obf_import::ImportOutcome> {
+            let paths = st2.paths();
+            let (src, downloaded) = match (&file, &path) {
+                (Some(f), _) => {
+                    let all = |phase: ProgressPhase, done: u64, total: u64, msg: &str| -> bool {
+                        cancel.wait_if_paused();
+                        for part in [RegionPart::Map, RegionPart::Search, RegionPart::Routing] {
+                            emit(RegionProgress { id: id2.clone(), part, phase, done, total, message: msg.to_string() });
+                        }
+                        !cancel.is_cancelled()
+                    };
+                    (crate::data::obf_import::download(&paths, f, &all, &cancel)?, true)
+                }
+                (None, Some(p)) => (std::path::PathBuf::from(p), false),
+                _ => unreachable!(),
+            };
+            let out = crate::data::obf_import::import(&paths, &src, &id2, policy, &emit, &cancel);
+            // a file downloaded here is not needed once imported (a failed import keeps it for a retry)
+            if downloaded && out.is_ok() {
+                let _ = std::fs::remove_file(&src);
+                let _ = std::fs::remove_file(crate::data::download::meta_path(&src));
+            }
+            out
+        })();
+        if let Err(e) = &r {
+            let phase = if cancel.is_cancelled() { ProgressPhase::Cancelled } else { ProgressPhase::Failed };
+            for part in [RegionPart::Map, RegionPart::Search, RegionPart::Routing] {
+                emit(RegionProgress { id: id2.clone(), part, phase, done: 0, total: 0, message: format!("{e:#}") });
+            }
+        }
+        st2.region_jobs.lock().remove(&id2);
+        st2.refresh_map_files();
+        r
+    })
+    .await
+    .map_err(err)?;
+    let out = res.map_err(err)?;
+    for rid in &out.replace {
+        let _ = delete_region(&st, rid).await;
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn region_cancel(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    if let Some(c) = state.region_jobs.lock().get(&id) {
+        c.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn region_delete(state: State<'_, Arc<AppState>>, id: String) -> R<()> {
+    delete_region(state.inner(), &id).await
 }
 
 /// True when the merged map source (`http://mo-map.localhost/{z}/{x}/{y}.mvt`) should be used:
