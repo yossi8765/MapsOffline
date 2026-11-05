@@ -324,11 +324,26 @@ where
 /// Pack the installed components (all when `components` is empty / missing) into one `.mapsdata`
 /// file (for machines without internet).
 #[tauri::command]
-pub async fn data_export(app: AppHandle, state: State<'_, Arc<AppState>>, dest: String, components: Option<Vec<DataComponent>>) -> R<Vec<DataComponent>> {
+pub async fn data_export(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    dest: String,
+    components: Option<Vec<DataComponent>>,
+    regions: Option<Vec<String>>,
+    areas: Option<Vec<String>>,
+) -> R<Vec<DataComponent>> {
     check_user_path(&state, &dest, &["mapsdata"]).map_err(err)?;
-    let only = components.unwrap_or_default();
+    let regions = regions.unwrap_or_default();
+    let area_ids = areas.unwrap_or_default();
+    // missing = every component; an explicit empty list = none (only countries / areas)
+    let want: Vec<DataComponent> = components.unwrap_or_else(|| DataComponent::ALL.to_vec());
+    // countries being installed and areas being downloaded have half-written files
+    let regions: Vec<String> = regions.into_iter().filter(|id| !state.region_busy(id)).collect();
+    let areas: Vec<crate::types::SatelliteArea> =
+        state.settings.read().satellite_areas.iter().filter(|a| area_ids.contains(&a.id) && !crate::data::sat_areas::is_busy(&a.id)).cloned().collect();
+    let extras = crate::data::package::Extras { regions, areas };
     run_package_job(app, state.inner().clone(), move |paths, progress, cancel| {
-        crate::data::package::export(paths, std::path::Path::new(&dest), &only, progress, cancel)
+        crate::data::package::export_with(paths, std::path::Path::new(&dest), &want, &extras, progress, cancel)
     })
     .await
 }
@@ -340,14 +355,55 @@ pub async fn data_import(app: AppHandle, state: State<'_, Arc<AppState>>, src: S
     // Validate before the UI switches into "updating" mode.
     let src_path = std::path::PathBuf::from(&src);
     let p2 = src_path.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::data::package::inspect(&p2).map(|_| ()))
-        .await
-        .map_err(err)?
-        .map_err(err)?;
+    let info = tauri::async_runtime::spawn_blocking(move || crate::data::package::inspect(&p2)).await.map_err(err)?.map_err(err)?;
+    // countries in the package: hidden from the map and the search while their files are
+    // replaced (as during a country install); one already being installed stops the import
+    let ids: Vec<String> = info.regions.iter().filter(|id| crate::data::regions::valid_region_id(id)).cloned().collect();
+    {
+        let mut jobs = st.region_jobs.lock();
+        if ids.iter().any(|id| jobs.contains_key(id)) {
+            return Err("REGION_BUSY".into());
+        }
+        for id in &ids {
+            jobs.insert(id.clone(), crate::data::Cancel::default());
+        }
+    }
+    if !ids.is_empty() {
+        st.refresh_map_files();
+        st.unload_regions();
+    }
+    let extras = Arc::new(parking_lot::Mutex::new(crate::data::package::Extras::default()));
+    let ex2 = extras.clone();
     let res = run_package_job(app.clone(), st.clone(), move |paths, progress, cancel| {
-        crate::data::package::import(paths, &src_path, &[], progress, cancel)
+        let (installed, ex) = crate::data::package::import_with(paths, &src_path, &[], progress, cancel)?;
+        *ex2.lock() = ex;
+        Ok(installed)
     })
     .await;
+    {
+        let mut jobs = st.region_jobs.lock();
+        for id in &ids {
+            jobs.remove(id);
+        }
+    }
+    if !ids.is_empty() {
+        st.refresh_map_files();
+    }
+    // sharp areas: add their definitions to Settings (an area with the same id is replaced)
+    let areas = std::mem::take(&mut extras.lock().areas);
+    if !areas.is_empty() {
+        {
+            let mut s = st.settings.write();
+            for a in areas.into_iter().filter(crate::data::sat_areas::valid) {
+                s.satellite_areas.retain(|x| x.id != a.id);
+                s.satellite_areas.push(a);
+            }
+        }
+        if let Err(e) = st.save_settings() {
+            log::warn!("saving settings after import: {e:#}");
+        }
+        // the frontend reloads Settings after an import
+    }
     match &res {
         Ok(installed) => st.unload(installed),
         Err(_) => st.unload_all(),

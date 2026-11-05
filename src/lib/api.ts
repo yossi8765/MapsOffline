@@ -923,7 +923,10 @@ export const api = {
   dataCheck: () => invoke<DataCheck>("data_check"),
   /** Pack all installed data into one .mapsdata file (for a machine without internet). */
   /** Pack the installed components (all when `components` is omitted) into a .mapsdata file. */
-  dataExport: (dest: string, components?: DataComponent[]) => invoke<DataComponent[]>("data_export", { dest, components: components ?? null }),
+  /** `components` missing = all installed, [] = none; `regions` / `areas` = ids of other countries
+   *  and sharp-imagery areas to pack as well. */
+  dataExport: (dest: string, components?: DataComponent[], regions?: string[], areas?: string[]) =>
+    invoke<DataComponent[]>("data_export", { dest, components: components ?? null, regions: regions ?? null, areas: areas ?? null }),
   /** Install a .mapsdata file into the data directory. */
   dataImport: (src: string) => invoke<DataComponent[]>("data_import", { src }),
   /** Download the full ready-made data package (weekly GitLab build) to `dest`; returns its size. Progress: event `package-download`. */

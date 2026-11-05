@@ -9,7 +9,7 @@ import { InfoBar } from "./InfoBar";
 import { FirstRunCard } from "./FirstRunCard";
 import { SatelliteAreas } from "./SatelliteAreas";
 import { PackageProgress, packageActive, type PackageDl } from "./PackageProgress";
-import { apiX, DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
+import { api, apiX, DATA_COMPONENTS, type ComponentStatus, type DataComponent, type ProgressPhase, type UpdateCheck } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useTauriEvent } from "../lib/useTauriEvent";
 import { useT, type I18nKey } from "../lib/i18n";
@@ -95,24 +95,47 @@ export function DataPanel() {
   const PACK_RATIO: Record<DataComponent, number> = { tiles: 1, world: 1, satellite: 1, terrain: 1, routing: 0.5, geocode: 0.45, transit: 0.35, trails: 0.3, minyanim: 0.2 };
   const rawBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0), 0);
   const estimatedBytes = selected.reduce((n, c) => n + (status?.[c]?.sizeBytes ?? 0) * PACK_RATIO[c], 0);
+  // other countries and sharp-imagery areas on disk (packed too unless switched off)
+  const [extraRegions, setExtraRegions] = useState<{ id: string; bytes: number }[]>([]);
+  const [extraAreas, setExtraAreas] = useState<{ id: string; bytes: number }[]>([]);
+  const [packRegions, setPackRegions] = useState(true);
+  const [packAreas, setPackAreas] = useState(true);
+  useEffect(() => {
+    if (!advanced) return;
+    let alive = true;
+    void Promise.all([api.regionsInstalled().catch(() => []), apiX.satelliteAreasStatus().catch(() => [])]).then(([regs, areas]) => {
+      if (!alive) return;
+      setExtraRegions(regs.filter((r) => !r.busy && (r.map.present || r.search.present)).map((r) => ({ id: r.id, bytes: r.map.sizeBytes + r.search.sizeBytes + r.routing.sizeBytes })));
+      setExtraAreas(areas.filter((a) => a.present && !a.busy && !a.partial).map((a) => ({ id: a.id, bytes: a.sizeBytes })));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [advanced, updating]);
+  const regionIds = packRegions ? extraRegions.map((r) => r.id) : [];
+  const areaIds = packAreas ? extraAreas.map((a) => a.id) : [];
+  const extraBytes = (packRegions ? extraRegions.reduce((n, r) => n + r.bytes, 0) : 0) + (packAreas ? extraAreas.reduce((n, a) => n + a.bytes, 0) : 0);
+  const exportRaw = rawBytes + extraBytes;
+  const exportEstimate = estimatedBytes + extraBytes;
   // the map / imagery / elevation archives are already compressed inside and go in as they are
-  const compresses = estimatedBytes < rawBytes * 0.98;
+  const compresses = exportEstimate < exportRaw * 0.98;
+  const nothingToExport = selected.length === 0 && regionIds.length === 0 && areaIds.length === 0;
 
   const doExport = async () => {
-    if (selected.length === 0) {
+    if (nothingToExport) {
       useStore.getState().toast("error", t("nothingSelected"));
       return;
     }
     try {
       const d = new Date();
       const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      const part = selected.length === present.length ? "" : `-${selected.join("+")}`;
+      const part = selected.length === present.length ? "" : selected.length ? `-${selected.join("+")}` : "-extras";
       const dest = await saveDialog({
         title: t("exportPackage"),
         defaultPath: `MapsOffline${part}-${stamp}.mapsdata`,
         filters: [{ name: t("packageFilter"), extensions: ["mapsdata"] }],
       });
-      if (dest) await exportData(dest, selected.length === present.length ? undefined : selected);
+      if (dest) await exportData(dest, selected.length === present.length ? undefined : selected, regionIds, areaIds);
     } catch (e) {
       toastError(e);
     }
@@ -418,18 +441,18 @@ export function DataPanel() {
                   </div>
                   {pkgOrigin === "transfer" && <PackageProgress ref={pkgTransferRef} pkg={pkg} file={pkgFile} onInstall={pkgFile ? () => void importData(pkgFile) : undefined} />}
                 </div>
-                {anyPresent && (
+                {(anyPresent || extraRegions.length > 0 || extraAreas.length > 0) && (
                   <div className="px-3 py-2.5 flex flex-col gap-2">
                     <div className="flex items-center justify-between gap-2 text-xs text-muted">
                       <span>{t("exportSelectHint")}</span>
                       <span className="num">
                         {compresses ? (
                           <>
-                            {t("exportSizeEstimate")} <bdi dir="ltr">~{fmtBytes(estimatedBytes)}</bdi> ({t("exportSizeRaw")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>)
+                            {t("exportSizeEstimate")} <bdi dir="ltr">~{fmtBytes(exportEstimate)}</bdi> ({t("exportSizeRaw")} <bdi dir="ltr">{fmtBytes(exportRaw)}</bdi>)
                           </>
                         ) : (
                           <>
-                            {t("exportSize")} <bdi dir="ltr">{fmtBytes(rawBytes)}</bdi>
+                            {t("exportSize")} <bdi dir="ltr">{fmtBytes(exportRaw)}</bdi>
                           </>
                         )}
                       </span>
@@ -444,11 +467,23 @@ export function DataPanel() {
                           </button>
                         );
                       })}
+                      {extraRegions.length > 0 && (
+                        <button type="button" className="choice" aria-pressed={packRegions} disabled={updating} onClick={() => setPackRegions((v) => !v)}>
+                          <Icon as={Globe} size={14} />
+                          {t("exportOtherCountries")} <bdi className="num">({extraRegions.length})</bdi>
+                        </button>
+                      )}
+                      {extraAreas.length > 0 && (
+                        <button type="button" className="choice" aria-pressed={packAreas} disabled={updating} onClick={() => setPackAreas((v) => !v)}>
+                          <Icon as={Satellite} size={14} />
+                          {t("exportSharpAreas")} <bdi className="num">({extraAreas.length})</bdi>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
                 <div className="row gap-2">
-                  <button className="btn btn-sm flex-1" disabled={updating || selected.length === 0} onClick={() => void doExport()}>
+                  <button className="btn btn-sm flex-1" disabled={updating || nothingToExport} onClick={() => void doExport()}>
                     <Icon as={PackagePlus} size={14} /> {t("exportPackage")}
                   </button>
                   <button className="btn btn-sm flex-1" disabled={updating} onClick={() => void doImport()}>

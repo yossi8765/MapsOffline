@@ -67,6 +67,8 @@ export function RegionsSection() {
   useEffect(() => {
     void refreshInstalled();
   }, [refreshInstalled]);
+  // a data package may bring countries with it
+  useTauriEvent("data-updated", () => void refreshInstalled());
 
   // Progress events from the backend (one per region and part).
   useTauriEvent<RegionProgress>("region-progress", (p) => {

@@ -12,7 +12,8 @@ export interface DataSlice {
   checkUpdates: (force?: boolean) => Promise<void>;
   setProgress: (p: DataProgress) => void;
   startUpdate: (components: DataComponent[]) => Promise<void>;
-  exportData: (dest: string, components?: DataComponent[]) => Promise<void>;
+  /** `components` missing = all installed, [] = none; plus other countries / sharp areas by id */
+  exportData: (dest: string, components?: DataComponent[], regions?: string[], areas?: string[]) => Promise<void>;
   importData: (src: string) => Promise<void>;
   /** Download the full ready-made data package to `dest`; resolves to true when it finished. */
   downloadPackage: (dest: string) => Promise<boolean>;
@@ -93,11 +94,11 @@ export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
     }
     await get().refreshDataStatus();
   },
-  exportData: async (dest, components) => {
+  exportData: async (dest, components, regions, areas) => {
     const t = get().t;
     set((s) => ({ progress: {}, dataStatus: s.dataStatus && { ...s.dataStatus, updating: true } }));
     try {
-      await api.dataExport(dest, components);
+      await api.dataExport(dest, components, regions, areas);
       get().toast("success", t("exportDone"));
     } catch (e) {
       get().toastError(e);
@@ -129,6 +130,14 @@ export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
     } catch (e) {
       get().toastError(e);
     } finally {
+      // a package may add sharp-imagery areas to Settings (only that field: a full reload would
+      // also reset the map layers)
+      try {
+        const fresh = await api.settingsGet();
+        set((s) => ({ settings: { ...s.settings, satelliteAreas: fresh.satelliteAreas } }));
+      } catch {
+        /* keep the current settings */
+      }
       await get().refreshDataStatus();
       await get().refreshTiles();
       void get().checkUpdates(true);
