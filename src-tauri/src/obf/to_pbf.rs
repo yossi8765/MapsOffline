@@ -252,10 +252,24 @@ pub fn convert(obf: &ObfFile, out_pbf: &Path, progress: ProgressFn) -> Result<Ob
             Ok(())
         })?;
     }
+    // Towns (city / town / village / hamlet) first, then suburbs and neighbourhoods: OsmAnd lists
+    // a building under its town AND its suburb; the suburb copy is dropped (it would show the
+    // suburb as the address's city). Street → town from the towns' street lists, so the roads
+    // below can carry `addr:city` (the geocoder otherwise guesses the nearest town centre, which
+    // puts e.g. a Ramat Gan street into Bnei Brak).
+    let is_town = |c: &crate::obf::address::City| c.kind.is_some_and(|k| k <= 3);
+    let addr_key = |street: &str, n: &str, x: u32, y: u32| (street.to_string(), n.to_string(), x >> 12, y >> 12);
+    let mut seen_addr: FxHashSet<(String, String, u32, u32)> = FxHashSet::default();
+    let mut street_town: FxHashMap<String, Vec<(String, (f64, f64))>> = FxHashMap::default();
+    for towns_pass in [true, false] {
     for a in &addrs {
         a.for_each_city(obf, true, &mut |c| {
             if c.group == 2 {
                 return Ok(()); // postcodes
+            }
+            let town = is_town(&c);
+            if town != towns_pass {
+                return Ok(());
             }
             if let Some(kind) = c.kind.and_then(place_kind) {
                 let pos = (lon31(c.x31), lat31(c.y31));
@@ -277,12 +291,22 @@ pub fn convert(obf: &ObfFile, out_pbf: &Path, progress: ProgressFn) -> Result<Ob
                 }
             }
             let mut put = |street: Option<&str>, n: &str, x: u32, y: u32, pc: Option<&String>| -> Result<()> {
+                if let Some(s) = street {
+                    let k = addr_key(s, n, x, y);
+                    if !town && seen_addr.contains(&k) {
+                        return Ok(()); // the town already has this building
+                    }
+                    if town {
+                        seen_addr.insert(k);
+                    }
+                }
                 let mut t = vec![("addr:housenumber".to_string(), n.to_string())];
                 match street {
                     Some(s) => t.push(("addr:street".into(), s.to_string())),
                     None => t.push(("addr:place".into(), c.name.clone())),
                 }
-                if street.is_some() && !c.name.is_empty() {
+                // a suburb is not the address's town: leave it to the geocoder's nearest town
+                if street.is_some() && town && !c.name.is_empty() {
                     t.push(("addr:city".into(), c.name.clone()));
                 }
                 if let Some(pc) = pc {
@@ -296,6 +320,9 @@ pub fn convert(obf: &ObfFile, out_pbf: &Path, progress: ProgressFn) -> Result<Ob
             };
             for s in &c.streets {
                 let sn = plain_street(&s.name, &place_names);
+                if town && !c.name.is_empty() && !sn.is_empty() {
+                    street_town.entry(sn.to_string()).or_default().push((c.name.clone(), (lon31(s.x31), lat31(s.y31))));
+                }
                 for b in &s.buildings {
                     put(Some(sn), &b.number, b.x31, b.y31, b.postcode.as_ref())?;
                     if let (Some(n2), Some((x2, y2))) = (&b.number2, b.xy2) {
@@ -309,6 +336,18 @@ pub fn convert(obf: &ObfFile, out_pbf: &Path, progress: ProgressFn) -> Result<Ob
             Ok(())
         })?;
     }
+    }
+    drop(seen_addr);
+    // the town of a named road: the nearest street of that name in a town's list (≤ 3 km)
+    let town_of = |name: &str, at: (f64, f64)| -> Option<&str> {
+        street_town
+            .get(name)?
+            .iter()
+            .map(|(t, p)| (t, near_m(at, *p)))
+            .filter(|(_, d)| *d < 3000.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(t, _)| t.as_str())
+    };
 
     // ---- pass B: ways
     prog.at(60, "כותב דרכים")?;
@@ -342,6 +381,12 @@ pub fn convert(obf: &ObfFile, out_pbf: &Path, progress: ProgressFn) -> Result<Ob
                         if !tags.iter().any(|(a, _)| *a == k) {
                             tags.push((k, s.as_str()));
                         }
+                    }
+                }
+                if let Some(name) = tags.iter().find(|(k, _)| *k == "name").map(|(_, v)| *v) {
+                    let mid = rw.points[rw.points.len() / 2];
+                    if let Some(t) = town_of(name, (lon31(mid.0), lat31(mid.1))) {
+                        tags.push(("addr:city", t));
                     }
                 }
                 w.way(way_id, refs.iter().copied(), tags.into_iter())?;

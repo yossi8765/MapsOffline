@@ -353,6 +353,9 @@ struct PlaceRaw {
 struct StreetRaw {
     names: Names,
     refs: Span,
+    /// `addr:city` on the way (OsmAnd imports carry it: their address data knows each street's
+    /// town exactly, which beats the nearest town centre)
+    city: Option<u32>,
 }
 struct AddrRaw {
     street: u32,
@@ -415,12 +418,13 @@ impl State {
             self.places.push(PlaceRaw { names: r.names.clone(), kind, pop, pos, refs: span, info: r.info.clone(), alt: r.alt.clone() });
         }
         if r.street && pos.is_none() {
-            self.streets.push(StreetRaw { names: r.names.clone(), refs: span });
+            let city = r.addr_city.as_deref().map(|c| self.strs.id(c));
+            self.streets.push(StreetRaw { names: r.names.clone(), refs: span, city });
         }
         if pos.is_none() {
             for n in &r.road_refs {
                 let names = Names { he: format!("כביש {n}"), en: format!("Route {n}"), ar: String::new() };
-                self.streets.push(StreetRaw { names, refs: span });
+                self.streets.push(StreetRaw { names, refs: span, city: None });
             }
         }
         if let Some((hn, st)) = r.addr {
@@ -851,6 +855,7 @@ pub fn build_at(
         bbox: [i32; 4], // minlon minlat maxlon maxlat
     }
     let mut accs: FxHashMap<(String, Option<usize>), Acc> = FxHashMap::default();
+    let city_by_name: FxHashMap<&str, usize> = cities.names.iter().enumerate().map(|(i, n)| (n.as_str(), i)).collect();
     for sr in &st.streets {
         let pts = resolve(sr.refs, &st.arena, &needed, &coords);
         if pts.len() < 2 {
@@ -861,7 +866,9 @@ pub fn build_at(
             continue;
         }
         let mid = pts[pts.len() / 2];
-        let city = cities.nearest(mid.0 as f64 / E7, mid.1 as f64 / E7);
+        // a town named on the way itself (OsmAnd imports) wins over the nearest town centre
+        let tagged = sr.city.and_then(|c| city_by_name.get(st.strs.vec[c as usize].as_str()).copied());
+        let city = tagged.or_else(|| cities.nearest(mid.0 as f64 / E7, mid.1 as f64 / E7));
         let simp = simplify(&pts);
         let acc = accs.entry((key, city)).or_insert_with(|| Acc {
             names: sr.names.clone(),

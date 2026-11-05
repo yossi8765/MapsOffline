@@ -96,7 +96,8 @@ export function RegionsSection() {
   const [installed, setInstalled] = useState<InstalledRegion[]>([]);
   const [progress, setProgress] = useState<Record<string, PartProgress>>({});
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [tab, setTab] = useState<Tab>("geofabrik");
+  // one source for every country (Data panel → map source)
+  const tab: Tab = useStore((s) => (s.settings.mapSource === "osmand" ? "osmand" : "geofabrik"));
   const [catalog, setCatalog] = useState<RegionEntry[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -603,13 +604,7 @@ export function RegionsSection() {
 
       {pickerOpen && (
         <div className="group-list fade-in">
-          <div className="px-3 pt-2.5 flex items-center gap-1.5" role="tablist">
-            {(["geofabrik", "osmand"] as const).map((k) => (
-              <button key={k} type="button" role="tab" aria-selected={tab === k} className={clsx("btn btn-sm flex-1", tab === k && "btn-primary")} onClick={() => setTab(k)}>
-                {t(k === "geofabrik" ? "regTabDownload" : "regTabOsmand")}
-              </button>
-            ))}
-          </div>
+          <div className="px-3 pt-2.5 text-xs text-muted">{t(tab === "geofabrik" ? "regTabDownload" : "regTabOsmand")}</div>
           <div className="px-3 py-2.5 flex items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <Search size={14} strokeWidth={1.75} className="absolute top-1/2 -translate-y-1/2 start-2.5 text-muted pointer-events-none" />

@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   avoidHardTurns: true,
   transitPreference: "fastest",
   usePrebuiltData: true,
+  mapSource: "standard",
   transitReliability: true,
   navVoice: true,
   navVoiceNiqqud: true,

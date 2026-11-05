@@ -406,6 +406,11 @@ const he = {
   regBigConfirm: "ההורדה גדולה מאוד, בערך",
   regBigConfirmTail: "ותדרוש זמן רב ומקום רב בדיסק. להמשיך?",
   regNoOsmandFile: "המדינה יובאה מקובץ במחשב; לעדכון יש לייבא קובץ חדש",
+  mapSourceTitle: "מקור המפות",
+  mapSourceHint: "מאיפה מגיעים המפה, החיפוש והניווט – לישראל ולכל המדינות הנוספות. \"רגיל\": מפת Protomaps ונתוני OpenStreetMap מ-Geofabrik, מתעדכנים כל יום. \"OsmAnd\": קבצי המפות של OsmAnd, מתעדכנים בערך פעם בחודש. תחבורה ציבורית, תצלומי אוויר, גובה, שבילים וזמני תפילות לא תלויים במקור. אחרי שינוי יש לעדכן את המפה, הניווט והכתובות.",
+  mapSourceStandard: "רגיל",
+  mapSourceOsmand: "OsmAnd",
+  mapSourceOsmandWarn: "עם OsmAnd אין בניווט הימנעות משטחי A ו-B, ובחיפוש חסרים שמות חלופיים לרחובות ומאגר תחנות הדלק.",
   nothingSelected: "לא נבחר רכיב לייצוא",
 
   exportDone: "חבילת הנתונים נוצרה",
@@ -1464,6 +1469,11 @@ const en: Record<I18nKey, string> = {
   regBigConfirm: "This is a very large download, about",
   regBigConfirmTail: "and will take a long time and a lot of disk space. Continue?",
   regNoOsmandFile: "Imported from a local file; import a new file to update it",
+  mapSourceTitle: "Map source",
+  mapSourceHint: "Where the map, search and routing come from – for Israel and every other country. \"Standard\": Protomaps map and Geofabrik OpenStreetMap data, updated daily. \"OsmAnd\": OsmAnd's map files, updated about monthly. Transit, imagery, elevation, trails and minyanim do not depend on it. After a change, update the map, routing and addresses.",
+  mapSourceStandard: "Standard",
+  mapSourceOsmand: "OsmAnd",
+  mapSourceOsmandWarn: "With OsmAnd, routing cannot avoid Areas A and B, and search lacks alternative street names and the fuel-station register.",
   nothingSelected: "No component selected for export",
 
   exportDone: "Data package created",

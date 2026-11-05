@@ -144,6 +144,32 @@ pub fn catalog(paths: &DataPaths, refresh: bool) -> anyhow::Result<Vec<ObfCatalo
     }
 }
 
+/// OsmAnd's file for Israel (used when Settings.mapSource = "osmand").
+pub const ISRAEL_FILE: &str = "Israel_asia_2.obf.zip";
+
+/// Version of a file in OsmAnd's list: "obf YYYY-MM-DD" from the list's date. `refresh` asks the
+/// server (falling back to the cached list when it cannot be reached).
+pub fn catalog_version(paths: &DataPaths, file: &str, refresh: bool) -> anyhow::Result<String> {
+    let list = catalog(paths, refresh)?;
+    let e = list.iter().find(|e| e.file == file).ok_or_else(|| anyhow!("{file} is not in OsmAnd's list"))?;
+    let p: Vec<&str> = e.date.split('.').collect();
+    match p.as_slice() {
+        [d, m, y] => Ok(format!("obf {y}-{m}-{d}")),
+        _ => Ok(format!("obf {}", e.date)),
+    }
+}
+
+/// The `.obf` inside a downloaded `.obf.zip` (unpacked into `downloads/obf/`); `true` = a
+/// temporary copy the caller deletes when done.
+pub fn unpack(paths: &DataPaths, src: &Path, progress: &dyn Fn(u64, u64) -> bool) -> anyhow::Result<(PathBuf, bool)> {
+    unpacked(paths, src, progress)
+}
+
+/// Work folder for OsmAnd downloads and conversions (`downloads/obf/`).
+pub fn work_folder(paths: &DataPaths) -> PathBuf {
+    work_dir(paths)
+}
+
 /// Download one file of the list into `downloads/obf/` (resumable; cancel stops it).
 pub fn download(paths: &DataPaths, file: &str, progress: crate::types::ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(file.ends_with(".obf.zip") && file.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')), "invalid OsmAnd file name {file:?}");
@@ -343,7 +369,7 @@ pub fn import(
 }
 
 /// The bridge to the OBF reader (`crate::obf`).
-mod adapter {
+pub mod adapter {
     use std::path::Path;
 
     use crate::types::ProgressFn;
@@ -449,6 +475,48 @@ mod tests {
         .unwrap();
         let route = graph.route(&req).unwrap();
         eprintln!("route: {} m, {} s", route.routes[0].distance_m, route.routes[0].duration_sec);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Israel from OsmAnd through the FULL Israel builders (what Settings.mapSource = "osmand" does):
+    /// `MO_OBF_ISRAEL=<Israel_asia_2.obf.zip> cargo test --release --features cli --lib obf_import::tests::real_israel -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_israel() {
+        let src = PathBuf::from(std::env::var("MO_OBF_ISRAEL").expect("MO_OBF_ISRAEL"));
+        let root = std::env::temp_dir().join(format!("mo-obf-israel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = DataPaths::new(root.clone());
+        paths.ensure_dirs().unwrap();
+        let quiet = |_: ProgressPhase, _: u64, _: u64, _: &str| true;
+        let t0 = std::time::Instant::now();
+        let (obf, _) = unpack(&paths, &src, &|_, _| true).unwrap();
+        let pbf = root.join("israel.osm.pbf");
+        adapter::to_pbf(&obf, &pbf, &quiet).unwrap();
+        eprintln!("pbf {} MB in {:?}", std::fs::metadata(&pbf).unwrap().len() >> 20, t0.elapsed());
+        let t1 = std::time::Instant::now();
+        crate::geocode::build(&pbf, &paths.geocode_file(), &quiet).unwrap();
+        eprintln!("geocode {} MB in {:?}", std::fs::metadata(paths.geocode_file()).unwrap().len() >> 20, t1.elapsed());
+        let t2 = std::time::Instant::now();
+        crate::routing::build_graph(&pbf, &paths.graph_file(), &quiet).unwrap();
+        eprintln!("graph {} MB in {:?}", std::fs::metadata(paths.graph_file()).unwrap().len() >> 20, t2.elapsed());
+        let t3 = std::time::Instant::now();
+        adapter::tiles(&obf, &paths.tiles_file(), &quiet).unwrap();
+        eprintln!("tiles {} MB in {:?}", std::fs::metadata(paths.tiles_file()).unwrap().len() >> 20, t3.elapsed());
+        let g = crate::geocode::open(&paths.geocode_file()).unwrap();
+        for q in ["הרצל 12 תל אביב", "יפו 97 ירושלים", "רחוב ביאליק רמת גן", "בית חולים", "תחנת דלק"] {
+            let hits = g.search(q, Some([34.78, 32.08]), 3).unwrap();
+            eprintln!("{q}: {:?}", hits.iter().map(|h| (&h.name, &h.city, h.lon, h.lat)).collect::<Vec<_>>());
+            assert!(!hits.is_empty(), "{q}");
+        }
+        let graph = crate::routing::load_graph(&paths.graph_file()).unwrap();
+        let req: crate::types::RouteRequest = serde_json::from_value(serde_json::json!({
+            "waypoints": [{"lon": 34.7818, "lat": 32.0853}, {"lon": 35.2137, "lat": 31.7683}],
+            "mode": "car", "time": {"kind": "now"}, "avoid": {"areaA": true, "areaB": true}, "alternatives": 0
+        }))
+        .unwrap();
+        let r = graph.route(&req).unwrap();
+        eprintln!("Tel Aviv → Jerusalem: {:.1} km, {:.0} min; areas known: {}", r.routes[0].distance_m / 1000.0, r.routes[0].duration_sec / 60.0, !graph.areas.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

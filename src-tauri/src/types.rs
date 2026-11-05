@@ -848,6 +848,10 @@ pub struct Settings {
     /// Take ready-made components from the project's weekly GitLab build when possible.
     #[serde(default = "default_true")]
     pub use_prebuilt_data: bool,
+    /// Where maps, search and routing come from, for Israel and every other country:
+    /// "standard" (Protomaps + Geofabrik OpenStreetMap) | "osmand" (OsmAnd .obf files).
+    #[serde(default = "default_map_source")]
+    pub map_source: String,
     /// Show how late a line usually is at the boarding stop (Open Bus Stride, online only).
     #[serde(default = "default_true")]
     pub transit_reliability: bool,
@@ -942,6 +946,16 @@ fn default_transit_pref() -> String {
 fn default_sat_source() -> String {
     "govmap".into()
 }
+fn default_map_source() -> String {
+    "standard".into()
+}
+
+impl Settings {
+    /// Maps, search and routing come from OsmAnd files (Israel and the other countries).
+    pub fn osmand_source(&self) -> bool {
+        self.map_source == "osmand"
+    }
+}
 
 pub fn default_transit_api_url() -> String {
     "https://api.transitous.org".into()
@@ -986,6 +1000,7 @@ impl Default for Settings {
             avoid_hard_turns: true,
             transit_preference: default_transit_pref(),
             use_prebuilt_data: true,
+            map_source: default_map_source(),
             nav_voice: true,
             nav_voice_niqqud: true,
             nav_sim_speed_kmh: None,

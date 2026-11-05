@@ -76,6 +76,7 @@ export function DataPanel() {
   const { refreshDataStatus, checkUpdates, startUpdate, cancelUpdate, pauseUpdate, exportData, importData, downloadPackage, toastError, updateSettings } = useStore.getState();
   const satelliteQuality = useStore((s) => s.settings.satelliteQuality);
   const usePrebuilt = useStore((s) => s.settings.usePrebuiltData ?? true);
+  const mapSource = useStore((s) => s.settings.mapSource ?? "standard");
   const satelliteSource = useStore((s) => s.settings.satelliteSource ?? "govmap");
   const ortho = satelliteSource !== "sentinel";
   const updating = !!status?.updating;
@@ -330,6 +331,31 @@ export function DataPanel() {
           ) : null}
           <div className="group-list">
             <Toggle label={t("prebuiltData")} info={t("prebuiltDataHint")} checked={usePrebuilt} onChange={(v) => void updateSettings({ usePrebuiltData: v })} />
+            <div className="px-3 py-2.5 flex flex-col gap-2">
+              <span className="text-sm inline-flex items-center gap-1.5">
+                {t("mapSourceTitle")}
+                <InfoTip text={t("mapSourceHint")} />
+              </span>
+              <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={t("mapSourceTitle")}>
+                {(["standard", "osmand"] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    role="radio"
+                    className="choice"
+                    aria-checked={mapSource === v}
+                    aria-pressed={mapSource === v}
+                    disabled={updating}
+                    onClick={() => {
+                      if (v !== mapSource) void updateSettings({ mapSource: v }).then(() => checkUpdates(true));
+                    }}
+                  >
+                    {t(v === "standard" ? "mapSourceStandard" : "mapSourceOsmand")}
+                  </button>
+                ))}
+              </div>
+              {mapSource === "osmand" && <p className="m-0 text-xs text-warning">{t("mapSourceOsmandWarn")}</p>}
+            </div>
           </div>
         </div>
         <div className="group-list">

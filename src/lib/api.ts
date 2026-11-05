@@ -488,6 +488,8 @@ export interface Settings {
   transitPreference: TransitPreference;
   /** Take ready-made components from the weekly GitLab build when possible. */
   usePrebuiltData: boolean;
+  /** Maps, search and routing for Israel and every country: standard (Protomaps + Geofabrik) or OsmAnd files. */
+  mapSource?: "standard" | "osmand";
   /** Show typical line delays from Open Bus Stride (online only). */
   transitReliability: boolean;
   /** live navigation speaks the instructions */

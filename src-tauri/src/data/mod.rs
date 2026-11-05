@@ -28,6 +28,10 @@ use crate::types::{ComponentStatus, DataCheck, DataComponent, DataProgress, Data
 pub const PBF_URL: &str = "https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf";
 pub const GTFS_URL: &str = "https://gtfs.mot.gov.il/gtfsfiles/israel-public-transportation.zip";
 
+/// Components that come from OsmAnd's Israel file when Settings.mapSource is "osmand" (the
+/// world basemap, imagery, elevation, trails, transit and minyanim keep their own sources).
+pub const OSMAND_COMPONENTS: [DataComponent; 3] = [DataComponent::Tiles, DataComponent::Routing, DataComponent::Geocode];
+
 /// Cooperative control of the running update: cancel everything, cancel one component (skipped
 /// if still queued, aborted at its next checkpoint if running), pause / resume.
 ///
@@ -252,10 +256,23 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             error: None,
         },
     };
+    let settings = crate::state::load_settings(paths);
+    // OsmAnd as the map source: map, search and routing follow the date of OsmAnd's Israel file
+    if settings.osmand_source() {
+        let remote = obf_import::catalog_version(paths, obf_import::ISRAEL_FILE, true).map_err(|e| format!("{e:#}"));
+        for (c, u) in [(DataComponent::Tiles, &mut out.tiles), (DataComponent::Routing, &mut out.routing), (DataComponent::Geocode, &mut out.geocode)] {
+            *u = match &remote {
+                Ok(v) => {
+                    let expected = build_tag(c, v);
+                    UpdateCheck { available: local(c).as_deref() != Some(expected.as_str()), remote_version: Some(expected), error: None }
+                }
+                Err(e) => UpdateCheck { available: false, remote_version: None, error: Some(e.clone()) },
+            };
+        }
+    }
     // With ready-made data on, the weekly package is the source the user chose: a component
     // installed exactly as the package has it is up to date, even when the servers already have
     // a day or two newer data (an update would only install the same package again).
-    let settings = crate::state::load_settings(paths);
     if settings.use_prebuilt_data {
         if let Ok(l) = download::http_client().and_then(|c| prebuilt::latest(&c)) {
             let m = manifest::Manifest::load(paths);
@@ -270,6 +287,9 @@ pub fn check(paths: &DataPaths) -> DataCheck {
                 (DataComponent::Trails, &mut out.trails),
                 (DataComponent::Minyanim, &mut out.minyanim),
             ] {
+                if settings.osmand_source() && OSMAND_COMPONENTS.contains(&c) {
+                    continue;
+                }
                 if let Some(v) = prebuilt::package_version(&l, c, &settings) {
                     if m.entry(c).and_then(|e| e.version.as_deref()) == Some(v.as_str()) && paths.component_file(c).exists() {
                         u.available = false;
@@ -436,7 +456,10 @@ pub fn update(
             outer.spawn(move || run_job(DataComponent::Satellite, satellite::update_satellite as Job));
         }
         // ready-made components from the weekly GitLab build first; the rest is built here
-        let ready = if settings.use_prebuilt_data { prebuilt::install(paths, components, &emit, cancel) } else { Vec::new() };
+        // (the package is built from the standard sources: with OsmAnd as the map source the map,
+        // search and routing are built here from OsmAnd's file instead)
+        let from_package: Vec<DataComponent> = components.iter().copied().filter(|c| !(settings.osmand_source() && OSMAND_COMPONENTS.contains(c))).collect();
+        let ready = if settings.use_prebuilt_data { prebuilt::install(paths, &from_package, &emit, cancel) } else { Vec::new() };
         let rest: Vec<DataComponent> = components.iter().copied().filter(|c| !ready.contains(c) && !(sat_now && *c == DataComponent::Satellite)).collect();
         if rest.is_empty() {
             return;
@@ -463,19 +486,39 @@ fn update_rest(
 ) {
     let emit = emit.clone();
     let wants = |c: DataComponent| components.contains(&c);
+    // OsmAnd as the map source: map, search and routing of Israel come from OsmAnd's file
+    let osmand = crate::state::load_settings(paths).osmand_source();
+    let from_osmand = |c: DataComponent| osmand && OSMAND_COMPONENTS.contains(&c);
 
     std::thread::scope(|s| {
         // --- self-contained jobs: download + finalize in one go
         type Job = fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>;
         for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job), (DataComponent::Minyanim, minyanim::update_minyanim as Job)] {
-            if !wants(c) {
+            if !wants(c) || from_osmand(c) {
                 continue;
             }
             s.spawn(move || run_job(c, job));
         }
 
-        // --- shared source downloads
-        let osm_comps: Vec<DataComponent> = [DataComponent::Routing, DataComponent::Geocode, DataComponent::Trails].into_iter().filter(|&c| wants(c)).collect();
+        // --- OsmAnd's file for Israel (download + unpack), when it is the map source
+        let obf_comps: Vec<DataComponent> = OSMAND_COMPONENTS.into_iter().filter(|&c| wants(c) && from_osmand(c)).collect();
+        let obf = (!obf_comps.is_empty()).then(|| {
+            let (comps, emit) = (obf_comps.clone(), &emit);
+            s.spawn(move || -> anyhow::Result<(std::path::PathBuf, bool, std::path::PathBuf, String)> {
+                let rep = Reporter::new(emit, &comps, cancel);
+                if rep.cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
+                let version = obf_import::catalog_version(paths, obf_import::ISRAEL_FILE, true)?;
+                let zip = obf_import::download(paths, obf_import::ISRAEL_FILE, &progress, &rep.cancel)?;
+                let (file, temp) = obf_import::unpack(paths, &zip, &|d, t| progress(ProgressPhase::Processing, d, t, "מחלץ את קובץ OsmAnd"))?;
+                Ok((file, temp, zip, version))
+            })
+        });
+
+        // --- shared source downloads (with OsmAnd as the source only the trails still need it)
+        let osm_comps: Vec<DataComponent> = [DataComponent::Routing, DataComponent::Geocode, DataComponent::Trails].into_iter().filter(|&c| wants(c) && !from_osmand(c)).collect();
         let pbf = (!osm_comps.is_empty()).then(|| {
             let (comps, emit) = (osm_comps.clone(), &emit);
             s.spawn(move || {
@@ -523,7 +566,7 @@ fn update_rest(
                     emit(DataProgress { component: c, phase: ProgressPhase::Queued, done: 0, total: 0, message: "ממתין לעיבוד".into() });
                 }
             }
-            if wants(DataComponent::Routing) {
+            if wants(DataComponent::Routing) && !from_osmand(DataComponent::Routing) {
                 build(DataComponent::Routing, &src, &|progress| {
                     let tmp = paths.graph_file().with_extension("bin.tmp");
                     crate::routing::build_graph(&paths.pbf_file(), &tmp, progress)?;
@@ -537,7 +580,7 @@ fn update_rest(
                     Ok(())
                 });
             }
-            if wants(DataComponent::Geocode) {
+            if wants(DataComponent::Geocode) && !from_osmand(DataComponent::Geocode) {
                 build(DataComponent::Geocode, &src, &|progress| {
                     let tmp = paths.geocode_file().with_extension("sqlite.tmp");
                     let _ = std::fs::remove_file(&tmp);
@@ -545,6 +588,62 @@ fn update_rest(
                     crate::geocode::replace_index(&paths.geocode_file(), &tmp)?;
                     Ok(())
                 });
+            }
+        }
+        // --- Israel from OsmAnd's file: map tiles, then OBF → PBF → routing graph + search index
+        // (before transit, which walks its transfers on the new graph)
+        if let Some(h) = obf {
+            let src = h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("download thread panicked"))).map_err(|e| format!("{e:#}"));
+            let version = src.as_ref().map(|(_, _, _, v)| Some(v.clone())).map_err(|e| e.clone());
+            if let Ok((file, _, _, _)) = &src {
+                if obf_comps.contains(&DataComponent::Tiles) {
+                    build(DataComponent::Tiles, &version, &|progress| {
+                        let tmp = paths.tiles_file().with_extension("pmtiles.tmp");
+                        let _ = std::fs::remove_file(&tmp);
+                        obf_import::adapter::tiles(file, &tmp, progress)?;
+                        crate::paths::atomic_replace(&paths.tiles_file(), &tmp)?;
+                        // the Protomaps sidecar describes a file that is gone
+                        let _ = std::fs::remove_file(download::meta_path(&paths.tiles_file()));
+                        Ok(())
+                    });
+                }
+                let osm: Vec<DataComponent> = [DataComponent::Routing, DataComponent::Geocode].into_iter().filter(|c| obf_comps.contains(c)).collect();
+                if !osm.is_empty() {
+                    let pbf = obf_import::work_folder(paths).join("israel.osm.pbf");
+                    let rep = Reporter::new(&emit, &osm, cancel);
+                    let progress = |p: ProgressPhase, d: u64, t: u64, m: &str| rep.report(p, d, t, m);
+                    let converted = obf_import::adapter::to_pbf(file, &pbf, &progress).map_err(|e| format!("{e:#}")).and(version.clone());
+                    if osm.contains(&DataComponent::Routing) {
+                        build(DataComponent::Routing, &converted, &|progress| {
+                            let tmp = paths.graph_file().with_extension("bin.tmp");
+                            crate::routing::build_graph(&pbf, &tmp, progress)?;
+                            crate::paths::atomic_replace(&paths.graph_file(), &tmp)?;
+                            Ok(())
+                        });
+                    }
+                    if osm.contains(&DataComponent::Geocode) {
+                        build(DataComponent::Geocode, &converted, &|progress| {
+                            let tmp = paths.geocode_file().with_extension("sqlite.tmp");
+                            let _ = std::fs::remove_file(&tmp);
+                            crate::geocode::build(&pbf, &tmp, progress)?;
+                            crate::geocode::replace_index(&paths.geocode_file(), &tmp)?;
+                            Ok(())
+                        });
+                    }
+                    let _ = std::fs::remove_file(&pbf);
+                }
+            } else {
+                for &c in &obf_comps {
+                    build(c, &version, &|_| Ok(()));
+                }
+            }
+            if let Ok((file, temp, zip, _)) = &src {
+                if *temp {
+                    let _ = std::fs::remove_file(file);
+                }
+                // 140 MB that is not needed until OsmAnd publishes a newer file
+                let _ = std::fs::remove_file(zip);
+                let _ = std::fs::remove_file(download::meta_path(zip));
             }
         }
         if let Some(h) = gtfs {
