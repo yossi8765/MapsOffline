@@ -19,6 +19,11 @@ pub const EXTRA_TARGETS: [&str; 5] = ["regions", "areas", "downloads", "cache", 
 pub struct TargetUsage {
     pub target: String,
     pub bytes: u64,
+    /// one country ("region:<id>"): its name and ISO code, for the label
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iso: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -40,6 +45,10 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 
 /// Files and folders a target consists of.
 pub fn target_paths(paths: &DataPaths, target: &str) -> Vec<PathBuf> {
+    // one country: "region:<id>"
+    if let Some(id) = target.strip_prefix("region:") {
+        return if super::regions::valid_region_id(id) { vec![paths.region_dir(id)] } else { Vec::new() };
+    }
     if let Some(c) = component_of(target) {
         // the component's folder holds its file, sidecars and leftovers of interrupted updates;
         // sub-folders (satellite/areas, satellite/live) belong to other targets
@@ -72,18 +81,26 @@ fn size_of(p: &Path) -> u64 {
     }
 }
 
-/// Size of every target that has something on disk.
+/// Size of every target that has something on disk; the other countries one by one
+/// ("region:<id>") instead of all together.
 pub fn usage(paths: &DataPaths) -> Vec<TargetUsage> {
     let mut targets: Vec<String> = DataComponent::ALL.iter().map(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()).collect();
-    targets.extend(EXTRA_TARGETS.iter().map(|s| s.to_string()));
-    targets
+    targets.extend(EXTRA_TARGETS.iter().filter(|t| **t != "regions").map(|s| s.to_string()));
+    let mut out: Vec<TargetUsage> = targets
         .into_iter()
         .map(|t| {
             let bytes = target_paths(paths, &t).iter().map(|p| size_of(p)).sum();
-            TargetUsage { target: t, bytes }
+            TargetUsage { target: t, bytes, name: None, iso: None }
         })
         .filter(|u| u.bytes > 0)
-        .collect()
+        .collect();
+    for r in super::regions::installed(paths, &|_| false) {
+        let bytes = size_of(&paths.region_dir(&r.id));
+        if bytes > 0 {
+            out.push(TargetUsage { target: format!("region:{}", r.id), bytes, name: Some(r.name), iso: r.iso });
+        }
+    }
+    out
 }
 
 fn pending_file(paths: &DataPaths) -> PathBuf {
@@ -196,7 +213,19 @@ mod tests {
         // the folders are back for the next update
         assert!(paths.routing_dir().is_dir());
         // unknown targets and paths outside the data folder are ignored
-        assert_eq!(delete(&paths, &["../../x".into(), "nothing".into()]).freed_bytes, 0);
+        assert_eq!(delete(&paths, &["../../x".into(), "nothing".into(), "region:..".into(), "region:../x".into()]).freed_bytes, 0);
+        // one country of several
+        for id in ["europe/malta", "africa/burundi"] {
+            let d = paths.region_dir(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("region.json"), format!(r#"{{"id":"{id}","name":"{id}","iso":null,"bbox":[0,0,1,1],"searchVersion":null,"updatedIso":null}}"#)).unwrap();
+            std::fs::write(d.join("map.pmtiles"), b"0123456789").unwrap();
+        }
+        let u = usage(&paths);
+        assert!(u.iter().any(|t| t.target == "region:europe/malta" && t.name.as_deref() == Some("europe/malta")), "{u:?}");
+        delete(&paths, &["region:europe/malta".into()]);
+        assert!(!paths.region_dir("europe/malta").exists());
+        assert!(paths.region_dir("africa/burundi").join("map.pmtiles").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -22,7 +22,8 @@ const EXTRA_LABEL: Record<string, I18nKey> = {
  */
 export function DeleteDataSection({ componentLabel, busy }: { componentLabel: (c: string) => string; busy: boolean }) {
   const t = useT();
-  const [usage, setUsage] = useState<{ target: string; bytes: number }[] | null>(null);
+  const lang = useStore((s) => s.settings.language);
+  const [usage, setUsage] = useState<{ target: string; bytes: number; name?: string; iso?: string | null }[] | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [working, setWorking] = useState(false);
   const [tick, setTick] = useState(0);
@@ -39,10 +40,27 @@ export function DeleteDataSection({ componentLabel, busy }: { componentLabel: (c
     };
   }, [tick, dataStatus]);
 
-  const label = (target: string) => (EXTRA_LABEL[target] ? t(EXTRA_LABEL[target]) : componentLabel(target));
-  // components in the Data panel's order, then the rest
-  const order = [...DATA_COMPONENTS, "regions", "areas", "downloads", "cache", "personal"] as string[];
-  const rows = (usage ?? []).slice().sort((a, b) => order.indexOf(a.target) - order.indexOf(b.target));
+  // a country ("region:<id>"): its name, in Hebrew when its ISO code is known
+  const countryName = (r: { name?: string; iso?: string | null }) => {
+    if (lang !== "en" && r.iso) {
+      try {
+        const n = new Intl.DisplayNames(["he"], { type: "region" }).of(r.iso.toUpperCase());
+        if (n) return n;
+      } catch {
+        /* the stored name */
+      }
+    }
+    return r.name ?? "";
+  };
+  const label = (target: string) => {
+    const row = (usage ?? []).find((r) => r.target === target);
+    if (target.startsWith("region:") && row) return countryName(row);
+    return EXTRA_LABEL[target] ? t(EXTRA_LABEL[target]) : componentLabel(target);
+  };
+  // components in the Data panel's order, then the countries (by name), then the rest
+  const order = [...DATA_COMPONENTS, "region:", "areas", "downloads", "cache", "personal"] as string[];
+  const rank = (target: string) => order.indexOf(target.startsWith("region:") ? "region:" : target);
+  const rows = (usage ?? []).slice().sort((a, b) => rank(a.target) - rank(b.target) || label(a.target).localeCompare(label(b.target), lang));
   const bytesOf = (targets: string[]) => rows.filter((r) => targets.includes(r.target)).reduce((n, r) => n + r.bytes, 0);
   const everything = rows.map((r) => r.target).filter((x) => x !== "personal");
 
