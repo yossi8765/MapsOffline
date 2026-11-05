@@ -159,6 +159,8 @@ pub fn run() {
             commands::data::region_delete,
             commands::data::obf_catalog,
             commands::data::obf_install,
+            commands::data::data_usage,
+            commands::data::data_delete,
             commands::data::map_tiles_available,
             commands::data::save_text_file,
             commands::data::read_text_file,

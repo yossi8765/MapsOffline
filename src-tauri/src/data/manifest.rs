@@ -58,6 +58,10 @@ impl Manifest {
     pub fn entry(&self, c: DataComponent) -> Option<&Entry> {
         self.components.get(&key(c))
     }
+    /// Forget a component (its files were deleted).
+    pub fn remove(&mut self, c: DataComponent) {
+        self.components.remove(&key(c));
+    }
     pub fn set(&mut self, c: DataComponent, version: Option<String>) {
         self.components.insert(
             key(c),

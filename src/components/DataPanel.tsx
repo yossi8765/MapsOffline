@@ -16,6 +16,7 @@ import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Toggle } from "./RoutePanel";
 import { RegionsSection } from "./RegionsSection";
+import { DeleteDataSection } from "./DeleteDataSection";
 import { InfoTip } from "./InfoTip";
 
 const META: Record<DataComponent, { icon: typeof Map; label: I18nKey; desc: I18nKey }> = {
@@ -527,6 +528,8 @@ export function DataPanel() {
                 </div>
               </div>
             </div>
+
+            <DeleteDataSection componentLabel={(c) => (c in META ? t(META[c as DataComponent].label) : c)} busy={updating} />
 
             <div className="flex flex-col gap-2">
               <h2 className="section-label m-0 inline-flex items-center gap-1.5">

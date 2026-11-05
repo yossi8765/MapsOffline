@@ -688,6 +688,48 @@ async fn delete_region(st: &Arc<AppState>, id: &str) -> R<()> {
     .map_err(err)?
 }
 
+/// Bytes on disk per deletable target (components, "regions", "areas", "downloads", "cache", "personal").
+#[tauri::command]
+pub async fn data_usage(state: State<'_, Arc<AppState>>) -> R<Vec<crate::data::cleanup::TargetUsage>> {
+    let paths = state.paths();
+    tauri::async_runtime::spawn_blocking(move || crate::data::cleanup::usage(&paths)).await.map_err(err)
+}
+
+/// Delete installed data (see `data::cleanup`). Nothing may be updating or downloading; whatever
+/// holds the files open is let go first, and files still in use go at the next start.
+#[tauri::command]
+pub async fn data_delete(app: AppHandle, state: State<'_, Arc<AppState>>, targets: Vec<String>) -> R<crate::data::cleanup::DeleteReport> {
+    let st = state.inner().clone();
+    if !st.region_jobs.lock().is_empty() {
+        return Err("REGION_BUSY".into());
+    }
+    st.begin_exclusive_job().map_err(AppError::from)?;
+    let st2 = st.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        // let go of every open data file: map archives, graphs, transit, search indexes
+        crate::map_tiles::set_files(Vec::new());
+        st2.unload_all();
+        if targets.iter().any(|t| t == "personal") {
+            *st2.history.lock() = None;
+        }
+        let paths = st2.paths();
+        let report = crate::data::cleanup::delete(&paths, &targets);
+        if targets.iter().any(|t| t == "areas") {
+            st2.settings.write().satellite_areas.clear();
+            if let Err(e) = st2.save_settings() {
+                log::warn!("settings after deleting the sharp areas: {e:#}");
+            }
+        }
+        st2.refresh_map_files();
+        report
+    })
+    .await
+    .map_err(err);
+    st.end_exclusive_job();
+    let _ = app.emit("data-updated", ());
+    res
+}
+
 /// OsmAnd's map list (download.osmand.net), cached for a week.
 #[tauri::command]
 pub async fn obf_catalog(state: State<'_, Arc<AppState>>, refresh: Option<bool>) -> R<Vec<crate::types::ObfCatalogEntry>> {

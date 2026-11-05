@@ -974,6 +974,10 @@ export const api = {
     invoke<DataComponent[]>("data_export", { dest, components: components ?? null, regions: regions ?? null, areas: areas ?? null }),
   /** Install a .mapsdata file into the data directory. */
   dataImport: (src: string) => invoke<DataComponent[]>("data_import", { src }),
+  /** Bytes on disk per deletable target: component keys, "regions", "areas", "downloads", "cache", "personal". */
+  dataUsage: () => invoke<{ target: string; bytes: number }[]>("data_usage"),
+  /** Delete those targets; files still in use are removed at the next start (`pending`). */
+  dataDelete: (targets: string[]) => invoke<{ freedBytes: number; pending: string[] }>("data_delete", { targets }),
   /** Download the full ready-made data package (weekly GitLab build) to `dest`; returns its size. Progress: event `package-download`. */
   dataDownloadPackage: (dest: string) => invoke<number>("data_download_package", { dest }),
   dataPreload: (transit: boolean) => invoke<void>("data_preload", { transit }),

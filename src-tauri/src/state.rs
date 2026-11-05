@@ -76,6 +76,8 @@ impl AppState {
             }
             _ => paths,
         };
+        // files a delete could not remove (they were open): now, before anything opens them
+        crate::data::cleanup::run_pending(&paths);
         Self {
             paths: RwLock::new(paths),
             settings: RwLock::new(settings),

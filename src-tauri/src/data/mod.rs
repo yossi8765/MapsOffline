@@ -1,5 +1,6 @@
 //! Data update pipeline: download sources, build derived files, report progress.
 
+pub mod cleanup;
 pub mod components;
 pub mod disk;
 pub mod download;
