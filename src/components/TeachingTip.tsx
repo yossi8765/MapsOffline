@@ -52,8 +52,18 @@ export function TeachingTip() {
       return;
     }
     const el = document.querySelector(tip.target) as HTMLElement | null;
-    setRect(el ? el.getBoundingClientRect() : null);
+    const r = el?.getBoundingClientRect();
+    // a target that is not on screen (hidden panel, zero size) waits for another start
+    const visible = !!r && r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
+    setRect(visible ? r! : null);
   }, [ready, tip, busy]);
+
+  // the button takes the focus without scrolling anything into view (an autoFocus scrolled the
+  // whole app up when the tip sat near the window's edge)
+  const gotIt = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (rect) gotIt.current?.focus({ preventScroll: true });
+  }, [rect]);
 
   const dismiss = () => {
     if (!tip) return;
@@ -75,7 +85,8 @@ export function TeachingTip() {
   if (!tip || !rect) return null;
   // the map: point at its centre; small controls: below them
   const big = rect.width > 700 && rect.height > 300;
-  const top = big ? rect.top + rect.height / 2 - 60 : rect.bottom + 10;
+  // inside the window (about 190 px tall)
+  const top = Math.max(8, Math.min(window.innerHeight - 200, big ? rect.top + rect.height / 2 - 60 : rect.bottom + 10));
   const left = big ? rect.left + rect.width / 2 - 150 : Math.max(8, Math.min(window.innerWidth - 308, rect.left + rect.width / 2 - 150));
 
   return (
@@ -89,7 +100,7 @@ export function TeachingTip() {
           </div>
           <p className="text-sm text-muted mt-1">{t(tip.body)}</p>
           <div className="mt-3 flex justify-end">
-            <button className="btn btn-primary btn-sm" onClick={dismiss} autoFocus>
+            <button ref={gotIt} className="btn btn-primary btn-sm" onClick={dismiss}>
               {t("ttGotIt")}
             </button>
           </div>

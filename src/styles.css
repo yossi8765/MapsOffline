@@ -193,7 +193,10 @@
   #root {
     height: 100%;
     margin: 0;
-    overflow: hidden;
+    /* clip, not hidden: a hidden box can still be scrolled by focus() / scrollIntoView, and a
+       focused element just outside the window (a teaching tip's button at start-up) scrolled the
+       whole app up under the title bar. A clipped box cannot scroll at all. */
+    overflow: clip;
     /* touchscreen pinch must not zoom the page (WebView2 pinch zoom is enabled for touchpads) */
     touch-action: pan-x pan-y;
   }
