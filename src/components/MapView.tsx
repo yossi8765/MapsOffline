@@ -76,13 +76,13 @@ export function MapView() {
   const onlineOk = useStore((s) => s.online && s.settings.routingMode !== "offline");
 
   const flavor: FlavorName = layers.flavor === "auto" ? resolveTheme(theme) : layers.flavor;
-  const topo = layers.theme === "topo";
+
   // contour lines: computed in the browser from the elevation archive (lib/contours.ts, loaded
-  // with maplibre-contour only once contours or the topo theme are switched on)
+  // with maplibre-contour only once contours are switched on)
   const [contourTiles, setContourTiles] = useState<string | null>(null);
   useEffect(() => {
     const demUrl = terrainUrl ?? (onlineOk ? ONLINE_TERRAIN_URL : null);
-    if (!demUrl || !(layers.contours || topo)) {
+    if (!demUrl || !layers.contours) {
       setContourTiles(null);
       return;
     }
@@ -91,10 +91,10 @@ export function MapView() {
     return () => {
       dead = true;
     };
-  }, [terrainUrl, onlineOk, layers.contours, topo]);
+  }, [terrainUrl, onlineOk, layers.contours]);
   // marked trails file (built by the data update; absent until installed). Asked for only when the
-  // trails or the topo map are on: the 5–6 MB GeoJSON is not parsed otherwise.
-  const trailsOn = layers.trails || topo;
+  // trails are on: the 5–6 MB GeoJSON is not parsed otherwise.
+  const trailsOn = layers.trails;
   const [trailsFile, setTrailsFile] = useState<string | null>(null);
   useEffect(() => {
     if (!trailsOn) return;

@@ -86,7 +86,13 @@ export function LayersPanel() {
         {/* four long names do not fit in one row of the 340 px popover: two rows of two */}
         <div className="seg grid grid-cols-2">
           {(["standard", "cycle", "transit", "topo"] as MapLayers["theme"][]).map((th) => (
-            <button key={th} aria-pressed={layers.theme === th} onClick={() => setLayers({ theme: th })}>
+            <button
+              key={th}
+              aria-pressed={layers.theme === th}
+              // the hiking map switches its relief, contours and trails on; they then follow their
+              // own switches (they used to be forced on, while their switches still showed off)
+              onClick={() => setLayers(th === "topo" && layers.theme !== "topo" ? { theme: th, hillshade: true, contours: true, trails: true } : { theme: th })}
+            >
               <span>{t(th === "standard" ? "themeStandard" : th === "cycle" ? "themeCycle" : th === "transit" ? "themeTransit" : "themeTopo")}</span>
             </button>
           ))}

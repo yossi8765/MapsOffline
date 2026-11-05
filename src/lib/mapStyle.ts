@@ -40,10 +40,10 @@ export interface StyleOptions {
   /** Thematic look: cycleways or rail / transit brought forward, the rest of the roads muted;
    *  "topo" = hiking map (relief, contour lines and marked trails). */
   theme?: MapTheme;
-  /** Contour vector tiles (lib/contours.ts) – drawn when `contours` is on or in the topo theme. */
+  /** Contour vector tiles (lib/contours.ts) – drawn when `contours` is on. */
   contourTiles?: string | null;
   contours?: boolean;
-  /** Marked trails (GeoJSON written by the data update) – drawn when `trails` or topo. */
+  /** Marked trails (GeoJSON written by the data update) – drawn when `trails` is on. */
   trailsUrl?: string | null;
   trails?: boolean;
   /** Online elevation (AWS Terrain Tiles) when no DEM is installed and the internet may be used. */
@@ -375,8 +375,9 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     const live = o.satelliteUrl!.startsWith("http://mo-sat.localhost/");
     base.sources.satellite = { type: "raster", ...(live ? { tiles: [o.satelliteUrl!], minzoom: 0, maxzoom: 19 } : { url: `pmtiles://${o.satelliteUrl}` }), tileSize: 256, attribution: o.satelliteOrtho ? ORTHOPHOTO_ATTRIBUTION : SENTINEL_ATTRIBUTION };
   }
-  const topo = o.theme === "topo";
-  const hillshade = o.hillshade || topo;
+
+  // relief, contours and trails follow their own switches (the topo theme switches them on)
+  const hillshade = o.hillshade;
   const demOnline = !o.terrainUrl && !!o.onlineTerrain;
   const dem = (!!o.terrainUrl || demOnline) && (hillshade || o.terrain3d);
   const demAttribution = demOnline ? ONLINE_TERRAIN_ATTRIBUTION : o.terrainUrl?.includes("mapterhorn") ? TERRAIN_ATTRIBUTION : OLD_TERRAIN_ATTRIBUTION;
@@ -524,15 +525,15 @@ export function buildStyle(o: StyleOptions): StyleSpecification {
     ls.splice(firstLabel(), 0, ...lines);
     ls.push(...labels);
   };
-  if (o.contourTiles && (o.contours || topo)) {
+  if (o.contourTiles && o.contours) {
     base.sources.contours = { type: "vector", tiles: [o.contourTiles], maxzoom: 15, attribution: demAttribution };
     putOverlay(contourLayers(o.flavor === "dark", o.lang));
   }
-  if (o.trailsUrl && (o.trails || topo)) {
+  if (o.trailsUrl && o.trails) {
     // coarser tiling of the 5–6 MB file: fewer vertices per tile, no tiles beyond zoom 14
     base.sources.trails = { type: "geojson", data: o.trailsUrl, tolerance: 0.6, buffer: 32, maxzoom: 14, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>' };
     putOverlay(trailLayers());
-  } else if (o.onlineTrails && (o.trails || topo)) {
+  } else if (o.onlineTrails && o.trails) {
     // no trails file installed: the Waymarked Trails raster overlay where the trail lines go
     base.sources["trails-online"] = { type: "raster", tiles: [onlineTrailsUrl(o.theme)], tileSize: 256, maxzoom: 18, attribution: ONLINE_TRAILS_ATTRIBUTION };
     putOverlay([{ id: "trails-online", type: "raster", source: "trails-online", minzoom: 8, paint: { "raster-opacity": 0.85 } }]);

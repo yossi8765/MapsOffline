@@ -75,7 +75,7 @@ export function MapCredits() {
   const t = useT();
   const sat = useStore((s) => s.layers.satellite && !!s.satelliteUrl);
   const ortho = useStore((s) => s.settings.satelliteSource !== "sentinel");
-  const dem = useStore((s) => !!s.terrainUrl && (s.layers.hillshade || s.layers.terrain3d || s.layers.contours || s.layers.theme === "topo"));
+  const dem = useStore((s) => !!s.terrainUrl && (s.layers.hillshade || s.layers.terrain3d || s.layers.contours));
   const parts = ["© OpenStreetMap", "Protomaps"];
   if (sat) parts.push(ortho ? t("creditMapi") : "Sentinel-2 / EOX");
   if (dem) parts.push("Mapterhorn");
