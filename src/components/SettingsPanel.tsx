@@ -200,6 +200,8 @@ export function SettingsPanel() {
         <Toggle label={t("rememberMapView")} checked={settings.rememberMapView} onChange={(v) => void update({ rememberMapView: v })} />
         <Toggle label={t("navVoiceSetting")} checked={settings.navVoice ?? true} onChange={(v) => void update({ navVoice: v })} />
         <Toggle label={t("navVoiceNiqqud")} checked={settings.navVoiceNiqqud ?? true} onChange={(v) => void update({ navVoiceNiqqud: v })} />
+        <Toggle label={t("navSpeedometerSetting")} checked={settings.navSpeedometer ?? true} onChange={(v) => void update({ navSpeedometer: v })} />
+        <Toggle label={t("navSpeedAlertSetting")} checked={settings.navSpeedAlert ?? true} onChange={(v) => void update({ navSpeedAlert: v })} />
         <Row label={t("navVehicle")} info={t("navVehicleHint")}>
           <VehiclePicker />
         </Row>

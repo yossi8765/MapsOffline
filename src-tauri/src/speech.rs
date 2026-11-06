@@ -146,6 +146,8 @@ pub fn transcribe(paths: &DataPaths, pcm_le16: &[u8]) -> anyhow::Result<String> 
 
     let mut guard = CTX.lock();
     if guard.as_ref().map(|(p, _)| p != &model).unwrap_or(true) {
+        // whisper.cpp prints every decoded token to stderr: route its log to nothing
+        whisper_rs::install_logging_hooks();
         let t0 = std::time::Instant::now();
         let ctx = whisper_rs::WhisperContext::new_with_params(&model, whisper_rs::WhisperContextParameters::default())
             .map_err(|e| anyhow::anyhow!("SPEECH_MODEL_LOAD: {e}"))?;

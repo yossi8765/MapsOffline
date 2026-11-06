@@ -27,6 +27,8 @@ export interface NavState {
   manualStep: number | null;
   /** simulated drive: its speed in km/h (0 = as the road allows) */
   simSpeedKmh: number;
+  /** simulated drive stopped by the pause button */
+  simPaused?: boolean;
 }
 
 /** One maneuver of the route in driving order (all legs), with where it happens on the map. */
@@ -104,6 +106,12 @@ export function setSimSpeed(kmh: number): void {
   void useStore.getState().updateSettings({ navSimSpeedKmh: v });
 }
 
+/** Pause / resume the running simulated drive. */
+export function setSimPaused(paused: boolean): void {
+  patch({ simPaused: paused });
+  void api.navSetSimPaused(paused).catch(() => undefined);
+}
+
 /** `speedKmh` (simulation only): km/h, 0 = as the road allows; default: the remembered speed,
  *  else the mode's usual one. */
 export async function startNavigation(routeId: string, simulate = false, speedKmh?: number): Promise<void> {
@@ -170,6 +178,37 @@ function onUpdate(u: NavUpdate) {
   if (!n) return;
   patch({ update: u, arrived: u.arrived, error: null });
   if (u.rerouteNeeded && !n.rerouting) void reroute(u);
+}
+
+/** Request from the current position to the waypoints still ahead. */
+function requestFromHere(n: NavState, u: NavUpdate, alternatives: number): RouteRequest | null {
+  if (!n.request) return null;
+  const ahead = n.request.waypoints.slice(Math.min(u.legIndex + 1, n.request.waypoints.length - 1));
+  return {
+    ...n.request,
+    waypoints: [{ lon: u.lon, lat: u.lat, name: useStore.getState().t("myLocation") }, ...ahead],
+    time: { kind: "now" },
+    alternatives,
+  };
+}
+
+/** Change route while navigating: up to 3 routes from the current position to what is still ahead. */
+export async function routesFromHere(): Promise<{ routes: Route[]; request: RouteRequest } | null> {
+  const n = useStore.getState().navigation;
+  const u = n?.update;
+  if (!n || !u) return null;
+  const req = requestFromHere(n, u, 3);
+  if (!req) return null;
+  const resp = await api.route(req);
+  return { routes: resp.routes, request: req };
+}
+
+/** Drive on `r` from now on (picked in "change route"). */
+export async function switchRoute(r: Route, request: RouteRequest): Promise<void> {
+  if (!useStore.getState().navigation) return;
+  await api.navSetRoute(r);
+  useStore.setState({ routes: [r], selectedRouteId: r.id, routeTick: useStore.getState().routeTick + 1 });
+  patch({ route: r, routeId: r.id, request, rerouting: false, manualStep: null });
 }
 
 /** New route from the current position to the waypoints after the current leg. */

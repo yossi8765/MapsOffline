@@ -43,7 +43,7 @@ const NO_SPEECH_MS = 7000;
 const MAX_MS = 15000;
 
 /** Records one utterance; resolves with 16-bit PCM (16 kHz mono), empty when nothing was said. */
-function recordUtterance(handle: { stopped: boolean }, onLevel?: (v: number) => void): Promise<Int16Array> {
+function recordUtterance(handle: { stopped: boolean }, onStart: () => void, onLevel?: (v: number) => void): Promise<Int16Array> {
   return new Promise((resolve, reject) => {
     void (async () => {
       let stream: MediaStream;
@@ -60,10 +60,10 @@ function recordUtterance(handle: { stopped: boolean }, onLevel?: (v: number) => 
       const mute = ctx.createGain();
       mute.gain.value = 0;
       const chunks: Float32Array[] = [];
-      const t0 = performance.now();
-      let noise = 0.004;
+      let t0 = 0;
+      let noise = Infinity;
       let heard = false;
-      let lastLoud = t0;
+      let lastLoud = 0;
       const finish = () => {
         proc.onaudioprocess = null;
         try {
@@ -89,9 +89,17 @@ function recordUtterance(handle: { stopped: boolean }, onLevel?: (v: number) => 
         for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
         const rms = Math.sqrt(sum / data.length);
         const now = performance.now();
-        // the first half second sets the noise floor; speech is clearly above it
-        if (now - t0 < 500) noise = Math.max(noise, rms);
-        const loud = rms > Math.max(0.015, noise * 2.5);
+        // the microphone delivers sound from here on: only now say "speak" (words said while it
+        // was still opening would be lost)
+        if (!t0) {
+          t0 = now;
+          lastLoud = now;
+          onStart();
+        }
+        // noise floor = the quietest buffer of the first half second (the user may start talking
+        // at once, so not the loudest); speech is clearly above it
+        if (now - t0 < 500) noise = Math.min(noise, rms);
+        const loud = rms > Math.max(0.015, Math.min(noise, 0.02) * 2.5);
         if (loud) {
           heard = true;
           lastLoud = now;
@@ -133,8 +141,7 @@ export function listen(onPhase: (p: MicPhase) => void, onLevel?: (v: number) => 
       }
     }
     if (!st.installed) throw { code: "SPEECH_NO_MODEL", message: "SPEECH_NO_MODEL" };
-    onPhase("listening");
-    const pcm = await recordUtterance(handle, onLevel);
+    const pcm = await recordUtterance(handle, () => onPhase("listening"), onLevel);
     if (!pcm.length) return "";
     onPhase("working");
     return await invoke<string>("speech_transcribe", { pcm: toBase64(new Uint8Array(pcm.buffer)) });

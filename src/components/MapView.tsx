@@ -14,6 +14,7 @@ import { api, apiX, errorCode, type KohanimArea } from "../lib/api";
 import { ContextMenu } from "./ContextMenu";
 import { MapHoverCard } from "./MapHoverCard";
 import { NavigationView } from "./NavigationView";
+import { QuickNavButton } from "./QuickNavButton";
 import { routeImage } from "../lib/mapImage";
 import { setPrintMapProvider } from "../lib/print";
 import { hexColor, mapColors } from "../map/colors";
@@ -636,6 +637,7 @@ export function MapView() {
         {importOpen && <ImportDialog />}
       </Suspense>
       <NavigationView />
+      <QuickNavButton />
     </div>
   );
 }

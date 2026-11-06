@@ -510,6 +510,10 @@ export interface Settings {
   navVoice: boolean;
   /** the voice gets hidden niqqud on the fixed instruction words (the screen stays plain) */
   navVoiceNiqqud: boolean;
+  /** navigation shows the speedometer (speed next to the posted limit) */
+  navSpeedometer?: boolean;
+  /** red speedometer + a short tone above the posted limit */
+  navSpeedAlert?: boolean;
   /** simulated drive speed, km/h; 0 = as the road allows (posted limits); null = by mode */
   navSimSpeedKmh: number | null;
   /** how the vehicle is drawn while navigating by car */
@@ -1014,6 +1018,8 @@ export const api = {
   voiceTest: (vocalized: boolean) => invoke<void>("voice_test", { vocalized }),
   /** speed of a running simulated drive (km/h; 0 = as the road allows) */
   navSetSimSpeed: (speedKmh: number) => invoke<void>("nav_set_sim_speed", { speedKmh }),
+  /** pause / resume a running simulated drive */
+  navSetSimPaused: (paused: boolean) => invoke<void>("nav_set_sim_paused", { paused }),
   /** [displayName, language][], the voice used first */
   voicesList: () => invoke<[string, string][]>("voices_list"),
   onNavUpdate: (cb: (u: NavUpdate) => void): Promise<UnlistenFn> => listen<NavUpdate>("nav-update", (e) => cb(e.payload)),

@@ -172,6 +172,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
   const boxRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const seq = useRef(0);
+  // the last answers came from the internet (Photon): no local address index
+  const online = useRef(false);
   const listId = useId();
   const favorites = useStore((s) => s.favorites);
   const history = useStore((s) => s.history);
@@ -205,6 +207,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
           setResults(res);
           setActive(0);
           setNoIndex(false);
+          if (res.length) online.current = res.every((r) => r.id.startsWith("photon:"));
         }
       } catch (e) {
         if (id === seq.current) {
@@ -217,7 +220,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
       } finally {
         if (id === seq.current) setLoading(false);
       }
-    }, 200);
+      // online answers (no local index) cost a round trip each: wait for a longer pause in typing
+    }, online.current ? 400 : 200);
     return () => clearTimeout(h);
   }, [text, open, dirty]);
 

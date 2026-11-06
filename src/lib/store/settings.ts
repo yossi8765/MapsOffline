@@ -31,6 +31,8 @@ export const DEFAULT_SETTINGS: Settings = {
   transitReliability: true,
   navVoice: true,
   navVoiceNiqqud: true,
+  navSpeedometer: true,
+  navSpeedAlert: true,
   navSimSpeedKmh: null,
   navVehicle: "arrow",
   navVehicleColor: "accent",

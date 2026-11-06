@@ -91,6 +91,12 @@ pub fn nav_set_sim_speed(speed_kmh: f64) {
     crate::nav::set_sim_speed(v);
 }
 
+/// Pause / resume a running simulated drive.
+#[tauri::command]
+pub fn nav_set_sim_paused(paused: bool) {
+    crate::nav::set_sim_paused(paused);
+}
+
 #[tauri::command]
 pub fn nav_stop() {
     crate::nav::stop();

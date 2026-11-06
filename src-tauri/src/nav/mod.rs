@@ -35,6 +35,8 @@ struct Session {
     voice: Arc<AtomicBool>,
     /// Simulator speed in km/h (f64 bits); 0 = follow the posted limits. Changed live.
     sim_speed: Arc<AtomicU64>,
+    /// Simulator stopped where it is (the pause button); the session keeps running.
+    sim_paused: Arc<AtomicBool>,
     /// Hidden niqqud on what the voice says (`speech::voice_text`).
     niqqud: Arc<AtomicBool>,
 }
@@ -64,15 +66,17 @@ pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, niqqud:
     };
     let sim_speed = Arc::new(AtomicU64::new(start_speed.to_bits()));
     let niqqud_flag = Arc::new(AtomicBool::new(niqqud));
+    let sim_paused = Arc::new(AtomicBool::new(false));
     *SESSION.lock() = Some(Session {
         stop: stop_flag.clone(),
         nav: nav.clone(),
         route_gen: route_gen.clone(),
         voice: voice_flag.clone(),
         sim_speed: sim_speed.clone(),
+        sim_paused: sim_paused.clone(),
         niqqud: niqqud_flag.clone(),
     });
-    let flags = Flags { voice: voice_flag, sim_speed, niqqud: niqqud_flag };
+    let flags = Flags { voice: voice_flag, sim_speed, sim_paused, niqqud: niqqud_flag };
     std::thread::Builder::new().name("nav".into()).spawn(move || run(app, source, stop_flag, nav, route_gen, flags))?;
     Ok(())
 }
@@ -102,6 +106,13 @@ pub fn set_sim_speed(speed_kmh: f64) {
     }
 }
 
+/// Pause / resume the simulated drive of the running session.
+pub fn set_sim_paused(paused: bool) {
+    if let Some(s) = SESSION.lock().as_ref() {
+        s.sim_paused.store(paused, Ordering::SeqCst);
+    }
+}
+
 /// Hidden niqqud on the spoken instructions of the running session.
 pub fn set_niqqud(on: bool) {
     if let Some(s) = SESSION.lock().as_ref() {
@@ -121,6 +132,7 @@ pub fn spoken(text: &str, niqqud: bool) -> String {
 struct Flags {
     voice: Arc<AtomicBool>,
     sim_speed: Arc<AtomicU64>,
+    sim_paused: Arc<AtomicBool>,
     niqqud: Arc<AtomicBool>,
 }
 
@@ -168,11 +180,16 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
                     sim_gen = gen;
                     sim_d = 0.0;
                 }
-                let n = nav.lock();
-                let (p, b) = machine::point_at(&n.route, sim_d);
-                drop(n);
-                sim_d += speed_kmh / 3.6 * tick.as_secs_f64();
-                Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6), accuracy_m: Some(5.0) })
+                if flags.sim_paused.load(Ordering::SeqCst) {
+                    // paused: stand still (no fixes, so the remaining time and the voice wait too)
+                    None
+                } else {
+                    let n = nav.lock();
+                    let (p, b) = machine::point_at(&n.route, sim_d);
+                    drop(n);
+                    sim_d += speed_kmh / 3.6 * tick.as_secs_f64();
+                    Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6), accuracy_m: Some(5.0) })
+                }
             }
             Source::Gps => match gps.as_mut().map(|g| g.fix()) {
                 Some(Ok(f)) => {
