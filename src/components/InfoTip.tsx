@@ -9,7 +9,7 @@ import { Tip } from "./Tip";
  *  panels (clean look) but remain one pointer move away. */
 export function InfoTip({ text, label }: { text: string; label?: string }) {
   return (
-    <Tip text={text}>
+    <Tip text={text} tap>
       <span
         role="img"
         tabIndex={0}

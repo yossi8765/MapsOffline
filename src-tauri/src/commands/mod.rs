@@ -17,6 +17,7 @@ pub mod data;
 pub mod geo;
 pub mod nav;
 pub mod route;
+pub mod speech;
 pub mod transit;
 
 pub use crate::error::{guard, guard_async, AppError, R};

@@ -7,8 +7,8 @@ export interface AppUpdateSlice {
   appUpdateBusy: "check" | "download" | null;
   appUpdateProgress: { done: number; total: number; message: string } | null;
 
-  /** Ask GitLab for a newer signed release; `quiet` = startup check: a newer version is installed
-   *  on its own (as in RAF), or offered with an "update now" button while something is running. */
+  /** Ask GitLab for a newer signed release; `quiet` = startup check: a newer version is offered
+   *  with an "install now" button – nothing is installed without the user's go. */
   checkAppUpdate: (quiet?: boolean) => Promise<void>;
   /** Download, verify, start the installer (passive, update mode – data is never deleted) and quit;
    *  the installer opens the new version when it is done. */
@@ -16,18 +16,11 @@ export interface AppUpdateSlice {
 }
 
 export const createAppUpdateSlice: SliceCreator<AppUpdateSlice> = (set, get) => {
-  /** Something an update (which closes the app) would cut short. */
-  const busyNow = () => {
-    const s = get();
-    return !!s.navigation || !!s.dataStatus?.updating;
-  };
   const offer = (version: string) =>
     get().toast("info", `${get().t("updateAvailableToast")} ${version}`, {
       duration: 0,
       action: { label: get().t("updateNow"), run: () => void get().installAppUpdate() },
     });
-  // startup update waiting for the running job to end
-  let deferTimer = 0;
 
   return {
     appUpdate: null,
@@ -49,25 +42,13 @@ export const createAppUpdateSlice: SliceCreator<AppUpdateSlice> = (set, get) => 
         set({ appUpdateBusy: null });
       }
       if (!found || !quiet) return;
-      const t = get().t;
-      if (!busyNow()) {
-        get().toast("info", `${t("updateAutoInstalling")} ${found.latest}`, { duration: 8000 });
-        void get().installAppUpdate();
-        return;
-      }
-      // navigating / updating data: offer the button now and install by itself once it is over
+      // never installs by itself: the message stays until the user presses "update now"
+      // (or closes it); an update would cut a navigation or a data download short
       offer(found.latest);
-      window.clearInterval(deferTimer);
-      deferTimer = window.setInterval(() => {
-        if (busyNow() || get().appUpdateBusy) return;
-        window.clearInterval(deferTimer);
-        void get().installAppUpdate();
-      }, 30_000);
     },
 
     installAppUpdate: async () => {
       if (get().appUpdateBusy === "download") return;
-      window.clearInterval(deferTimer);
       const t = get().t;
       set({ appUpdateBusy: "download", appUpdateProgress: { done: 0, total: 0, message: "" } });
       try {

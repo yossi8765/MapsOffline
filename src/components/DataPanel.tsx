@@ -16,6 +16,7 @@ import { useT, type I18nKey } from "../lib/i18n";
 import { fmtBytes, fmtDateTime } from "../lib/format";
 import { Toggle } from "./RoutePanel";
 import { RegionsSection } from "./RegionsSection";
+import { SpeechSection } from "./SpeechSection";
 import { DeleteDataSection } from "./DeleteDataSection";
 import { InfoTip } from "./InfoTip";
 
@@ -452,6 +453,8 @@ export function DataPanel() {
       <SatelliteAreas />
 
       <RegionsSection />
+
+      <SpeechSection />
 
       {/* advanced: transfer to an offline computer, data folder, logs, which components to offer */}
       <div className="flex flex-col gap-2">

@@ -456,7 +456,7 @@ const he = {
   releaseNotes: "מה חדש",
   downloadingUpdate: "מוריד את הגרסה החדשה…",
   updateStarting: "מפעיל את ההתקנה. התוכנה תיסגר ותיפתח מחדש בגרסה החדשה.",
-  updateNow: "עדכן עכשיו",
+  updateNow: "התקן עכשיו",
   updateAutoInstalling: "מתעדכן לגרסה החדשה (הנתונים נשמרים). התוכנה תיסגר ותיפתח מחדש בעוד רגע. גרסה",
   updateFailed: "העדכון לא הושלם",
   updateRetry: "נסה שוב",
@@ -1070,6 +1070,23 @@ const he = {
   // ===== [R3] =====
   noticeNextService: "היציאה הראשונה: {time}",
 
+  // voice input in the search boxes (components/MicButton.tsx, SpeechSection.tsx)
+  speechStart: "חיפוש קולי",
+  speechStop: "סיום הקלטה",
+  speechNothing: "לא נקלט דיבור",
+  speechNoModel: "לחיפוש קולי בלי אינטרנט יש להוריד את מודל זיהוי הדיבור",
+  speechGetModel: "למסך הנתונים",
+  speechMicDenied: "אין גישה למיקרופון. יש לאשר אותה בהגדרות המערכת.",
+  speechSection: "זיהוי דיבור ללא אינטרנט",
+  speechSectionHint: "מודל עברי (ivrit-ai, על בסיס Whisper) שהופך דיבור לטקסט במכשיר עצמו, בלי אינטרנט. הוא משמש את המיקרופון בשורות החיפוש, המוצא והיעד.",
+  speechModel: "מודל זיהוי דיבור עברי",
+  speechInstalled: "מותקן",
+  speechNotInstalled: "לא מותקן",
+  speechDownloading: "מוריד…",
+  speechDeleteConfirm: "למחוק את מודל זיהוי הדיבור? החיפוש הקולי ללא אינטרנט יפסיק לעבוד עד שיורד מחדש.",
+  speechWorking: "מזהה את הדיבור…",
+  speechCpu: "המעבד של המכשיר ישן מדי לזיהוי דיבור ללא אינטרנט.",
+
   // ===== [R4] =====
   grpNature: "טבע וטיולים",
   grpEmergency: "חירום ובטיחות",
@@ -1545,7 +1562,7 @@ const en: Record<I18nKey, string> = {
   releaseNotes: "What's new",
   downloadingUpdate: "Downloading the new version...",
   updateStarting: "Starting the installer. The program will close and reopen in the new version.",
-  updateNow: "Update now",
+  updateNow: "Install now",
   updateAutoInstalling: "Updating to the new version (your data is kept). The program will close and reopen in a moment. Version",
   updateFailed: "The update did not complete",
   updateRetry: "Try again",
@@ -2133,6 +2150,23 @@ const en: Record<I18nKey, string> = {
 
   // ===== [R3] =====
   noticeNextService: "First departure: {time}",
+
+  // voice input in the search boxes (components/MicButton.tsx, SpeechSection.tsx)
+  speechStart: "Voice search",
+  speechStop: "Stop recording",
+  speechNothing: "No speech was heard",
+  speechNoModel: "Voice search without internet needs the speech-recognition model",
+  speechGetModel: "Go to Data",
+  speechMicDenied: "No access to the microphone. Allow it in the system settings.",
+  speechSection: "Offline speech recognition",
+  speechSectionHint: "A Hebrew model (ivrit-ai, based on Whisper) that turns speech into text on the device itself, without internet. It serves the microphone in the search, origin and destination boxes.",
+  speechModel: "Hebrew speech-recognition model",
+  speechInstalled: "Installed",
+  speechNotInstalled: "Not installed",
+  speechDownloading: "Downloading…",
+  speechDeleteConfirm: "Delete the speech-recognition model? Offline voice search stops working until it is downloaded again.",
+  speechWorking: "Recognising speech…",
+  speechCpu: "This device's processor is too old for offline speech recognition.",
 
   // ===== [R4] =====
   grpNature: "Nature & hiking",

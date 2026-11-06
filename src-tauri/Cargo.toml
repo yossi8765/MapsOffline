@@ -89,6 +89,9 @@ smallvec = "1"
 tauri-plugin-window-state = "2"
 # MD5 of the Geofabrik extract (Geofabrik publishes <file>.md5 next to it); same digest traits as sha2.
 md-5 = "0.10"
+# Voice input (speech.rs): whisper.cpp, built from source with CMake; bindgen needs libclang
+# (LIBCLANG_PATH). The ivrit-ai Hebrew model is optional data in <data>/speech/.
+whisper-rs = "0.16"
 # [R2] deps
 # [R3] deps
 # [R4] deps

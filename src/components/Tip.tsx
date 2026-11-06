@@ -8,6 +8,8 @@ interface Props {
   shortcut?: string;
   /** Preferred side; flips when there is no room. */
   side?: "top" | "bottom" | "start" | "end";
+  /** Touch: a tap opens / closes the tooltip (the "!" explanations – a finger cannot hover). */
+  tap?: boolean;
   children: ReactElement<Record<string, unknown>>;
 }
 
@@ -18,12 +20,31 @@ const DELAY = 500;
  * shadow 8, with the shortcut in a muted kbd. Replaces the browser's `title=` (slow, unstyled,
  * no shortcut). The child keeps its own aria-label; the tooltip text becomes aria-describedby.
  */
-export function Tip({ text, shortcut, side = "bottom", children }: Props) {
+export function Tip({ text, shortcut, side = "bottom", tap = false, children }: Props) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const timer = useRef<number | undefined>(undefined);
   const id = useId();
+  // opened by a tap: closes on the next tap anywhere (also on itself) or after a while
+  const [tapped, setTapped] = useState(false);
+  // the browser follows a touch with emulated mouse events, which must not close it again
+  const lastTouch = useRef(0);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!tapped) return;
+    const close = () => {
+      setTapped(false);
+      setAnchor(null);
+    };
+    const t = window.setTimeout(close, 8000);
+    // registered after the opening tap has finished, so that tap does not close it at once
+    const h = window.setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
+    return () => {
+      window.clearTimeout(t);
+      window.clearTimeout(h);
+      document.removeEventListener("pointerdown", close, true);
+    };
+  }, [tapped]);
 
   const show = (el: HTMLElement, now = false) => {
     window.clearTimeout(timer.current);
@@ -39,12 +60,24 @@ export function Tip({ text, shortcut, side = "bottom", children }: Props) {
   const props = children.props as Record<string, ((e: unknown) => void) | undefined>;
   const child = cloneElement(children, {
     "aria-describedby": anchor ? id : undefined,
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      props.onPointerDown?.(e);
+      if (e.pointerType === "mouse") return;
+      lastTouch.current = Date.now();
+      if (!tap) return;
+      e.preventDefault();
+      if (tapped) return; // the document listener closes it
+      show(e.currentTarget, true);
+      setTapped(true);
+    },
     onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
       props.onMouseEnter?.(e);
+      if (Date.now() - lastTouch.current < 800) return;
       show(e.currentTarget);
     },
     onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
       props.onMouseLeave?.(e);
+      if (tapped) return;
       hide();
     },
     onFocus: (e: React.FocusEvent<HTMLElement>) => {
@@ -53,10 +86,12 @@ export function Tip({ text, shortcut, side = "bottom", children }: Props) {
     },
     onBlur: (e: React.FocusEvent<HTMLElement>) => {
       props.onBlur?.(e);
+      if (tapped) return;
       hide();
     },
     onMouseDown: (e: React.MouseEvent<HTMLElement>) => {
       props.onMouseDown?.(e);
+      if (tapped || Date.now() - lastTouch.current < 800) return;
       hide();
     },
   });
