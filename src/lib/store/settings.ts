@@ -34,6 +34,7 @@ export const DEFAULT_SETTINGS: Settings = {
   navSpeedometer: true,
   navSpeedAlert: true,
   navSimSpeedKmh: null,
+  navSimWalkKmh: null,
   navVehicle: "arrow",
   navVehicleColor: "accent",
   coordFormat: "dd",

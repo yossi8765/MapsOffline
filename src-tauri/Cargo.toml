@@ -99,6 +99,10 @@ whisper-rs = "0.16"
 
 # Windows only. This section must stay last among the dependency lists: every line below a
 # [target] header belongs to it (chrono & co. once landed here and broke Linux builds).
+# Linux: location from GeoClue over D-Bus (zbus is already in the tree through Tauri)
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", features = ["blocking-api"] }
+
 [target.'cfg(windows)'.dependencies]
 # WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
 # Navigation: text-to-speech (SpeechSynthesis) played through MediaPlayer, WinRT init per thread.

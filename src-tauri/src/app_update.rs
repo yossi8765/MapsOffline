@@ -16,6 +16,9 @@ pub const RELEASES_API: &str = "https://gitlab.com/api/v4/projects/RecoveryAdvan
 pub const RELEASES_PAGE: &str = "https://gitlab.com/RecoveryAdvancedFree/MapsOffline/-/releases";
 pub const SETUP_NAME: &str = "MapsOffline-setup.exe";
 pub const PORTABLE_NAME: &str = "MapsOffline-portable.zip";
+/// Linux release files: the AppImage replaces itself; the deb opens in the system's package installer.
+pub const LINUX_APPIMAGE_NAME: &str = "MapsOffline-linux.AppImage";
+pub const LINUX_DEB_NAME: &str = "MapsOffline-linux.deb";
 pub const SUMS_NAME: &str = "SHA256SUMS";
 pub const SIG_NAME: &str = "SHA256SUMS.sig";
 /// Raw Ed25519 public key of the release signing key (tools/release.ps1 signs with the private one).
@@ -23,6 +26,22 @@ pub const PUBLIC_KEY_HEX: &str = "afc64b6bbd922148d7b36deb20904c29435f6cfc155bbd
 const SMALL_FILE_MAX: usize = 64 * 1024;
 
 pub type Version = (u32, u32, u32);
+
+/// The release file this build updates itself from.
+#[cfg(not(target_os = "linux"))]
+pub fn install_name() -> &'static str {
+    SETUP_NAME
+}
+
+/// Linux: the AppImage when running from one (`APPIMAGE` is its path), else the deb package.
+#[cfg(target_os = "linux")]
+pub fn install_name() -> &'static str {
+    if std::env::var_os("APPIMAGE").is_some() {
+        LINUX_APPIMAGE_NAME
+    } else {
+        LINUX_DEB_NAME
+    }
+}
 
 pub fn parse_version(tag: &str) -> Option<Version> {
     let s = tag.trim().trim_start_matches(['v', 'V']);
@@ -180,8 +199,8 @@ pub fn check() -> anyhow::Result<AppUpdate> {
             last_problem = Some(format!("{}: signed version differs from tag", c.tag));
             continue;
         }
-        let setup_url = link(&c.links, SETUP_NAME).map(str::to_string);
-        if setup_url.is_none() || signed.hash_of(SETUP_NAME).is_none() {
+        let setup_url = link(&c.links, install_name()).map(str::to_string);
+        if setup_url.is_none() || signed.hash_of(install_name()).is_none() {
             last_problem = Some(format!("{}: no signed installer", c.tag));
             continue;
         }
@@ -228,12 +247,12 @@ pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf
     if signed.version != c.version || signed.version <= current_version() {
         bail!("הגרסה החתומה אינה חדשה מהמותקנת");
     }
-    let expected = signed.hash_of(SETUP_NAME).ok_or_else(|| anyhow!("המתקין אינו ברשימה החתומה"))?;
-    let url = link(&c.links, SETUP_NAME).ok_or_else(|| anyhow!("no installer link"))?;
+    let expected = signed.hash_of(install_name()).ok_or_else(|| anyhow!("המתקין אינו ברשימה החתומה"))?;
+    let url = link(&c.links, install_name()).ok_or_else(|| anyhow!("no installer link"))?;
     let dir = update_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("MapsOffline_{}.{}.{}_x64-setup.exe", c.version.0, c.version.1, c.version.2));
+    let dest = dir.join(format!("MapsOffline_{}.{}.{}_{}", c.version.0, c.version.1, c.version.2, if install_name() == SETUP_NAME { "x64-setup.exe" } else { install_name() }));
     download::ensure_fresh(url, &dest, progress, cancel)?;
     progress(ProgressPhase::Finalizing, 0, 0, "מאמת את הקובץ שהורד");
     if sha256_file(&dest)? != expected {
@@ -257,14 +276,38 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     if !canon.starts_with(&dir) || canon != ok_path || sha256_file(&canon)? != ok_hash {
         bail!("UPDATE_FILE_INVALID");
     }
+    #[cfg(target_os = "linux")]
+    linux_install(&canon)?;
     // Tauri NSIS flags, as RAF's "/VERYSILENT /RELAUNCH": /P = passive (a small progress window,
     // no pages or questions), /UPDATE = the old version's uninstaller runs in update mode, which
     // never deletes app data (the "delete app data" choice is skipped), /R = start the app again
     // when the install is done. The data folder itself is outside the install folder anyway.
+    #[cfg(not(target_os = "linux"))]
     std::process::Command::new(&canon)
         .args(["/P", "/UPDATE", "/R"])
         .spawn()
         .with_context(|| format!("starting {}", canon.display()))?;
+    Ok(())
+}
+
+/// Linux: an AppImage is swapped for the new one (the running program keeps its open copy) and
+/// started again once this one has quit (single instance: an overlap would hand over and close);
+/// a deb opens in the desktop's package installer.
+#[cfg(target_os = "linux")]
+fn linux_install(file: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        Some(app) => {
+            let tmp = app.with_extension("new");
+            std::fs::copy(file, &tmp).with_context(|| format!("writing {}", tmp.display()))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::rename(&tmp, &app)?;
+            std::process::Command::new("sh").arg("-c").arg("sleep 2; exec \"$0\"").arg(&app).spawn()?;
+        }
+        None => {
+            std::process::Command::new("xdg-open").arg(file).spawn().context("xdg-open")?;
+        }
+    }
     Ok(())
 }
 

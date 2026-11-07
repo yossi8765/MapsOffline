@@ -58,7 +58,7 @@ pub async fn nav_simulate(app: AppHandle, state: State<'_, Arc<AppState>>, route
         };
         let speed_kmh = match speed_kmh.unwrap_or(50.0) {
             v if v <= 0.0 || !v.is_finite() => 0.0,
-            v => v.clamp(5.0, 300.0),
+            v => v.clamp(1.0, 300.0),
         };
         let cams = cameras_near(&st, &route);
         crate::nav::start(app, &route, crate::nav::Source::Simulate { speed_kmh }, voice, niqqud, &cams).map_err(err)

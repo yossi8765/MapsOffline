@@ -15,6 +15,7 @@ import { ContextMenu } from "./ContextMenu";
 import { MapHoverCard } from "./MapHoverCard";
 import { NavigationView } from "./NavigationView";
 import { QuickNavButton } from "./QuickNavButton";
+import { MapSearchButton } from "./MapSearchButton";
 import { routeImage } from "../lib/mapImage";
 import { setPrintMapProvider } from "../lib/print";
 import { hexColor, mapColors } from "../map/colors";
@@ -294,12 +295,14 @@ export function MapView() {
 
   // ---- my location marker
   const myLocation = useStore((s) => s.myLocation);
+  // while navigating the same marker is the vehicle (useCamera): a location fix must not swap it
+  // back to the dot between two navigation updates (it flickered)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map || !mapReady || navigating) return;
     meOverlay.sync(map, myLocation);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myLocation, mapReady, styleLoads]);
+  }, [myLocation, mapReady, styleLoads, navigating]);
 
   // ---- POI category layer (viewport fetch, debounced, padded box)
   const poiCatsKey = layers.poiCats.join(",");
@@ -638,6 +641,7 @@ export function MapView() {
       </Suspense>
       <NavigationView />
       <QuickNavButton />
+      <MapSearchButton />
     </div>
   );
 }

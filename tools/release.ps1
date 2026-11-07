@@ -79,8 +79,27 @@ Copy-Item $setup (Join-Path $dist "MapsOffline-setup.exe")
 Copy-Item $portableZip (Join-Path $dist "MapsOffline-portable.zip")
 Copy-Item $setup (Join-Path $dist "MapsOffline_${version}_x64-setup.exe")
 
+# --- Linux: deb + AppImage, built in the WSL distro "mapsoffline-build" (C:\MapsOffline-linux\build-linux.sh)
+$linuxOut = "C:\MapsOffline-linux\out"
+if (-not $NoBuild -and -not $SignOnly) {
+    Write-Host "building Linux (WSL)..." -ForegroundColor Cyan
+    $env:WSL_UTF8 = "1"
+    wsl -d mapsoffline-build -u builder -- bash /mnt/c/MapsOffline-linux/build-linux.sh | Select-Object -Last 3
+    if ($LASTEXITCODE -ne 0) { Fail "Linux build failed" }
+}
+$linuxFiles = @()
+foreach ($ext in @("deb", "AppImage")) {
+    $src = Join-Path $linuxOut "MapsOffline_${version}_amd64.$ext"
+    if (Test-Path $src) {
+        Copy-Item $src (Join-Path $dist "MapsOffline-linux.$ext")
+        Copy-Item $src (Join-Path $dist "MapsOffline_${version}_amd64.$ext")
+        $linuxFiles += @("MapsOffline-linux.$ext", "MapsOffline_${version}_amd64.$ext")
+    }
+}
+if ($linuxFiles.Count -eq 0) { Write-Host "WARNING: no Linux files for $version in $linuxOut" -ForegroundColor Yellow }
+
 # --- SHA256SUMS + signature
-$files = @("MapsOffline-setup.exe", "MapsOffline_${version}_x64-setup.exe", "MapsOffline-portable.zip", "MapsOffline_${version}_portable.zip")
+$files = @("MapsOffline-setup.exe", "MapsOffline_${version}_x64-setup.exe", "MapsOffline-portable.zip", "MapsOffline_${version}_portable.zip") + $linuxFiles
 $lines = @("# version $version")
 foreach ($f in $files) {
     $h = (Get-FileHash (Join-Path $dist $f) -Algorithm SHA256).Hash.ToLower()
@@ -122,7 +141,12 @@ $assets = @(
     "$dist\MapsOffline_${version}_x64-setup.exe#MapsOffline_${version}_x64-setup.exe (מתקין)#package",
     "$dist\MapsOffline-setup.exe#MapsOffline-setup.exe (מתקין, שם קבוע)#package",
     "$dist\MapsOffline_${version}_portable.zip#MapsOffline_${version}_portable.zip (נייד, בלי התקנה)#package",
-    "$dist\MapsOffline-portable.zip#MapsOffline-portable.zip (נייד, שם קבוע)#package",
+    "$dist\MapsOffline-portable.zip#MapsOffline-portable.zip (נייד, שם קבוע)#package"
+) + ($linuxFiles | ForEach-Object {
+    $label = if ($_ -like "*.deb") { "התקנה ללינוקס: Ubuntu / Debian / Mint" } else { "לינוקס: קובץ אחד שרץ בלי התקנה" }
+    if ($_ -like "MapsOffline-linux*") { $label += ", שם קבוע" }
+    "$dist\$_#$_ ($label)#package"
+}) + @(
     "$dist\SHA256SUMS#SHA256SUMS#other",
     "$dist\SHA256SUMS.sig#SHA256SUMS.sig#other"
 )

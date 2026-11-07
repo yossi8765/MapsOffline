@@ -8,6 +8,8 @@ pub mod data;
 pub mod error;
 pub mod logging;
 pub mod geo;
+#[cfg(target_os = "linux")]
+pub mod geoclue;
 pub mod geocode;
 pub mod history;
 pub mod location;

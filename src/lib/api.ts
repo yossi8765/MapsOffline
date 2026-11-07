@@ -516,6 +516,8 @@ export interface Settings {
   navSpeedAlert?: boolean;
   /** simulated drive speed, km/h; 0 = as the road allows (posted limits); null = by mode */
   navSimSpeedKmh: number | null;
+  /** simulated walk speed, km/h 1–10; null = 5 */
+  navSimWalkKmh?: number | null;
   /** how the vehicle is drawn while navigating by car */
   navVehicle: "arrow" | "car" | "suv" | "van" | "truck" | "motorbike" | "bus";
   /** body colour of that vehicle; "accent" = the colour scheme's */

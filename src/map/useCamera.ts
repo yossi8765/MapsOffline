@@ -18,7 +18,14 @@ const RESUME_GLIDE_MS = 800;
 
 /** Navigation camera padding: the vehicle sits in the lower part of the view. */
 function followPadding(map: maplibregl.Map) {
-  return { top: Math.round(map.getContainer().clientHeight * 0.4), bottom: 0, left: 0, right: 0 };
+  const box = map.getContainer().getBoundingClientRect();
+  // the navigation cards at the bottom (trip bar, simulation speed): the vehicle stays clear above them
+  const cards = document.querySelector("[data-nav-bottom]")?.getBoundingClientRect();
+  const covered = cards && cards.height > 0 ? Math.max(0, box.bottom - cards.top) : 0;
+  const bottom = Math.round(covered + 40);
+  // the vehicle sits in the lower part of what is left, as navigation apps do
+  const top = Math.max(0, Math.round((box.height - bottom) * 0.45));
+  return { top, bottom, left: 0, right: 0 };
 }
 
 /**

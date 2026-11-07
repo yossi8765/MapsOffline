@@ -8,7 +8,7 @@ import { InfoBar } from "./InfoBar";
 import { api, type Favorite, type LineSummary, type LineTimes, type RouteRequest, type StopBoard } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
-import { fmtTime } from "../lib/format";
+import { fmtTime, fmtWait } from "../lib/format";
 import { matchesAll } from "../lib/text";
 import { SearchBox, favIcon, FAV_ICONS, kindIcon, type Pick } from "./SearchBox";
 import { nextServiceText } from "./SearchPanel";
@@ -57,7 +57,7 @@ export function countdown(relSec: number, iso: string, generatedMs: number, nowM
   if (secs < -60) return { text: t("departed"), soon: false };
   if (secs < 60) return { text: t("nowLabel"), soon: true };
   const min = Math.round(secs / 60);
-  if (min <= 90) return { text: `${t("inMinutes")} ${min} ${t("minShort")}`, soon: min <= 5 };
+  if (min <= 90) return { text: `${t("inMinutes")} ${fmtWait(min, t)}`, soon: min <= 5 };
   return { text: fmtTime(iso), soon: false };
 }
 

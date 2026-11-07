@@ -35,7 +35,15 @@ pub fn locate() -> anyhow::Result<(f64, f64, f64)> {
     Ok((p.Longitude, p.Latitude, acc))
 }
 
-#[cfg(not(windows))]
+/// Linux: GeoClue (the desktop's location service; it may ask the user the first time).
+#[cfg(target_os = "linux")]
+pub fn locate() -> anyhow::Result<(f64, f64, f64)> {
+    let c = crate::geoclue::Client::start()?;
+    let r = c.wait(std::time::Duration::from_secs(20))?;
+    Ok((r.lon, r.lat, r.accuracy_m.unwrap_or(1000.0)))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn locate() -> anyhow::Result<(f64, f64, f64)> {
     anyhow::bail!("LOCATION_UNAVAILABLE")
 }

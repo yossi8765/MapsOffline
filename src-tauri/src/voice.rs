@@ -140,7 +140,63 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: speech-dispatcher (`spd-say`, the desktop's speech service) or espeak-ng, in Hebrew.
+/// A new sentence stops the one still being spoken.
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::process::{Child, Command, Stdio};
+
+    fn has(cmd: &str) -> bool {
+        Command::new("sh").args(["-c", &format!("command -v {cmd}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    }
+
+    pub struct Engine {
+        espeak: bool,
+        child: Option<Child>,
+    }
+    impl Engine {
+        pub fn new() -> anyhow::Result<Self> {
+            if has("espeak-ng") {
+                Ok(Engine { espeak: true, child: None })
+            } else if has("spd-say") {
+                Ok(Engine { espeak: false, child: None })
+            } else {
+                anyhow::bail!("no espeak-ng / spd-say (install espeak-ng for spoken instructions)")
+            }
+        }
+        pub fn say(&mut self, t: &str) -> anyhow::Result<()> {
+            self.silence()?;
+            let child = if self.espeak {
+                Command::new("espeak-ng").args(["-v", "he", "-s", "165", "--", t]).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?
+            } else {
+                Command::new("spd-say").args(["-l", "he", "-w", "--", t]).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?
+            };
+            self.child = Some(child);
+            Ok(())
+        }
+        pub fn silence(&mut self) -> anyhow::Result<()> {
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            if !self.espeak {
+                let _ = Command::new("spd-say").arg("-C").status();
+            }
+            Ok(())
+        }
+    }
+    pub fn voices() -> anyhow::Result<Vec<(String, String)>> {
+        Ok(if has("espeak-ng") {
+            vec![("eSpeak NG".to_string(), "he".to_string())]
+        } else if has("spd-say") {
+            vec![("Speech Dispatcher".to_string(), "he".to_string())]
+        } else {
+            Vec::new()
+        })
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod imp {
     pub struct Engine;
     impl Engine {

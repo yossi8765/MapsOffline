@@ -97,13 +97,81 @@ export function simSpeed(mode: Route["mode"]): number {
 
 /** Speeds offered for a simulated drive (km/h; 0 = as the road allows). */
 export const SIM_SPEEDS = [0, 30, 50, 80, 110];
+/** Speeds offered for a simulated walk (km/h). */
+export const SIM_WALK_SPEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-/** Change the speed of the running simulated drive (and remember it for the next one). */
+/** On foot (walking / wheelchair): the simulator walks at 1–10 km/h, never "as the road allows". */
+export const isWalkMode = (m: Route["mode"]): boolean => m === "foot" || m === "wheelchair";
+
+/** Change the speed of the running simulation (and remember it for the next one of its kind). */
 export function setSimSpeed(kmh: number): void {
-  const v = kmh <= 0 ? 0 : Math.max(5, Math.min(300, Math.round(kmh)));
+  const n = useStore.getState().navigation;
+  const walk = !!n && isWalkMode(n.route.mode);
+  const v = walk ? Math.max(1, Math.min(10, Math.round(kmh))) : kmh <= 0 ? 0 : Math.max(5, Math.min(300, Math.round(kmh)));
   patch({ simSpeedKmh: v });
   void api.navSetSimSpeed(v).catch(() => undefined);
-  void useStore.getState().updateSettings({ navSimSpeedKmh: v });
+  void useStore.getState().updateSettings(walk ? { navSimWalkKmh: v } : { navSimSpeedKmh: v });
+}
+
+// ---- the screen stays on while navigating (Screen Wake Lock; the system takes it back when the
+// window is hidden, so it is asked for again when the window comes back)
+let wakeLock: { release(): Promise<void> } | null = null;
+async function keepAwake(on: boolean): Promise<void> {
+  const wl = (navigator as unknown as { wakeLock?: { request(type: "screen"): Promise<{ release(): Promise<void> }> } }).wakeLock;
+  try {
+    if (on && !wakeLock && wl) wakeLock = await wl.request("screen");
+    if (!on && wakeLock) {
+      const l = wakeLock;
+      wakeLock = null;
+      await l.release();
+    }
+  } catch {
+    wakeLock = null;
+  }
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && useStore.getState().navigation) {
+      wakeLock = null;
+      void keepAwake(true);
+    }
+  });
+  useStore.subscribe((s, prev) => {
+    if (!!s.navigation !== !!prev.navigation) void keepAwake(!!s.navigation);
+  });
+}
+
+let navigatingTo = false;
+
+/**
+ * "Navigate" in a place card: from where the device is to that place, straight into navigation on
+ * the fastest route (no stop in the route panel). With no route the route panel shows the reason.
+ */
+export async function navigateTo(to: { lon: number; lat: number; label: string; result?: import("./api").GeoResult }): Promise<void> {
+  if (navigatingTo) return;
+  navigatingTo = true;
+  try {
+    const s = useStore.getState();
+    const recent = s.myLocation && Date.now() - s.myLocation.at < 60_000 ? s.myLocation : null;
+    const loc = recent ?? (await s.locate(false));
+    if (!loc) return;
+    s.toast("info", s.t("computing"));
+    useStore.setState({
+      waypoints: [{ lon: loc.lon, lat: loc.lat, label: s.t("myLocation") }, to],
+      // public transport has no turn-by-turn navigation: drive instead
+      ...(s.mode === "transit" ? { mode: "car" as const } : {}),
+    });
+    await useStore.getState().computeRoute();
+    const st = useStore.getState();
+    if (st.routes.length === 0) {
+      st.setPanel("route");
+      return;
+    }
+    const fastest = st.routes.reduce((a, b) => (b.durationSec < a.durationSec ? b : a));
+    await startNavigation(fastest.id);
+  } finally {
+    navigatingTo = false;
+  }
 }
 
 /** Pause / resume the running simulated drive. */
@@ -125,7 +193,7 @@ export async function startNavigation(routeId: string, simulate = false, speedKm
   await stopNavigation();
   const mine = ++session;
   const voice = s.settings.navVoice ?? true;
-  const simSpeedKmh = speedKmh ?? s.settings.navSimSpeedKmh ?? simSpeed(route.mode);
+  const simSpeedKmh = speedKmh ?? (isWalkMode(route.mode) ? (s.settings.navSimWalkKmh ?? simSpeed(route.mode)) : (s.settings.navSimSpeedKmh ?? simSpeed(route.mode)));
   useStore.setState({
     navigation: { routeId, route, request: s.lastRequest, simulate, update: null, voice, rerouting: false, error: null, arrived: false, manualStep: null, simSpeedKmh },
   });
@@ -201,6 +269,33 @@ export async function routesFromHere(): Promise<{ routes: Route[]; request: Rout
   if (!req) return null;
   const resp = await api.route(req);
   return { routes: resp.routes, request: req };
+}
+
+/**
+ * While navigating, a place found in the search: `stop` = drive there first and then on to what
+ * was ahead; `destination` = drive there instead. Takes the fastest route from the current position.
+ */
+export async function navigateVia(p: { lon: number; lat: number; label: string }, kind: "stop" | "destination"): Promise<void> {
+  const s = useStore.getState();
+  const n = s.navigation;
+  const u = n?.update;
+  if (!n?.request) throw new Error(s.t("navChangeRouteNone"));
+  const here = u ? { lon: u.lon, lat: u.lat } : (s.myLocation ?? null);
+  if (!here) throw new Error(s.t("navWaiting"));
+  const ahead = n.request.waypoints.slice(Math.min((u?.legIndex ?? 0) + 1, n.request.waypoints.length - 1));
+  const place = { lon: p.lon, lat: p.lat, name: p.label };
+  const req: RouteRequest = {
+    ...n.request,
+    waypoints: [{ lon: here.lon, lat: here.lat, name: s.t("myLocation") }, ...(kind === "stop" ? [place, ...ahead] : [place])],
+    time: { kind: "now" },
+    alternatives: 1,
+  };
+  const resp = await api.route(req);
+  if (resp.routes.length === 0) throw new Error(s.t("navChangeRouteNone"));
+  const fastest = resp.routes.reduce((a, b) => (b.durationSec < a.durationSec ? b : a));
+  await switchRoute(fastest, req);
+  // the route panel shows the same trip afterwards
+  useStore.setState({ waypoints: req.waypoints.map((w) => ({ lon: w.lon, lat: w.lat, label: w.name ?? "" })) });
 }
 
 /** Drive on `r` from now on (picked in "change route"). */

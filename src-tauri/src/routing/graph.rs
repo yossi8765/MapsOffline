@@ -1548,7 +1548,7 @@ fn implicit_limit(v: &str) -> Option<u8> {
     })
 }
 
-fn parse_maxspeed(v: &str) -> Option<u8> {
+pub(crate) fn parse_maxspeed(v: &str) -> Option<u8> {
     let v = v.trim();
     if v.is_empty() || v == "none" || v == "signals" || v == "variable" {
         return None;
