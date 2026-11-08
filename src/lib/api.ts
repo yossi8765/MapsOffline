@@ -111,6 +111,8 @@ export interface RouteRequest {
   vehicle?: { heightM?: number; weightT?: number; widthM?: number };
   /** transit: wheelchair-accessible trips and stops only (R3) */
   accessible?: boolean;
+  /** transit: trains as usual / at least one train ride when possible / no trains */
+  rail?: TransitRail;
 }
 
 export interface Lane {
@@ -498,6 +500,8 @@ export interface Settings {
   avoidHardTurns: boolean;
   /** Order of public-transport results. */
   transitPreference: TransitPreference;
+  /** Trains in public-transport routes. */
+  transitRail: TransitRail;
   /** Take ready-made components from the weekly GitHub build when possible. */
   usePrebuiltData: boolean;
   /** Maps, search and routing for Israel and every country: standard (Protomaps + Geofabrik) or OsmAnd files. */
@@ -871,6 +875,7 @@ export interface ObfImportOutcome {
 
 /** fastest = earliest arrival ("arrive by": latest departure); shortest = the shortest trip. */
 export type TransitPreference = "fastest" | "shortest" | "fewestTransfers" | "leastWalking";
+export type TransitRail = "any" | "prefer" | "avoid";
 
 export type RegionPart = "map" | "search" | "routing";
 

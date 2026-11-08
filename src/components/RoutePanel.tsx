@@ -7,7 +7,7 @@ import { Tip } from "./Tip";
 import { InfoBar } from "./InfoBar";
 import { sortTransit, useStore } from "../lib/store";
 import { useT, type I18nKey } from "../lib/i18n";
-import type { Mode, TimeKind } from "../lib/api";
+import type { Mode, Route as RouteT, TimeKind } from "../lib/api";
 import { fmtTime, isoToLocalInput, localInputToIso, nextFiveMinutes, toLocalInput } from "../lib/format";
 import { SearchBox } from "./SearchBox";
 import { RouteResults, ServiceNoticeBar } from "./RouteResults";
@@ -21,6 +21,9 @@ const MODES: { id: "car" | "foot" | "bike" | "transit"; icon: typeof Car; label:
 ];
 
 /** The segmented-control button a mode belongs to. */
+/** Has at least one train ride (Israel Railways; the light rail is not a train here). */
+const hasRail = (r: RouteT) => r.legs.some((l) => l.transit?.vehicle === "rail");
+
 export function baseMode(m: Mode): "car" | "foot" | "bike" | "transit" {
   return m === "truck" ? "car" : m === "wheelchair" ? "foot" : m;
 }
@@ -46,6 +49,7 @@ export function RoutePanel() {
   const vehicle = useStore((s) => s.vehicle);
   const accessible = useStore((s) => s.accessible);
   const transitPref = useStore((s) => s.settings.transitPreference);
+  const transitRail = useStore((s) => s.settings.transitRail);
   const avoidAreasPref = useStore((s) => s.settings.avoidAreas);
   const lang = useStore((s) => s.settings.language);
   const alternativesCount = useStore((s) => s.alternativesCount);
@@ -347,6 +351,30 @@ export function RoutePanel() {
                     ))}
                   </div>
                 </div>
+                <div className="row justify-between gap-2 flex-wrap">
+                  <span className="row gap-1">
+                    {t("transitRail")}
+                    <InfoTip text={t("transitRailHint")} />
+                  </span>
+                  <div className="seg seg-sm grid grid-cols-3 w-full">
+                    {(["any", "prefer", "avoid"] as const).map((r) => (
+                      <button
+                        key={r}
+                        aria-pressed={(transitRail ?? "any") === r}
+                        onClick={() => {
+                          void useStore.getState().updateSettings({ transitRail: r }).then(() => {
+                            if (useStore.getState().mode === "transit") void useStore.getState().computeRoute();
+                          });
+                        }}
+                      >
+                        <span>{t(r === "any" ? "transitRailAny" : r === "prefer" ? "transitRailPrefer" : "transitRailAvoid")}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {transitRail === "prefer" && routes.length > 0 && routes[0].mode === "transit" && !routes.some(hasRail) && (
+                  <p className="text-xs text-muted">{t("transitRailNone")}</p>
+                )}
                 <Toggle label={t("transitAccessible")} info={t("transitAccessibleHint")} checked={accessible} onChange={setAccessible} />
               </>
             )}

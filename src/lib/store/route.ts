@@ -200,6 +200,7 @@ export const createRouteSlice: SliceCreator<RouteSlice> = (set, get) => ({
       alternatives: s.mode === "transit" ? Math.max(s.alternativesCount, 3) : s.alternativesCount,
       ...(s.mode === "truck" ? { vehicle: s.vehicle } : {}),
       ...(s.mode === "transit" && s.accessible ? { accessible: true } : {}),
+      ...(s.mode === "transit" && (s.settings.transitRail ?? "any") !== "any" ? { rail: s.settings.transitRail } : {}),
     };
     const seq = ++routeSeq;
     set({ routeLoading: true, routeError: null, routeNotice: null, lastRequest: req });

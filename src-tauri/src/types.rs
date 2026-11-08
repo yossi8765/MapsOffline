@@ -260,6 +260,29 @@ pub struct RouteRequest {
     /// Truck dimensions (mode "truck").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<VehicleDims>,
+    /// Transit: trains (Israel Railways and other heavy rail) as usual, required, or never.
+    #[serde(default)]
+    pub rail: RailPref,
+}
+
+/// Transit: what to do with trains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RailPref {
+    /// The planner's best routes, with or without trains.
+    #[default]
+    Any,
+    /// Only routes with at least one train ride, when there is such a route.
+    Prefer,
+    /// No train rides.
+    Avoid,
+}
+
+impl Route {
+    /// Has at least one train ride (heavy rail; light rail / tram is not a train here).
+    pub fn has_rail(&self) -> bool {
+        self.legs.iter().any(|l| l.transit.as_ref().is_some_and(|t| t.vehicle == TransitVehicle::Rail))
+    }
 }
 
 fn default_alternatives() -> u32 {
@@ -268,7 +291,7 @@ fn default_alternatives() -> u32 {
 
 impl Default for RouteRequest {
     fn default() -> Self {
-        Self { waypoints: Vec::new(), mode: Mode::Car, time: TimeSpec::default(), avoid: Avoid::default(), alternatives: default_alternatives(), vehicle: None, accessible: false }
+        Self { waypoints: Vec::new(), mode: Mode::Car, time: TimeSpec::default(), avoid: Avoid::default(), alternatives: default_alternatives(), vehicle: None, accessible: false, rail: RailPref::Any }
     }
 }
 
@@ -891,6 +914,9 @@ pub struct Settings {
     /// Order of public-transport results: "fastest" | "fewestTransfers" | "leastWalking".
     #[serde(default = "default_transit_pref")]
     pub transit_preference: String,
+    /// Trains in public-transport routes: "any" | "prefer" | "avoid" (route panel's initial value).
+    #[serde(default = "default_transit_rail")]
+    pub transit_rail: String,
     /// How coordinates are shown and copied: "dd" | "dms" | "itm" | "utm".
     #[serde(default = "default_coord_format")]
     pub coord_format: String,
@@ -955,6 +981,10 @@ fn default_sat_quality() -> String {
     "high".into()
 }
 
+fn default_transit_rail() -> String {
+    "any".into()
+}
+
 fn default_transit_pref() -> String {
     "fastest".into()
 }
@@ -1015,6 +1045,7 @@ impl Default for Settings {
             unpaved: default_unpaved(),
             avoid_hard_turns: true,
             transit_preference: default_transit_pref(),
+            transit_rail: default_transit_rail(),
             use_prebuilt_data: true,
             map_source: default_map_source(),
             kohanim_level: 0,

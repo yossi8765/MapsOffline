@@ -87,7 +87,7 @@ fn latest_github(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
         .map(|d| (chrono::Utc::now().date_naive() - d).num_days())
         .unwrap_or(i64::MAX);
     let murl = urls.get("manifest.json").ok_or_else(|| anyhow!("data release without manifest.json"))?;
-    let m = client.get(murl).timeout(Duration::from_secs(15)).send()?.error_for_status()?;
+    let m = client.get(download::resolve(murl)).timeout(Duration::from_secs(15)).send()?.error_for_status()?;
     let manifest: Manifest = serde_json::from_slice(&m.bytes()?).context("package manifest")?;
     Ok(Latest { version, age_days, manifest, sha256, urls, source: "GitHub" })
 }

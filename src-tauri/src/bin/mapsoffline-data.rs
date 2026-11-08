@@ -143,6 +143,9 @@ enum Cmd {
         /// Use this graph file instead of the installed one
         #[arg(long)]
         graph: Option<String>,
+        /// Transit trains: any | prefer | avoid
+        #[arg(long, default_value = "any")]
+        rail: String,
     },
     /// Build graph.bin straight from a PBF (no download, no manifest): `graph-build <pbf> <out>`
     /// [--dem <terrain.pmtiles>]
@@ -496,7 +499,7 @@ fn main() -> anyhow::Result<()> {
             }
             println!("computed in {:?}", t0.elapsed());
         }
-        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns, vehicle, hills, avoid_point, graph: graph_file } => {
+        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns, vehicle, hills, avoid_point, graph: graph_file, rail } => {
             let mode = parse_mode(&mode)?;
             let avoid = Avoid {
                 toll: avoid_toll,
@@ -526,6 +529,11 @@ fn main() -> anyhow::Result<()> {
                 avoid,
                 alternatives,
                 vehicle,
+                rail: match rail.as_str() {
+                    "prefer" => RailPref::Prefer,
+                    "avoid" => RailPref::Avoid,
+                    _ => RailPref::Any,
+                },
                 ..Default::default()
             };
             // graph is needed for offline routing and for checking online routes against territories

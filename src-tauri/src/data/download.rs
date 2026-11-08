@@ -14,7 +14,7 @@ use crate::types::{ProgressFn, ProgressPhase};
 
 /// One User-Agent for every HTTP request (data updates, online routing, tiles): app name,
 /// version and project page, as Transitous and the OSRM demo server ask for.
-pub const USER_AGENT: &str = concat!("MapsOffline/", env!("CARGO_PKG_VERSION"), " (+https://gitlab.com/RecoveryAdvancedFree/MapsOffline)");
+pub const USER_AGENT: &str = concat!("MapsOffline/", env!("CARGO_PKG_VERSION"), " (+https://github.com/yossi8765/MapsOffline)");
 const CHUNK: usize = 1 << 20;
 const MAX_ATTEMPTS: u32 = 5;
 
@@ -157,6 +157,59 @@ pub fn blocked_message(url: &str) -> String {
     format!("הגישה אל {host} חסומה על ידי סינון האינטרנט (כגון NetFree). יש לאשר את האתר בסינון ולנסות שוב.")
 }
 
+/// GitHub release files: `github.com/<owner>/<repo>/releases/download/<tag>/<name>` (and
+/// `releases/latest/download/<name>`) is answered by an edge server that can fail for hours
+/// with "504 Gateway Time-out" (seen from Israel, November 2026) while the API works. Such a URL
+/// is turned into the file's signed download address through the API (the release's asset →
+/// `Accept: application/octet-stream` → its redirect); any other URL, or a failure, keeps the
+/// original address. Signed addresses stay valid for about an hour: cached for 20 minutes.
+pub fn resolve(url: &str) -> String {
+    if !url.starts_with("https://github.com/") {
+        return url.to_string();
+    }
+    match github_asset(url) {
+        Ok(u) => u,
+        Err(e) => {
+            log::info!("GitHub API download address for {url}: {e:#}");
+            url.to_string()
+        }
+    }
+}
+
+fn github_asset(url: &str) -> anyhow::Result<String> {
+    use std::collections::HashMap;
+    static CACHE: parking_lot::Mutex<Option<HashMap<String, (Instant, String)>>> = parking_lot::Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(20 * 60);
+    if let Some((t, u)) = CACHE.lock().as_ref().and_then(|c| c.get(url).cloned()) {
+        if t.elapsed() < TTL {
+            return Ok(u);
+        }
+    }
+    let p: Vec<&str> = url.trim_start_matches("https://github.com/").split('/').collect();
+    let (owner, repo, release, name) = match p.as_slice() {
+        [o, r, "releases", "download", tag, name] => (*o, *r, format!("tags/{tag}"), *name),
+        [o, r, "releases", "latest", "download", name] => (*o, *r, "latest".to_string(), *name),
+        _ => bail!("not a release file address"),
+    };
+    let timeout = Duration::from_secs(15);
+    let api = format!("https://api.github.com/repos/{owner}/{repo}/releases/{release}");
+    let v: serde_json::Value =
+        http_client()?.get(&api).header("Accept", "application/vnd.github+json").timeout(timeout).send()?.error_for_status()?.json()?;
+    let asset = v["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["name"].as_str() == Some(name)))
+        .and_then(|x| x["url"].as_str())
+        .ok_or_else(|| anyhow!("no asset {name}"))?;
+    let no_redirect = Client::builder().user_agent(USER_AGENT).redirect(reqwest::redirect::Policy::none()).timeout(timeout).build()?;
+    let r = no_redirect.get(asset).header("Accept", "application/octet-stream").send()?;
+    if !r.status().is_redirection() {
+        bail!("asset {name}: HTTP {}", r.status());
+    }
+    let signed = hdr(r.headers(), reqwest::header::LOCATION).ok_or_else(|| anyhow!("asset {name}: no Location"))?;
+    CACHE.lock().get_or_insert_with(HashMap::new).insert(url.to_string(), (Instant::now(), signed.clone()));
+    Ok(signed)
+}
+
 /// Version string of the remote file (Last-Modified, else ETag) without downloading it. Some
 /// servers (gtfs.mot.gov.il) answer HEAD without validators, so fall back to a ranged GET.
 pub(crate) fn remote_version(client: &Client, url: &str) -> anyhow::Result<Option<String>> {
@@ -164,7 +217,7 @@ pub(crate) fn remote_version(client: &Client, url: &str) -> anyhow::Result<Optio
     if m.version().is_some() {
         return Ok(m.version());
     }
-    let r = client.get(url).header(RANGE, "bytes=0-0").send().context("version request failed")?;
+    let r = client.get(resolve(url)).header(RANGE, "bytes=0-0").send().context("version request failed")?;
     let st = r.status();
     if st.as_u16() == 418 {
         bail!("{}", blocked_message(url));
@@ -181,7 +234,8 @@ pub(crate) fn remote_version(client: &Client, url: &str) -> anyhow::Result<Optio
 /// size: gtfs.mot.gov.il answers HEAD with a 3,382-byte HTML page and nothing else, and that
 /// "size" never matched the downloaded 149 MB, so the GTFS was fetched again on every update.
 pub(crate) fn probe(client: &Client, url: &str) -> anyhow::Result<DownloadMeta> {
-    if let Ok(r) = client.head(url).send() {
+    let fetch = resolve(url);
+    if let Ok(r) = client.head(&fetch).send() {
         if r.status().is_success() {
             let m = meta_from_headers(url, r.headers(), None);
             if m.content_length.is_some() && m.version().is_some() {
@@ -189,7 +243,7 @@ pub(crate) fn probe(client: &Client, url: &str) -> anyhow::Result<DownloadMeta> 
             }
         }
     }
-    let r = client.get(url).header(RANGE, "bytes=0-0").send().context("probe request failed")?;
+    let r = client.get(&fetch).header(RANGE, "bytes=0-0").send().context("probe request failed")?;
     let st = r.status();
     if !st.is_success() {
         if st.as_u16() == 418 {
@@ -321,7 +375,7 @@ pub fn ensure_fresh(
             }
         }
         attempt += 1;
-        match attempt_download(&client, url, &part, &mut meta, progress, cancel) {
+        match attempt_download(&client, &resolve(url), &part, &mut meta, progress, cancel) {
             Ok(()) => {
                 let sz = std::fs::metadata(&part)?.len();
                 if let Some(l) = meta.content_length {
@@ -589,6 +643,25 @@ mod tests {
         assert_eq!(content_range("bytes */1234"), Some(ContentRange { start: None, total: Some(1234) }));
         assert_eq!(content_range("bytes 0-0/*"), Some(ContentRange { start: Some(0), total: None }));
         assert_eq!(content_range("items 1-2/3"), None);
+    }
+
+    /// A GitHub release file through the API address (`resolve`), with the resumable download.
+    /// Online – `cargo test --lib github_release_file -- --ignored`.
+    #[test]
+    #[ignore]
+    fn github_release_file() {
+        let url = "https://github.com/yossi8765/MapsOffline/releases/download/v2.0.7/SHA256SUMS";
+        assert!(resolve(url).starts_with("https://release-assets.githubusercontent.com/"), "{}", resolve(url));
+        let dir = std::env::temp_dir().join("mo-gh-dl-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest = dir.join("SHA256SUMS");
+        let cancel = Cancel::default();
+        ensure_fresh(url, &dest, &|_, _, _, _| true, &cancel).unwrap();
+        assert!(std::fs::read_to_string(&dest).unwrap().starts_with("# version 2.0.7"));
+        assert_eq!(load_meta(&dest).unwrap().url, url);
+        // second call: same content, no new download
+        ensure_fresh(url, &dest, &|_, _, _, _| true, &cancel).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

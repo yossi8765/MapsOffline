@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   unpaved: "avoidLong",
   avoidHardTurns: true,
   transitPreference: "fastest",
+  transitRail: "any",
   usePrebuiltData: true,
   mapSource: "standard",
   kohanimLevel: 0,

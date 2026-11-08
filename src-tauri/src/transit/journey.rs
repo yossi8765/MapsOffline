@@ -21,8 +21,8 @@ use super::raptor::{self, JLeg, Journey, Query, DAY};
 use crate::geo::{haversine_m, polyline_length_m};
 use crate::transit::WalkRouter;
 use crate::types::{
-    Leg, LegKind, LonLat, Mode, Route, RouteRequest, RouteResponse, RouteTag, TimeKind, TimeSpec, TransitLegInfo,
-    TransitStopTime,
+    Leg, LegKind, LonLat, Mode, RailPref, Route, RouteRequest, RouteResponse, RouteTag, TimeKind, TimeSpec, TransitLegInfo,
+    TransitStopTime, TransitVehicle,
 };
 
 pub const ACCESS_RADIUS_M: f64 = 1200.0;
@@ -134,7 +134,7 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
 
     let acc = req.accessible;
     let list: Vec<Cand> = if nseg == 1 {
-        plan_segment(t, pts[0], pts[1], date, secs, arrive_by, want, true, acc, walker)?
+        plan_segment(t, pts[0], pts[1], date, secs, arrive_by, want, true, acc, req.rail, walker)?
     } else {
         // Chain segments. The anchor segment (first for depart-at, last for arrive-by) gets the
         // full alternatives search; every alternative is then extended segment by segment with
@@ -145,14 +145,14 @@ pub fn plan(t: &Transit, req: &RouteRequest, walker: &dyn WalkRouter) -> Result<
             cache
                 .entry((seg, tq))
                 .or_insert_with(|| {
-                    plan_segment(t, pts[seg], pts[seg + 1], date, tq, arrive_by, 1, false, acc, walker)
+                    plan_segment(t, pts[seg], pts[seg + 1], date, tq, arrive_by, 1, false, acc, req.rail, walker)
                         .ok()
                         .and_then(|v| v.into_iter().next())
                 })
                 .clone()
         };
         let anchor = if arrive_by { nseg - 1 } else { 0 };
-        let first = plan_segment(t, pts[anchor], pts[anchor + 1], date, secs, arrive_by, want, true, acc, walker)?;
+        let first = plan_segment(t, pts[anchor], pts[anchor + 1], date, secs, arrive_by, want, true, acc, req.rail, walker)?;
         let mut combined = Vec::new();
         'alt: for c in first {
             let mut chain = vec![c];
@@ -242,6 +242,7 @@ fn plan_segment(
     want: usize,
     full: bool,
     accessible: bool,
+    rail: RailPref,
     walker: &dyn WalkRouter,
 ) -> Result<Vec<Cand>> {
     let shift_days = secs.div_euclid(DAY);
@@ -296,7 +297,10 @@ fn plan_segment(
                     raptor::run(t, &q)
                 }
             };
-            let none = FxHashSet::default();
+            // "no trains": every heavy-rail route is banned in every run
+            let is_rail = |r: u32| t.vehicle_of_route(r) == TransitVehicle::Rail;
+            let none: FxHashSet<u32> =
+                if rail == RailPref::Avoid { (0..t.routes.len() as u32).filter(|&r| is_rail(r)).collect() } else { FxHashSet::default() };
             journeys.extend(run_at(secs, &none, if full { ALT_WINDOW_S } else { 0 }));
             if full {
                 // The profile keeps one journey per (departure, arrival, trips); its variant can
@@ -375,12 +379,36 @@ fn plan_segment(
                 let banned: FxHashSet<u32> = (0..t.routes.len() as u32)
                     .filter(|&r| {
                         let ri = &t.routes[r as usize];
-                        lines.contains(&(ri.agency, ri.short_name, ri.long_name))
+                        lines.contains(&(ri.agency, ri.short_name, ri.long_name)) || none.contains(&r)
                     })
                     .collect();
                 for j in run_at(secs, &banned, 0) {
                     if let Some((route, arr)) = build_route(t, &j, date, &acc_map, &egr_map, walker, repair) {
                         built.push((j, route, arr));
+                    }
+                }
+            }
+            // "prefer trains": when no journey found so far rides a train, ban the lines of the
+            // train-less ones and search again, until a train journey shows up (~20 ms per run)
+            if full && rail == RailPref::Prefer {
+                let mut banned: FxHashSet<u32> = FxHashSet::default();
+                for _ in 0..6 {
+                    if built.iter().any(|(j, _, _)| j.route_seq(t).into_iter().any(is_rail)) {
+                        break;
+                    }
+                    let before = banned.len();
+                    banned.extend(built.iter().flat_map(|(j, _, _)| j.route_seq(t)));
+                    if banned.len() == before {
+                        break;
+                    }
+                    let js = run_at(secs, &banned, ALT_WINDOW_S);
+                    if js.is_empty() {
+                        break;
+                    }
+                    for j in js {
+                        if let Some((route, arr)) = build_route(t, &j, date, &acc_map, &egr_map, walker, repair) {
+                            built.push((j, route, arr));
+                        }
                     }
                 }
             }
@@ -415,6 +443,11 @@ fn plan_segment(
             fare_breakdown: vec![],
         };
         cands.push(Cand { route, dep, arr, seq: vec![], transit: false });
+    }
+    match rail {
+        RailPref::Prefer if cands.iter().any(|c| c.route.has_rail()) => cands.retain(|c| c.route.has_rail()),
+        RailPref::Avoid => cands.retain(|c| !c.route.has_rail()),
+        _ => {}
     }
     let mut list = select(cands, arrive_by, want);
     for c in &mut list {

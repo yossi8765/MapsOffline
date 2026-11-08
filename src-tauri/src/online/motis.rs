@@ -229,7 +229,7 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
     let n = req.alternatives.clamp(1, 6);
     let base = base_url.trim_end_matches('/');
     let url = format!(
-        "{base}/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&time={}&arriveBy={}&numItineraries={n}&detailedTransfers=false{}",
+        "{base}/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&time={}&arriveBy={}&numItineraries={n}&detailedTransfers=false{}{}",
         from.lat,
         from.lon,
         to.lat,
@@ -237,7 +237,9 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
         urlencode(&time),
         arrive_by,
         // MOTIS 2: step-free walking and wheelchair-accessible trips
-        if req.accessible { "&pedestrianProfile=WHEELCHAIR" } else { "" }
+        if req.accessible { "&pedestrianProfile=WHEELCHAIR" } else { "" },
+        // "no trains": every mode but the rail ones
+        if req.rail == RailPref::Avoid { "&transitModes=BUS,COACH,TRAM,SUBWAY,METRO,FERRY,CABLE_CAR,FUNICULAR,AREAL_LIFT,OTHER" } else { "" }
     );
     let client = super::client()?;
     let resp = client.get(&url).send().context("transit API request failed")?;
@@ -251,6 +253,18 @@ pub fn plan(req: &RouteRequest, base_url: &str) -> anyhow::Result<RouteResponse>
         if it.duration <= 30.0 * 60.0 {
             routes.push(convert_itinerary(100 + i, it));
         }
+    }
+    match req.rail {
+        RailPref::Avoid => routes.retain(|r| !r.has_rail()),
+        // the online planner cannot require a train: without one, the local planner (which
+        // searches for train routes) answers instead
+        RailPref::Prefer => {
+            if !routes.iter().any(|r| r.has_rail()) {
+                bail!("transit API: no itinerary with a train");
+            }
+            routes.retain(|r| r.has_rail());
+        }
+        RailPref::Any => {}
     }
     if routes.is_empty() {
         bail!("transit API: no itineraries");

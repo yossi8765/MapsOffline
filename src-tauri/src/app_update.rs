@@ -116,7 +116,7 @@ impl SignedSums {
 }
 
 fn small_file(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<Vec<u8>> {
-    let r = client.get(url).timeout(REQUEST_TIMEOUT).send()?;
+    let r = client.get(download::resolve(url)).timeout(REQUEST_TIMEOUT).send()?;
     if r.status().as_u16() == 418 {
         bail!("{}", download::blocked_message(url));
     }
