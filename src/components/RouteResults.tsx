@@ -238,7 +238,7 @@ export function RouteResults() {
                   <div className="flex gap-1 mt-2 flex-wrap">
                     {r.tags.map((tag) => (
                       <span key={tag} className={clsx("chip", tag === "fastest" ? "" : "chip-muted")}>
-                        {tagLabel(tag, t)}
+                        {tagLabel(tag, t, r.mode === "transit")}
                       </span>
                     ))}
                   </div>

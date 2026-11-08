@@ -11,7 +11,8 @@ export type PrefKey =
   | "mapsoffline.rememberView" // "1" | "0": mirror of settings.rememberMapView for the early read
   | "mapsoffline.lastView" // last map view {lon, lat, zoom} (JSON)
   | "mapsoffline.scrollMode" // two-finger scroll: "pan" | "zoom"
-  | "mapsoffline.favGroupsOnMap"; // favorite groups shown on the map (JSON string[]; "" = no group)
+  | "mapsoffline.favGroupsOnMap" // favorite groups shown on the map (JSON string[]; "" = no group)
+  | "mapsoffline.onlineMapBannerHidden"; // "1": the "online map – download for offline use" bar was closed
 
 export function getPrefString(key: PrefKey): string | null {
   try {

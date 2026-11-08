@@ -88,12 +88,14 @@ export function fmtCoords(lon: number, lat: number): string {
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
 
-export function tagLabel(tag: RouteTag, t: T): string {
+/** `transit`: "fastest" is the route that arrives first (it may leave earlier and ride longer),
+ *  "shortest" the shortest trip – said so, or a longer "fastest" route looks like a mistake. */
+export function tagLabel(tag: RouteTag, t: T, transit = false): string {
   switch (tag) {
     case "fastest":
-      return t("tagFastest");
+      return t(transit ? "tagArrivesFirst" : "tagFastest");
     case "shortest":
-      return t("tagShortest");
+      return t(transit ? "tagShortestTrip" : "tagShortest");
     case "fewest_transfers":
       return t("tagFewestTransfers");
     case "least_walking":

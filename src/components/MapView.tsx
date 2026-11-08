@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { getPrefString, setPrefString } from "../lib/prefs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as maplibregl from "maplibre-gl";
 import type { FeatureCollection } from "geojson";
@@ -577,7 +578,9 @@ export function MapView() {
     return () => window.clearTimeout(id);
   }, [noTilesNow]);
   const noTiles = noTilesNow && noTilesLate;
-  const onlineMap = tilesChecked && !tilesUrl && !!onlineTilesUrl;
+  // the "online map" bar can be closed for good (the Data panel still offers the download)
+  const [onlineBarHidden, setOnlineBarHidden] = useState(() => getPrefString("mapsoffline.onlineMapBannerHidden") === "1");
+  const onlineMap = tilesChecked && !tilesUrl && !!onlineTilesUrl && !onlineBarHidden;
   const setPanel = useStore((s) => s.setPanel);
 
   return (
@@ -614,6 +617,10 @@ export function MapView() {
           <InfoBar
             severity="info"
             className="shadow-[var(--shadow-8)] !bg-[var(--surface)]"
+            onClose={() => {
+              setPrefString("mapsoffline.onlineMapBannerHidden", "1");
+              setOnlineBarHidden(true);
+            }}
             action={
               <button className="btn btn-primary btn-sm" onClick={() => setPanel("data")}>
                 {t("onlineMapDownload")}
