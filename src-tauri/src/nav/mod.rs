@@ -38,6 +38,8 @@ struct Session {
     sim_speed: Arc<AtomicU64>,
     /// Simulator stopped where it is (the pause button); the session keeps running.
     sim_paused: Arc<AtomicBool>,
+    /// Simulator: move to just before this maneuver (the next / previous step arrows) and drive on.
+    sim_jump: Arc<Mutex<Option<usize>>>,
     /// Hidden niqqud on what the voice says (`speech::voice_text`).
     niqqud: Arc<AtomicBool>,
 }
@@ -68,6 +70,7 @@ pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, niqqud:
     let sim_speed = Arc::new(AtomicU64::new(start_speed.to_bits()));
     let niqqud_flag = Arc::new(AtomicBool::new(niqqud));
     let sim_paused = Arc::new(AtomicBool::new(false));
+    let sim_jump = Arc::new(Mutex::new(None));
     *SESSION.lock() = Some(Session {
         stop: stop_flag.clone(),
         nav: nav.clone(),
@@ -75,10 +78,11 @@ pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, niqqud:
         voice: voice_flag.clone(),
         sim_speed: sim_speed.clone(),
         sim_paused: sim_paused.clone(),
+        sim_jump: sim_jump.clone(),
         niqqud: niqqud_flag.clone(),
     });
     let drive = matches!(route.mode, crate::types::Mode::Car | crate::types::Mode::Truck);
-    let flags = Flags { voice: voice_flag, sim_speed, sim_paused, niqqud: niqqud_flag, drive };
+    let flags = Flags { voice: voice_flag, sim_speed, sim_paused, sim_jump, niqqud: niqqud_flag, drive };
     std::thread::Builder::new().name("nav".into()).spawn(move || run(app, source, stop_flag, nav, route_gen, flags))?;
     Ok(())
 }
@@ -115,6 +119,14 @@ pub fn set_sim_paused(paused: bool) {
     }
 }
 
+/// Simulated drive: jump to just before maneuver `step` (index into the route's steps) and keep
+/// driving from there at the set speed.
+pub fn sim_jump(step: usize) {
+    if let Some(s) = SESSION.lock().as_ref() {
+        *s.sim_jump.lock() = Some(step);
+    }
+}
+
 /// Hidden niqqud on the spoken instructions of the running session.
 pub fn set_niqqud(on: bool) {
     if let Some(s) = SESSION.lock().as_ref() {
@@ -131,10 +143,14 @@ pub fn spoken(text: &str, niqqud: bool) -> String {
     }
 }
 
+/// The step arrows put the simulated vehicle this far before the maneuver.
+const SIM_JUMP_BEFORE_M: f64 = 150.0;
+
 struct Flags {
     voice: Arc<AtomicBool>,
     sim_speed: Arc<AtomicU64>,
     sim_paused: Arc<AtomicBool>,
+    sim_jump: Arc<Mutex<Option<usize>>>,
     niqqud: Arc<AtomicBool>,
     /// Car / truck route: look the speed limit up by position when the steps carry none.
     drive: bool,
@@ -184,6 +200,14 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
                 if gen != sim_gen {
                     sim_gen = gen;
                     sim_d = 0.0;
+                }
+                if let Some(step) = flags.sim_jump.lock().take() {
+                    // a little before the maneuver (its announcement is heard), after the previous one
+                    let n = nav.lock();
+                    if let Some(st) = n.route.steps.get(step) {
+                        let prev = step.checked_sub(1).and_then(|i| n.route.steps.get(i)).map_or(0.0, |p| p.at_m);
+                        sim_d = (st.at_m - SIM_JUMP_BEFORE_M).max(prev + 1.0).max(0.0);
+                    }
                 }
                 if flags.sim_paused.load(Ordering::SeqCst) {
                     // paused: stand still (no fixes, so the remaining time and the voice wait too)

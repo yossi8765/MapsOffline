@@ -216,6 +216,7 @@ pub fn run() {
             commands::nav::nav_stop,
             commands::nav::nav_set_sim_speed,
             commands::nav::nav_set_sim_paused,
+            commands::nav::nav_sim_jump,
             commands::nav::voice_test,
             commands::nav::speak,
             commands::nav::voices_list,

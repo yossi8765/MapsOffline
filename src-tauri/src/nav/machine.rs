@@ -565,6 +565,29 @@ mod tests {
         chrono::DateTime::parse_from_rfc3339("2026-11-04T10:00:00+02:00").unwrap()
     }
 
+/// The simulator's step arrows move the vehicle along the route (forward and back): the
+    /// navigator follows to the right maneuver and does not call it off route.
+    #[test]
+    fn follows_simulator_jumps() {
+        let nr = NavRoute::from_route(&l_route());
+        let mut nav = Navigator::new(nr.clone());
+        let mut fix_at = |d: f64| {
+            let (p, b) = point_at(&nr, d);
+            nav.update(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(14.0), accuracy_m: None }, now())
+        };
+        assert_eq!(fix_at(50.0).step_index, 1);
+        // jump past the left turn (to just before the arrival), then back before the turn
+        let u = fix_at(1400.0);
+        assert!(!u.off_route);
+        assert_eq!(u.step_index, 2);
+        let u = fix_at(1414.0);
+        assert!(!u.off_route);
+        let u = fix_at(850.0);
+        assert!(!u.off_route);
+        assert_eq!(u.step_index, 1);
+        assert_eq!(fix_at(864.0).step_index, 1);
+    }
+
     #[test]
     fn drives_the_route_with_announcements_and_arrives() {
         let nr = NavRoute::from_route(&l_route());

@@ -63,12 +63,21 @@ export function flatSteps(route: Route): FlatStep[] {
 }
 
 /** Browse the maneuvers by hand: one step forward (+1) or back (-1) from the shown one (the
- *  GPS one when following); shows it on the map and says it when the voice is on. */
+ *  GPS one when following); shows it on the map and says it when the voice is on. In a
+ *  simulated drive the vehicle itself moves to just before that maneuver and drives on (no
+ *  browsing, no "back to GPS"). */
 export function previewStep(delta: number): void {
   const n = useStore.getState().navigation;
   if (!n) return;
   const steps = flatSteps(n.route);
   if (!steps.length) return;
+  if (n.simulate) {
+    const cur = Math.min(n.update?.stepIndex ?? 0, steps.length - 1);
+    const to = Math.max(0, Math.min(steps.length - 1, cur + delta));
+    if (n.manualStep != null) patch({ manualStep: null });
+    void api.navSimJump(to).catch(() => undefined);
+    return;
+  }
   const from = n.manualStep ?? Math.min(n.update?.stepIndex ?? 0, steps.length - 1);
   const to = Math.max(0, Math.min(steps.length - 1, from + delta));
   patch({ manualStep: to });

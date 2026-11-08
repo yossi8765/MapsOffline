@@ -1027,6 +1027,8 @@ export const api = {
   navSetSimSpeed: (speedKmh: number) => invoke<void>("nav_set_sim_speed", { speedKmh }),
   /** pause / resume a running simulated drive */
   navSetSimPaused: (paused: boolean) => invoke<void>("nav_set_sim_paused", { paused }),
+  /** simulated drive: move to just before maneuver `step` and drive on */
+  navSimJump: (step: number) => invoke<void>("nav_sim_jump", { step }),
   /** [displayName, language][], the voice used first */
   voicesList: () => invoke<[string, string][]>("voices_list"),
   onNavUpdate: (cb: (u: NavUpdate) => void): Promise<UnlistenFn> => listen<NavUpdate>("nav-update", (e) => cb(e.payload)),

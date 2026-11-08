@@ -91,6 +91,12 @@ pub fn nav_set_sim_speed(speed_kmh: f64) {
     crate::nav::set_sim_speed(v);
 }
 
+/// Simulated drive: jump to just before maneuver `step` and drive on (the step arrows).
+#[tauri::command]
+pub fn nav_sim_jump(step: usize) {
+    crate::nav::sim_jump(step);
+}
+
 /// Pause / resume a running simulated drive.
 #[tauri::command]
 pub fn nav_set_sim_paused(paused: bool) {
