@@ -18,8 +18,10 @@ try {
     Step "vitest" { pnpm test --run }
     Push-Location (Join-Path $root "src-tauri")
     try {
-        Step "clippy" { cargo clippy --all-targets --features cli -- -D warnings }
-        Step "tests" { cargo test --features cli }
+        # -j 6: this machine has no page file; 12 parallel rustc/link jobs ran out of commit memory
+        # ("paging file is too small", os error 1455) and left broken .rlib files behind
+        Step "clippy" { cargo clippy --all-targets --features cli -j 6 -- -D warnings }
+        Step "tests" { cargo test --features cli -j 6 }
     } finally { Pop-Location }
 } finally { Pop-Location }
 Write-Host "all checks passed" -ForegroundColor Green
