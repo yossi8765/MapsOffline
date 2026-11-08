@@ -199,7 +199,7 @@ enum Cmd {
     Elev {
         at: Vec<String>,
     },
-    /// Ask GitLab for the newest signed program release (the in-app update check)
+    /// Ask GitHub (else GitLab) for the newest signed program release (the in-app update check)
     AppCheck,
     /// Download + verify the newest signed installer into the update folder (does not run it)
     AppDownload,

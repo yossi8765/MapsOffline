@@ -157,7 +157,7 @@ if ($SignOnly) { exit 0 }
 
 # --- release notes: what's new + checksum table
 $notesFile = Join-Path $root $Notes
-$body = if (Test-Path $notesFile) { Get-Content $notesFile -Raw } else { "MapsOffline $version" }
+$body = if (Test-Path $notesFile) { Get-Content $notesFile -Raw -Encoding UTF8 } else { "MapsOffline $version" }
 $table = "`n`n| קובץ | גודל (בתים) | SHA-256 |`n|---|---:|---|`n"
 foreach ($f in $files) {
     $p = Join-Path $dist $f
@@ -191,7 +191,8 @@ if ($LASTEXITCODE -ne 0) { Fail "glab release create failed" }
 Write-Host "published https://gitlab.com/$project/-/releases/$tag" -ForegroundColor Green
 
 # --- the same release on GitHub (the project's home; the app looks there first)
-$ghAssets = $assets | ForEach-Object { $p = $_.Split("#"); "$($p[0])#$($p[1])" }
+# GitHub gets the fixed names only (the versioned copies are the same files; GitLab keeps both)
+$ghAssets = $assets | Where-Object { ($_.Split("#")[0] | Split-Path -Leaf) -notmatch "^MapsOffline_\d" } | ForEach-Object { $p = $_.Split("#"); "$($p[0])#$($p[1] -replace ', שם קבוע', '')" }
 & gh release create $tag -R $github --title "MapsOffline $version" --notes-file $notesOut @ghAssets
 if ($LASTEXITCODE -ne 0) { Fail "gh release create failed" }
 Write-Host "published https://github.com/$github/releases/tag/$tag" -ForegroundColor Green
