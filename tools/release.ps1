@@ -83,18 +83,16 @@ Copy-Item $setup (Join-Path $dist "MapsOffline-setup.exe")
 Copy-Item $portableZip (Join-Path $dist "MapsOffline-portable.zip")
 Copy-Item $setup (Join-Path $dist "MapsOffline_${version}_x64-setup.exe")
 
-# --- Linux: deb + AppImage, built in the WSL distro "mapsoffline-build" (C:\MapsOffline-linux\build-linux.sh)
+# --- Linux: the deb package, built in the WSL distro "mapsoffline-build" (C:\MapsOffline-linux\build-linux.sh)
 $linuxOut = "C:\MapsOffline-linux\out"
 if (-not $NoBuild -and -not $SignOnly) {
     Write-Host "building Linux (WSL)..." -ForegroundColor Cyan
-    # the AppImage runtime through the GitHub API (linuxdeploy downloads it from releases/download, which can answer 504)
-    & gh release download continuous -R AppImage/type2-runtime -p runtime-x86_64 -D "C:\MapsOffline-linux\cache" --clobber 2>$null
     $env:WSL_UTF8 = "1"
     wsl -d mapsoffline-build -u builder -- bash /mnt/c/MapsOffline-linux/build-linux.sh | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { Fail "Linux build failed" }
 }
 $linuxFiles = @()
-foreach ($ext in @("deb", "AppImage")) {
+foreach ($ext in @("deb")) {  # no AppImage since 2.0.10 (~83 MB, little gain)
     $src = Join-Path $linuxOut "MapsOffline_${version}_amd64.$ext"
     if (Test-Path $src) {
         Copy-Item $src (Join-Path $dist "MapsOffline-linux.$ext")

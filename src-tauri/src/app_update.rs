@@ -19,8 +19,7 @@ pub const RELEASES_API: &str = "https://gitlab.com/api/v4/projects/RecoveryAdvan
 pub const RELEASES_PAGE: &str = "https://github.com/yossi8765/MapsOffline/releases";
 pub const SETUP_NAME: &str = "MapsOffline-setup.exe";
 pub const PORTABLE_NAME: &str = "MapsOffline-portable.zip";
-/// Linux release files: the AppImage replaces itself; the deb opens in the system's package installer.
-pub const LINUX_APPIMAGE_NAME: &str = "MapsOffline-linux.AppImage";
+/// Linux release file: the deb, opened in the system's package installer.
 pub const LINUX_DEB_NAME: &str = "MapsOffline-linux.deb";
 /// Mac: the disk image (built by GitHub Actions, .github/workflows/build.yml); it opens in Finder.
 pub const MAC_DMG_NAME: &str = "MapsOffline-mac.dmg";
@@ -43,14 +42,11 @@ pub fn install_name() -> &'static str {
     MAC_DMG_NAME
 }
 
-/// Linux: the AppImage when running from one (`APPIMAGE` is its path), else the deb package.
+/// Linux: the deb package (since 2.0.10 releases carry no AppImage: ~83 MB for little gain;
+/// a copy running from an AppImage is offered the deb too).
 #[cfg(target_os = "linux")]
 pub fn install_name() -> &'static str {
-    if std::env::var_os("APPIMAGE").is_some() {
-        LINUX_APPIMAGE_NAME
-    } else {
-        LINUX_DEB_NAME
-    }
+    LINUX_DEB_NAME
 }
 
 pub fn parse_version(tag: &str) -> Option<Version> {
@@ -349,24 +345,11 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Linux: an AppImage is swapped for the new one (the running program keeps its open copy) and
-/// started again once this one has quit (single instance: an overlap would hand over and close);
-/// a deb opens in the desktop's package installer.
+/// Linux: the deb opens in the desktop's package installer.
 #[cfg(target_os = "linux")]
 fn linux_install(file: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
-        Some(app) => {
-            let tmp = app.with_extension("new");
-            std::fs::copy(file, &tmp).with_context(|| format!("writing {}", tmp.display()))?;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-            std::fs::rename(&tmp, &app)?;
-            std::process::Command::new("sh").arg("-c").arg("sleep 2; exec \"$0\"").arg(&app).spawn()?;
-        }
-        None => {
-            std::process::Command::new("xdg-open").arg(file).spawn().context("xdg-open")?;
-        }
-    }
+    // the deb opens in the system's package installer
+    std::process::Command::new("xdg-open").arg(file).spawn().context("xdg-open")?;
     Ok(())
 }
 
