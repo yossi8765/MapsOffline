@@ -68,6 +68,9 @@
         "compression": "lzma"
       }
     },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
     "linux": {
       "deb": {
         "recommends": ["geoclue-2.0", "espeak-ng"]
