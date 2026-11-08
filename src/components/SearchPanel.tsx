@@ -6,6 +6,7 @@ import { Icon } from "./Icon";
 import { Tip } from "./Tip";
 import { InfoBar } from "./InfoBar";
 import { findFavorite, useStore } from "../lib/store";
+import { navigateTo } from "../lib/nav";
 import { useT, type I18nKey } from "../lib/i18n";
 import { copyText } from "../lib/format";
 import { formatCoord } from "../lib/coords";
@@ -120,7 +121,7 @@ function PlaceCard({ picked }: { picked: Pick }) {
       {/* round actions, Google-style: the primary one filled */}
       <div className="flex items-start justify-between gap-1">
         <RoundAction primary icon={Flag} label={t("routeHere")} onClick={() => go("to")} />
-        <RoundAction icon={Navigation} flip label={t("routeFromHere")} onClick={() => go("from")} />
+        <RoundAction icon={Navigation} label={t("navStart")} onClick={() => void navigateTo({ lon: picked.lon, lat: picked.lat, label: picked.label, result: picked.result })} />
         <RoundAction
           icon={Star}
           filled={!!saved}

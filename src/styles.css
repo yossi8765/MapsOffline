@@ -1373,3 +1373,19 @@ html:root[data-scheme]:not([data-scheme="white"])[data-theme="dark"] {
 .compare-map .maplibregl-ctrl-bottom-right {
   display: none;
 }
+
+/* the quick "navigate the fastest route" square sits in the bottom left corner */
+.quick-nav-shown .maplibregl-ctrl-bottom-left {
+  margin-bottom: 68px;
+}
+
+/* navigation bar on a phone: the step arrows, route / search / vehicle / voice and "end" fit one row */
+@media (max-width: 480px) {
+  .nav-bar .btn-icon {
+    width: 38px;
+    min-width: 38px;
+  }
+  .nav-bar .btn-danger {
+    padding: 0 10px;
+  }
+}

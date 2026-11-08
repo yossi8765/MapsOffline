@@ -1,6 +1,6 @@
 [package]
 name = "mapsoffline"
-version = "2.0.5"
+version = "2.0.6"
 description = "MapsOffline - offline navigation and maps for Israel"
 authors = ["MapsOffline"]
 edition = "2021"
@@ -89,6 +89,9 @@ smallvec = "1"
 tauri-plugin-window-state = "2"
 # MD5 of the Geofabrik extract (Geofabrik publishes <file>.md5 next to it); same digest traits as sha2.
 md-5 = "0.10"
+# Voice input (speech.rs): whisper.cpp, built from source with CMake; bindgen needs libclang
+# (LIBCLANG_PATH). The ivrit-ai Hebrew model is optional data in <data>/speech/.
+whisper-rs = "0.16"
 # [R2] deps
 # [R3] deps
 # [R4] deps
@@ -96,6 +99,10 @@ md-5 = "0.10"
 
 # Windows only. This section must stay last among the dependency lists: every line below a
 # [target] header belongs to it (chrono & co. once landed here and broke Linux builds).
+# Linux: location from GeoClue over D-Bus (zbus is already in the tree through Tauri)
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", features = ["blocking-api"] }
+
 [target.'cfg(windows)'.dependencies]
 # WinRT Geolocator for "my location" (system consent dialog, no browser prompt).
 # Navigation: text-to-speech (SpeechSynthesis) played through MediaPlayer, WinRT init per thread.

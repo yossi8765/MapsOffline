@@ -8,6 +8,8 @@ pub mod data;
 pub mod error;
 pub mod logging;
 pub mod geo;
+#[cfg(target_os = "linux")]
+pub mod geoclue;
 pub mod geocode;
 pub mod history;
 pub mod location;
@@ -22,6 +24,7 @@ pub mod online;
 pub mod paths;
 pub mod routing;
 pub mod state;
+pub mod speech;
 pub mod system;
 pub mod transit;
 pub mod types;
@@ -212,6 +215,7 @@ pub fn run() {
             commands::nav::nav_set_voice,
             commands::nav::nav_stop,
             commands::nav::nav_set_sim_speed,
+            commands::nav::nav_set_sim_paused,
             commands::nav::voice_test,
             commands::nav::speak,
             commands::nav::voices_list,
@@ -239,6 +243,13 @@ pub fn run() {
             commands::geo::geocode_batch,
             commands::geo::coords_parse,
             commands::geo::wiki_summary,
+            // voice input for the search boxes (commands/speech.rs)
+            commands::speech::speech_status,
+            commands::speech::speech_install,
+            commands::speech::speech_cancel,
+            commands::speech::speech_delete,
+            commands::speech::speech_transcribe,
+            commands::speech::speech_system,
             // [R4] new commands above
         ])
         .build(tauri::generate_context!())

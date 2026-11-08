@@ -326,7 +326,7 @@ export function RoutePanel() {
               <>
                 <div className="row justify-between gap-2 flex-wrap">
                   <span>{t("transitPref")}</span>
-                  <div className="seg seg-sm seg-fit">
+                  <div className="seg seg-sm grid grid-cols-2 w-full">
                     {(["fastest", "shortest", "fewestTransfers", "leastWalking"] as const).map((p) => (
                       <button
                         key={p}

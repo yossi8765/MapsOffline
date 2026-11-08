@@ -2,21 +2,37 @@
 //! search-as-you-type geocoder built on OpenStreetMap. Short timeouts; any failure simply means
 //! no online results (the caller then reports the missing index).
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::types::{GeoExtra, GeoKind, GeoPrecision, GeoResult, LonLat};
 
 const API: &str = "https://photon.komoot.io";
 
+/// One client for the whole run: search-as-you-type sends a request per pause in typing, and a
+/// kept-alive connection saves the TLS handshake each time (hundreds of ms on mobile data).
 fn client() -> anyhow::Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let c = reqwest::blocking::Client::builder()
         .user_agent(super::USER_AGENT)
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(4))
-        .build()?)
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(7))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()?;
+    Ok(CLIENT.get_or_init(|| c).clone())
 }
+
+/// Recent answers (query + rounded position → results): typing back over a query, or the same
+/// search again, shows at once without a round trip.
+type CacheKey = (String, i32, i32, usize);
+static CACHE: Mutex<Vec<(CacheKey, Vec<GeoResult>)>> = Mutex::new(Vec::new());
+const CACHE_LEN: usize = 64;
 
 fn s(p: &Value, k: &str) -> Option<String> {
     p.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
@@ -75,19 +91,41 @@ fn to_result(f: &Value) -> Option<GeoResult> {
 }
 
 fn parse(body: &Value, limit: usize) -> Vec<GeoResult> {
-    body.get("features").and_then(Value::as_array).map(|fs| fs.iter().filter_map(to_result).take(limit).collect()).unwrap_or_default()
+    let mut out: Vec<GeoResult> = Vec::new();
+    for r in body.get("features").and_then(Value::as_array).into_iter().flatten().filter_map(to_result) {
+        // OSM often has a place twice (its node and its boundary): same name and kind, a few km apart
+        let dup = out.iter().any(|o| o.kind == r.kind && o.name == r.name && (o.lon - r.lon).abs() < 0.05 && (o.lat - r.lat).abs() < 0.05);
+        if !dup {
+            out.push(r);
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
 }
 
 /// Search `query` (results near `near` first; Israel's centre when none).
 pub fn search(query: &str, near: Option<LonLat>, limit: usize) -> anyhow::Result<Vec<GeoResult>> {
     let [lon, lat] = near.unwrap_or([34.9, 31.8]);
+    // ~1 km grid: the bias point moves with the map, the answer barely does
+    let key: CacheKey = (query.trim().to_lowercase(), (lon * 100.0).round() as i32, (lat * 100.0).round() as i32, limit);
+    if let Some((_, v)) = CACHE.lock().iter().find(|(k, _)| *k == key) {
+        return Ok(v.clone());
+    }
     let body: Value = client()?
         .get(format!("{API}/api/"))
         .query(&[("q", query), ("limit", &limit.clamp(1, 20).to_string()), ("lang", "default"), ("lon", &format!("{lon:.5}")), ("lat", &format!("{lat:.5}"))])
         .send()?
         .error_for_status()?
         .json()?;
-    Ok(parse(&body, limit))
+    let out = parse(&body, limit);
+    let mut c = CACHE.lock();
+    if c.len() >= CACHE_LEN {
+        c.remove(0);
+    }
+    c.push((key, out.clone()));
+    Ok(out)
 }
 
 /// The nearest address / place to a point.

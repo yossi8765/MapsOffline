@@ -4,6 +4,7 @@ import { Icon } from "./Icon";
 import { api, type GeoResult, type LonLat, type Minyan } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
+import { fmtWait } from "../lib/format";
 
 /** What the card shows: a POI of the category layer or a transit stop (from the map feature). */
 export interface HoverTarget {
@@ -136,7 +137,7 @@ export function MapHoverCard({ target, onEnter, onLeave, onClose, elRef }: Props
               </span>
               <span className="flex-1 min-w-0 truncate text-muted text-xs">{d.headsign}</span>
               <span className="num text-xs shrink-0">
-                {d.min} {t("minutes")}
+                {fmtWait(d.min, t)}
               </span>
             </div>
           ))}

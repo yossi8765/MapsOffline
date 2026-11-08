@@ -14,6 +14,8 @@ import { api, apiX, errorCode, type KohanimArea } from "../lib/api";
 import { ContextMenu } from "./ContextMenu";
 import { MapHoverCard } from "./MapHoverCard";
 import { NavigationView } from "./NavigationView";
+import { QuickNavButton } from "./QuickNavButton";
+import { MapSearchButton } from "./MapSearchButton";
 import { routeImage } from "../lib/mapImage";
 import { setPrintMapProvider } from "../lib/print";
 import { hexColor, mapColors } from "../map/colors";
@@ -293,12 +295,14 @@ export function MapView() {
 
   // ---- my location marker
   const myLocation = useStore((s) => s.myLocation);
+  // while navigating the same marker is the vehicle (useCamera): a location fix must not swap it
+  // back to the dot between two navigation updates (it flickered)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map || !mapReady || navigating) return;
     meOverlay.sync(map, myLocation);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myLocation, mapReady, styleLoads]);
+  }, [myLocation, mapReady, styleLoads, navigating]);
 
   // ---- POI category layer (viewport fetch, debounced, padded box)
   const poiCatsKey = layers.poiCats.join(",");
@@ -560,7 +564,19 @@ export function MapView() {
   const importOpen = useStore((s) => s.importOpen);
   const mapPopover = useStore((s) => s.mapPopover);
   // The "no map yet" card points at the Data panel, so it hides while that panel is open.
-  const noTiles = tilesChecked && !tilesUrl && !onlineTilesUrl && !(panel === "data" && !sidebarCollapsed);
+  const noTilesNow = tilesChecked && !tilesUrl && !onlineTilesUrl && !(panel === "data" && !sidebarCollapsed);
+  // Right after start the online map is still being looked up (about a second): the card shows
+  // only when there is still no map 3 s later, instead of flashing before the online map appears.
+  const [noTilesLate, setNoTilesLate] = useState(false);
+  useEffect(() => {
+    if (!noTilesNow) {
+      setNoTilesLate(false);
+      return;
+    }
+    const id = window.setTimeout(() => setNoTilesLate(true), 3000);
+    return () => window.clearTimeout(id);
+  }, [noTilesNow]);
+  const noTiles = noTilesNow && noTilesLate;
   const onlineMap = tilesChecked && !tilesUrl && !!onlineTilesUrl;
   const setPanel = useStore((s) => s.setPanel);
 
@@ -624,6 +640,8 @@ export function MapView() {
         {importOpen && <ImportDialog />}
       </Suspense>
       <NavigationView />
+      <QuickNavButton />
+      <MapSearchButton />
     </div>
   );
 }

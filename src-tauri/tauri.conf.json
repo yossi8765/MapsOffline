@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MapsOffline",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "identifier": "il.mapsoffline.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -66,6 +66,11 @@
         "installerHooks": "./nsis/hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "compression": "lzma"
+      }
+    },
+    "linux": {
+      "deb": {
+        "recommends": ["geoclue-2.0", "espeak-ng"]
       }
     }
   }

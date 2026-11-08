@@ -2,6 +2,7 @@
 //! simulator that drives along the route) into the state machine and emits "nav-update" events;
 //! spoken instructions go to `crate::voice`.
 
+pub mod limits;
 pub mod machine;
 pub mod speech;
 pub mod speech_names;
@@ -35,6 +36,8 @@ struct Session {
     voice: Arc<AtomicBool>,
     /// Simulator speed in km/h (f64 bits); 0 = follow the posted limits. Changed live.
     sim_speed: Arc<AtomicU64>,
+    /// Simulator stopped where it is (the pause button); the session keeps running.
+    sim_paused: Arc<AtomicBool>,
     /// Hidden niqqud on what the voice says (`speech::voice_text`).
     niqqud: Arc<AtomicBool>,
 }
@@ -64,15 +67,18 @@ pub fn start(app: AppHandle, route: &Route, source: Source, voice: bool, niqqud:
     };
     let sim_speed = Arc::new(AtomicU64::new(start_speed.to_bits()));
     let niqqud_flag = Arc::new(AtomicBool::new(niqqud));
+    let sim_paused = Arc::new(AtomicBool::new(false));
     *SESSION.lock() = Some(Session {
         stop: stop_flag.clone(),
         nav: nav.clone(),
         route_gen: route_gen.clone(),
         voice: voice_flag.clone(),
         sim_speed: sim_speed.clone(),
+        sim_paused: sim_paused.clone(),
         niqqud: niqqud_flag.clone(),
     });
-    let flags = Flags { voice: voice_flag, sim_speed, niqqud: niqqud_flag };
+    let drive = matches!(route.mode, crate::types::Mode::Car | crate::types::Mode::Truck);
+    let flags = Flags { voice: voice_flag, sim_speed, sim_paused, niqqud: niqqud_flag, drive };
     std::thread::Builder::new().name("nav".into()).spawn(move || run(app, source, stop_flag, nav, route_gen, flags))?;
     Ok(())
 }
@@ -102,6 +108,13 @@ pub fn set_sim_speed(speed_kmh: f64) {
     }
 }
 
+/// Pause / resume the simulated drive of the running session.
+pub fn set_sim_paused(paused: bool) {
+    if let Some(s) = SESSION.lock().as_ref() {
+        s.sim_paused.store(paused, Ordering::SeqCst);
+    }
+}
+
 /// Hidden niqqud on the spoken instructions of the running session.
 pub fn set_niqqud(on: bool) {
     if let Some(s) = SESSION.lock().as_ref() {
@@ -121,7 +134,10 @@ pub fn spoken(text: &str, niqqud: bool) -> String {
 struct Flags {
     voice: Arc<AtomicBool>,
     sim_speed: Arc<AtomicU64>,
+    sim_paused: Arc<AtomicBool>,
     niqqud: Arc<AtomicBool>,
+    /// Car / truck route: look the speed limit up by position when the steps carry none.
+    drive: bool,
 }
 
 pub fn stop() {
@@ -157,6 +173,7 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
     let mut last_gps_err = 0u32;
     // posted limit of the stretch being driven (simulator "as the road allows")
     let mut road_kmh = 50.0_f64;
+    let mut limits = flags.drive.then(|| limits::Lookup::new(app.clone()));
     while !stop.load(Ordering::SeqCst) {
         let t0 = std::time::Instant::now();
         let fix = match source {
@@ -168,11 +185,16 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
                     sim_gen = gen;
                     sim_d = 0.0;
                 }
-                let n = nav.lock();
-                let (p, b) = machine::point_at(&n.route, sim_d);
-                drop(n);
-                sim_d += speed_kmh / 3.6 * tick.as_secs_f64();
-                Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6), accuracy_m: Some(5.0) })
+                if flags.sim_paused.load(Ordering::SeqCst) {
+                    // paused: stand still (no fixes, so the remaining time and the voice wait too)
+                    None
+                } else {
+                    let n = nav.lock();
+                    let (p, b) = machine::point_at(&n.route, sim_d);
+                    drop(n);
+                    sim_d += speed_kmh / 3.6 * tick.as_secs_f64();
+                    Some(Fix { lon: p[0], lat: p[1], heading: Some(b), speed_mps: Some(speed_kmh / 3.6), accuracy_m: Some(5.0) })
+                }
             }
             Source::Gps => match gps.as_mut().map(|g| g.fix()) {
                 Some(Ok(f)) => {
@@ -190,7 +212,14 @@ fn run(app: AppHandle, source: Source, stop: Arc<AtomicBool>, nav: Arc<Mutex<Nav
             },
         };
         if let Some(fix) = fix {
-            let u = nav.lock().update(fix, now());
+            let (here, heading) = ([fix.lon, fix.lat], fix.heading);
+            let mut u = nav.lock().update(fix, now());
+            if u.speed_limit_kmh.is_none() {
+                if let Some(l) = limits.as_mut() {
+                    l.route(route_gen.load(Ordering::SeqCst), &nav.lock().route.pts);
+                    u.speed_limit_kmh = l.get(here, heading);
+                }
+            }
             if let Some(limit) = u.speed_limit_kmh {
                 road_kmh = f64::from(limit);
             }
@@ -256,7 +285,29 @@ pub(crate) mod gps {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: GeoClue fixes (a fresh one each second while it has one).
+#[cfg(target_os = "linux")]
+pub(crate) mod gps {
+    use super::Fix;
+    use std::time::Duration;
+
+    pub struct Gps {
+        c: crate::geoclue::Client,
+    }
+
+    impl Gps {
+        pub fn open() -> anyhow::Result<Self> {
+            Ok(Self { c: crate::geoclue::Client::start()? })
+        }
+
+        pub fn fix(&mut self) -> anyhow::Result<Fix> {
+            let r = self.c.wait(Duration::from_secs(3))?;
+            Ok(Fix { lon: r.lon, lat: r.lat, heading: r.heading, speed_mps: r.speed_mps, accuracy_m: r.accuracy_m })
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) mod gps {
     use super::Fix;
     pub struct Gps;

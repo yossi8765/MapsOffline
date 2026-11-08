@@ -20,6 +20,14 @@ export function fmtDuration(sec: number, t: T): string {
   return m ? `${hs} ${t("durationAnd")}${m} ${t("minutes")}` : hs;
 }
 
+/** A wait in whole minutes, short: "12 דק׳", from an hour on "4 ש׳ ו-5 דק׳" (not "245 דק׳"). */
+export function fmtWait(min: number, t: T): string {
+  if (min < 60) return `${min} ${t("minShort")}`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m ? `${h} ${t("hourShort")} ${t("durationAnd")}${m} ${t("minShort")}` : `${h} ${t("hourShort")}`;
+}
+
 export function fmtDistance(m: number, t: T, units = "metric"): string {
   if (units === "imperial") {
     const ft = m * 3.28084;

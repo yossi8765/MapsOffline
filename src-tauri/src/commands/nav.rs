@@ -58,7 +58,7 @@ pub async fn nav_simulate(app: AppHandle, state: State<'_, Arc<AppState>>, route
         };
         let speed_kmh = match speed_kmh.unwrap_or(50.0) {
             v if v <= 0.0 || !v.is_finite() => 0.0,
-            v => v.clamp(5.0, 300.0),
+            v => v.clamp(1.0, 300.0),
         };
         let cams = cameras_near(&st, &route);
         crate::nav::start(app, &route, crate::nav::Source::Simulate { speed_kmh }, voice, niqqud, &cams).map_err(err)
@@ -89,6 +89,12 @@ pub fn nav_set_voice(on: bool) {
 pub fn nav_set_sim_speed(speed_kmh: f64) {
     let v = if speed_kmh <= 0.0 || !speed_kmh.is_finite() { 0.0 } else { speed_kmh.clamp(5.0, 300.0) };
     crate::nav::set_sim_speed(v);
+}
+
+/// Pause / resume a running simulated drive.
+#[tauri::command]
+pub fn nav_set_sim_paused(paused: bool) {
+    crate::nav::set_sim_paused(paused);
 }
 
 #[tauri::command]

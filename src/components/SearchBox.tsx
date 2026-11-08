@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Briefcase, Bus, Clock, Heart, Home, LocateFixed, MapPin, Milestone, Search, Star, Store, X } from "lucide-react";
+import { MicButton } from "./MicButton";
 import clsx from "clsx";
 import { Icon } from "./Icon";
 import { api, errorCode, type GeoResult, type Favorite, type HistoryItem } from "../lib/api";
@@ -171,6 +172,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
   const boxRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const seq = useRef(0);
+  // the last answers came from the internet (Photon): no local address index
+  const online = useRef(false);
   const listId = useId();
   const favorites = useStore((s) => s.favorites);
   const history = useStore((s) => s.history);
@@ -204,6 +207,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
           setResults(res);
           setActive(0);
           setNoIndex(false);
+          if (res.length) online.current = res.every((r) => r.id.startsWith("photon:"));
         }
       } catch (e) {
         if (id === seq.current) {
@@ -216,7 +220,8 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
       } finally {
         if (id === seq.current) setLoading(false);
       }
-    }, 200);
+      // online answers (no local index) cost a round trip each: wait for a longer pause in typing
+    }, online.current ? 400 : 200);
     return () => clearTimeout(h);
   }, [text, open, dirty]);
 
@@ -484,7 +489,7 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
         )}
         <input
           ref={inputRef}
-          className={clsx("input ps-10 pe-9 truncate-dir", compact && "h-10")}
+          className={clsx("input ps-10 pe-16 truncate-dir", compact && "h-10")}
           placeholder={placeholder ?? t("searchPlaceholder")}
           aria-label={label ?? placeholder ?? t("searchPlaceholder")}
           value={text}
@@ -508,9 +513,19 @@ export function SearchBox({ value, placeholder, autoFocus, focusTick, onPick, on
           aria-autocomplete="list"
           aria-activedescendant={shown && rows[active] ? optionId(active) : undefined}
         />
+        {/* voice input: the spoken text is searched like typed text */}
+        <MicButton
+          className="absolute end-1.5"
+          onText={(spoken) => {
+            setText(spoken);
+            setDirty(true);
+            setOpen(true);
+            inputRef.current?.focus();
+          }}
+        />
         {(text || value) && (
           <button
-            className="absolute end-1.5 w-7 h-7 rounded flex items-center justify-center text-subtle hover:text-fg hover:bg-hover transition-colors"
+            className="absolute end-9 w-7 h-7 rounded flex items-center justify-center text-subtle hover:text-fg hover:bg-hover transition-colors"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               setText("");

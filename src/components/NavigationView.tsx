@@ -17,6 +17,11 @@ import {
   Merge,
   MoveUpLeft,
   MoveUpRight,
+  Pause,
+  Play,
+  Route as RouteIcon,
+  Search as SearchIcon,
+  X,
   RotateCcw,
   Undo2,
   Volume2,
@@ -25,12 +30,14 @@ import {
 import clsx from "clsx";
 import { Icon } from "./Icon";
 import { Tip } from "./Tip";
-import type { Lane, Maneuver } from "../lib/api";
+import type { Lane, Maneuver, Route, RouteRequest } from "../lib/api";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDistance, fmtDuration, fmtTime } from "../lib/format";
-import { flatSteps, previewStep, resumeGps, setNavVoice, setSimSpeed, startNavigation, stopNavigation } from "../lib/nav";
+import { errorText } from "../lib/api";
+import { flatSteps, isWalkMode, previewStep, navigateVia, resumeGps, routesFromHere, setNavVoice, setSimPaused, setSimSpeed, startNavigation, stopNavigation, switchRoute } from "../lib/nav";
 import { VehiclePicker } from "./VehiclePicker";
+import { SearchBox } from "./SearchBox";
 
 function maneuverGlyph(m: Maneuver | null | undefined, size: number) {
   switch (m) {
@@ -110,6 +117,151 @@ function maneuverDistance(m: number, t: ReturnType<typeof useT>, units: string) 
   return fmtDistance(r, t, units);
 }
 
+/** Speeding alert tone: two short beeps (Web Audio, no file to ship). */
+function speedBeep() {
+  try {
+    const ctx = new AudioContext();
+    [0, 0.22].forEach((at) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = 1046;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+      g.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.16);
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + at);
+      o.stop(ctx.currentTime + at + 0.18);
+    });
+    window.setTimeout(() => void ctx.close(), 800);
+  } catch {
+    /* no audio */
+  }
+}
+
+/** Beeps when the driver goes above the limit, again every 30 s while still above it. */
+function useSpeedAlert(over: boolean, on: boolean) {
+  useEffect(() => {
+    if (!over || !on) return;
+    speedBeep();
+    const id = window.setInterval(speedBeep, 30000);
+    return () => window.clearInterval(id);
+  }, [over, on]);
+}
+
+/** "Change route" while navigating: routes from the current position, pick one to drive on. */
+/** Search while navigating: the place found becomes a stop on the way or the new destination. */
+function NavSearch({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const [picked, setPicked] = useState<{ lon: number; lat: number; label: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const go = (kind: "stop" | "destination") => {
+    if (!picked) return;
+    setBusy(true);
+    setErr(null);
+    navigateVia(picked, kind).then(onClose, (e) => {
+      setBusy(false);
+      setErr(errorText(e));
+    });
+  };
+  return (
+    <div className="popover rounded-[var(--radius)] p-3 flex flex-col gap-2 fade-in" role="dialog" aria-label={t("navSearchTitle")}>
+      <div className="flex items-center gap-2">
+        <span className="font-medium flex-1">{t("navSearchTitle")}</span>
+        <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("close")} onClick={onClose}>
+          <Icon as={X} size={16} />
+        </button>
+      </div>
+      <SearchBox
+        value={picked?.label ?? ""}
+        autoFocus
+        saveHistory
+        onPick={(p) => {
+          setPicked({ lon: p.lon, lat: p.lat, label: p.label });
+          setErr(null);
+        }}
+        onClear={() => setPicked(null)}
+      />
+      {picked && (
+        <div className="flex gap-2">
+          <button className="btn flex-1" disabled={busy} onClick={() => go("stop")}>
+            {t("navAddStop")}
+          </button>
+          <button className="btn btn-primary flex-1" disabled={busy} onClick={() => go("destination")}>
+            {t("navNewDestination")}
+          </button>
+        </div>
+      )}
+      {busy && <div className="progress-line" role="progressbar" aria-label={t("navChangeRouteLoading")} />}
+      {err && <p className="m-0 text-muted">{err}</p>}
+    </div>
+  );
+}
+
+function ChangeRoute({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const units = useStore((s) => s.settings.units);
+  const remaining = useStore((s) => s.navigation?.update?.remainingSec ?? null);
+  const [res, setRes] = useState<{ routes: Route[]; request: RouteRequest } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    routesFromHere().then(
+      (r) => {
+        if (!live) return;
+        if (r) setRes(r);
+        else setErr(t("navChangeRouteNone"));
+      },
+      (e) => {
+        if (live) setErr(errorText(e));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [t]);
+  return (
+    <div className="popover rounded-[var(--radius)] p-3 flex flex-col gap-2 fade-in" role="dialog" aria-label={t("navChangeRouteTitle")}>
+      <div className="flex items-center gap-2">
+        <span className="font-medium flex-1">{t("navChangeRouteTitle")}</span>
+        <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("close")} onClick={onClose}>
+          <Icon as={X} size={16} />
+        </button>
+      </div>
+      {!res && !err && (
+        <div className="flex items-center gap-3 text-muted">
+          <div className="progress-line flex-1" role="progressbar" aria-label={t("navChangeRouteLoading")} />
+          <span className="shrink-0">{t("navChangeRouteLoading")}</span>
+        </div>
+      )}
+      {err && <p className="m-0 text-muted">{err}</p>}
+      {res && res.routes.length === 0 && <p className="m-0 text-muted">{t("navChangeRouteNone")}</p>}
+      {res &&
+        res.routes.map((r) => {
+          const diff = remaining != null ? r.durationSec - remaining : null;
+          const diffText =
+            diff == null || Math.abs(diff) < 60 ? t("navCurrentRoute") : (diff < 0 ? t("navDiffFaster") : t("navDiffSlower")).replace("{n}", fmtDuration(Math.abs(diff), t));
+          return (
+            <button
+              key={r.id}
+              className="btn justify-between h-auto py-2 text-start"
+              onClick={() => {
+                void switchRoute(r, res.request).catch((e) => useStore.getState().toastError(e));
+                onClose();
+              }}
+            >
+              <span className="flex flex-col items-start gap-0.5 num">
+                <span className="font-semibold">{fmtDuration(r.durationSec, t)}</span>
+                <span className="text-xs text-muted">{fmtDistance(r.distanceM, t, units)}</span>
+              </span>
+              <span className={clsx("text-sm", diff != null && diff <= -60 ? "text-success" : "text-muted")}>{diffText}</span>
+            </button>
+          );
+        })}
+    </div>
+  );
+}
+
 /** The round red-rimmed speed-limit sign. */
 function SpeedSign({ kmh, label }: { kmh: number; label: string }) {
   return (
@@ -132,6 +284,13 @@ export function NavigationView() {
   // comes back (as it was) when navigation ends.
   const active = !!nav;
   const [vehicleOpen, setVehicleOpen] = useState(false);
+  const [changeOpen, setChangeOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const showSpeedometer = useStore((s) => s.settings.navSpeedometer ?? true);
+  const speedAlert = useStore((s) => s.settings.navSpeedAlert ?? true);
+  const nu = nav?.update;
+  const speeding = !!nu && !nav?.arrived && nu.speedKmh != null && nu.speedLimitKmh != null && nu.speedKmh > nu.speedLimitKmh + 3;
+  useSpeedAlert(speeding, speedAlert && showSpeedometer);
   const wasCollapsed = useRef<boolean | null>(null);
   useEffect(() => {
     const st = useStore.getState();
@@ -145,6 +304,7 @@ export function NavigationView() {
   }, [active]);
   if (!nav) return null;
   const u = nav.update;
+  const walk = isWalkMode(nav.route.mode);
   const noGps = !!nav.error && !nav.simulate && /LOCATION_(DENIED|UNAVAILABLE)/.test(nav.error);
   const over = u?.speedKmh != null && u.speedLimitKmh != null && u.speedKmh > u.speedLimitKmh + 3;
   const steps = flatSteps(nav.route);
@@ -239,26 +399,26 @@ export function NavigationView() {
       </div>
 
       {/* trip summary + speed + controls */}
-      <div className="self-center w-full max-w-[520px] pointer-events-auto flex flex-col gap-2 fade-in">
-        {u && !nav.arrived && (u.speedKmh != null || u.speedLimitKmh != null || u.street || u.approximate) && (
-          <div className="flex items-center gap-3 self-start popover rounded-[var(--radius)] px-3 py-2">
+      <div className="self-center w-full max-w-[520px] pointer-events-auto flex flex-col gap-2 fade-in" data-nav-bottom>
+        {/* speed: a lone circle at the bottom left (the posted limit above it when known) */}
+        {u && !nav.arrived && showSpeedometer && (
+          <div className="self-start rtl:self-end flex flex-col items-center gap-2 pointer-events-none" data-speedometer>
             {u.speedLimitKmh != null && <SpeedSign kmh={u.speedLimitKmh} label={t("speedLimit").replace("{n}", String(u.speedLimitKmh))} />}
-            {u.speedKmh != null && (
-              <span className={clsx("flex flex-col items-center leading-none num", over && "text-danger")}>
-                <span className="text-xl font-semibold">{Math.round(u.speedKmh)}</span>
-                <span className="text-xs text-muted">{t("kmh")}</span>
-              </span>
-            )}
-            {u.street && <span className="truncate-dir max-w-56 font-medium">{u.street}</span>}
-            {u.approximate && (
-              <Tip text={t("navApproximateHint")}>
-                <span className="chip chip-warning" tabIndex={0}>
-                  {t("navApproximate")}
-                </span>
-              </Tip>
-            )}
+            <span
+              className={clsx(
+                "w-16 h-16 shrink-0 rounded-full border-[3px] shadow-lg flex flex-col items-center justify-center leading-none num transition-colors duration-200",
+                "bg-surface-solid", over ? "border-[#d92626] text-[#d92626]" : "border-line-strong",
+              )}
+              role="img"
+              aria-label={u.speedKmh != null ? `${Math.round(u.speedKmh)} ${t("kmh")}${over ? ` · ${t("navOverSpeed")}` : ""}` : t("navNoSpeed")}
+            >
+              <span className="text-2xl font-bold">{u.speedKmh != null ? Math.round(u.speedKmh) : "–"}</span>
+              <span className={clsx("text-[10px]", over ? "text-[#d92626]" : "text-muted")}>{t("kmh")}</span>
+            </span>
           </div>
         )}
+        {changeOpen && u && !nav.arrived && <ChangeRoute onClose={() => setChangeOpen(false)} />}
+        {searchOpen && !nav.arrived && <NavSearch onClose={() => setSearchOpen(false)} />}
         {vehicleOpen && (nav.route.mode === "car" || nav.route.mode === "truck") && (
           <div className="popover rounded-[var(--radius)] p-3 flex flex-col gap-2 fade-in" role="dialog" aria-label={t("navVehicle")}>
             <span className="font-medium">{t("navVehicle")}</span>
@@ -267,9 +427,19 @@ export function NavigationView() {
         )}
         {nav.simulate && !nav.arrived && (
           <div className="flex items-center gap-1 self-start popover rounded-[var(--radius)] ps-3 pe-1 py-1" role="group" aria-label={t("simSpeedTitle")}>
+            <Tip text={nav.simPaused ? t("simResume") : t("simPause")}>
+              <button
+                className={clsx("btn btn-icon btn-sm", nav.simPaused ? "btn-primary" : "btn-ghost")}
+                aria-label={nav.simPaused ? t("simResume") : t("simPause")}
+                aria-pressed={!!nav.simPaused}
+                onClick={() => setSimPaused(!nav.simPaused)}
+              >
+                <Icon as={nav.simPaused ? Play : Pause} size={16} className="fill-current" />
+              </button>
+            </Tip>
             <span className="text-sm text-muted me-1">{t("simSpeedTitle")}</span>
             <Tip text={t("simSlower")}>
-              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simSlower")} disabled={nav.simSpeedKmh !== 0 && nav.simSpeedKmh <= 10} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 50 : nav.simSpeedKmh - 10)}>
+              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simSlower")} disabled={walk ? nav.simSpeedKmh <= 1 : nav.simSpeedKmh !== 0 && nav.simSpeedKmh <= 10} onClick={() => setSimSpeed(walk ? nav.simSpeedKmh - 1 : nav.simSpeedKmh === 0 ? 50 : nav.simSpeedKmh - 10)}>
                 <Icon as={Minus} size={16} />
               </button>
             </Tip>
@@ -277,17 +447,20 @@ export function NavigationView() {
               {nav.simSpeedKmh === 0 ? t("simSpeedRoad") : <bdi>{`${nav.simSpeedKmh} ${t("kmh")}`}</bdi>}
             </span>
             <Tip text={t("simFaster")}>
-              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simFaster")} disabled={nav.simSpeedKmh >= 300} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 60 : nav.simSpeedKmh + 10)}>
+              <button className="btn btn-ghost btn-icon btn-sm" aria-label={t("simFaster")} disabled={walk ? nav.simSpeedKmh >= 10 : nav.simSpeedKmh >= 300} onClick={() => setSimSpeed(walk ? nav.simSpeedKmh + 1 : nav.simSpeedKmh === 0 ? 60 : nav.simSpeedKmh + 10)}>
                 <Icon as={Plus} size={16} />
               </button>
             </Tip>
-            <button className={clsx("btn btn-sm", nav.simSpeedKmh === 0 ? "btn-primary" : "btn-ghost")} aria-pressed={nav.simSpeedKmh === 0} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 50 : 0)}>
-              {t("simSpeedRoad")}
-            </button>
+            {!walk && (
+              <button className={clsx("btn btn-sm", nav.simSpeedKmh === 0 ? "btn-primary" : "btn-ghost")} aria-pressed={nav.simSpeedKmh === 0} onClick={() => setSimSpeed(nav.simSpeedKmh === 0 ? 50 : 0)}>
+                {t("simSpeedRoad")}
+              </button>
+            )}
           </div>
         )}
-        <div className="popover rounded-[var(--radius)] flex items-center gap-3 ps-4 pe-2 py-2">
-          <div className="flex-1 min-w-0 flex items-baseline gap-3 flex-wrap num">
+        {/* narrow screens: the summary takes its own line above the buttons */}
+        <div className="nav-bar popover rounded-[var(--radius)] flex flex-wrap items-center gap-x-0.5 sm:gap-x-3 gap-y-1 ps-3 sm:ps-4 pe-2 py-2">
+          <div className="flex-1 basis-full sm:basis-0 min-w-0 flex items-baseline gap-3 flex-wrap num">
             {u && !nav.arrived ? (
               <>
                 <span className="text-lg font-semibold text-success">{fmtDuration(u.remainingSec, t)}</span>
@@ -297,7 +470,7 @@ export function NavigationView() {
                 </span>
               </>
             ) : (
-              <span className="text-muted">{nav.simulate ? t("navSimulated") : t("navStart")}</span>
+              <span className="text-muted">{nav.simulate ? t("navSimulated") : nav.arrived ? t("navArrived") : t("navWaiting")}</span>
             )}
             {nav.simulate && u && !nav.arrived && <span className="chip chip-muted">{t("navSimulated")}</span>}
           </div>
@@ -321,6 +494,28 @@ export function NavigationView() {
                 </button>
               </Tip>
             </div>
+          )}
+          {!nav.arrived && nav.request && (
+            <Tip text={t("navSearchTitle")}>
+              <button
+                className="btn btn-ghost btn-icon shrink-0"
+                aria-label={t("navSearchTitle")}
+                aria-expanded={searchOpen}
+                onClick={() => {
+                  setSearchOpen((v) => !v);
+                  setChangeOpen(false);
+                }}
+              >
+                <Icon as={SearchIcon} size={18} />
+              </button>
+            </Tip>
+          )}
+          {u && !nav.arrived && nav.request && (
+            <Tip text={t("navChangeRoute")}>
+              <button className="btn btn-ghost btn-icon shrink-0" aria-label={t("navChangeRoute")} aria-expanded={changeOpen} onClick={() => setChangeOpen((v) => !v)}>
+                <Icon as={RouteIcon} size={18} />
+              </button>
+            </Tip>
           )}
           {(nav.route.mode === "car" || nav.route.mode === "truck") && (
             <Tip text={t("navVehicle")}>

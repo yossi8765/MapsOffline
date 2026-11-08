@@ -12,10 +12,18 @@ use crate::data::download::{self, http_client};
 use crate::data::Cancel;
 use crate::types::{AppUpdate, ProgressFn, ProgressPhase};
 
+/// Releases: GitHub first (the project's home since 2026-11), GitLab as the fallback (kept in
+/// parallel; also what versions before 2.0.6 look at). Both carry the same signed SHA256SUMS.
+pub const RELEASES_API_GITHUB: &str = "https://api.github.com/repos/yossi8765/MapsOffline/releases?per_page=20";
 pub const RELEASES_API: &str = "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/releases?per_page=20";
-pub const RELEASES_PAGE: &str = "https://gitlab.com/RecoveryAdvancedFree/MapsOffline/-/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/yossi8765/MapsOffline/releases";
 pub const SETUP_NAME: &str = "MapsOffline-setup.exe";
 pub const PORTABLE_NAME: &str = "MapsOffline-portable.zip";
+/// Linux release files: the AppImage replaces itself; the deb opens in the system's package installer.
+pub const LINUX_APPIMAGE_NAME: &str = "MapsOffline-linux.AppImage";
+pub const LINUX_DEB_NAME: &str = "MapsOffline-linux.deb";
+/// Mac: the disk image (built by GitHub Actions, .github/workflows/build.yml); it opens in Finder.
+pub const MAC_DMG_NAME: &str = "MapsOffline-mac.dmg";
 pub const SUMS_NAME: &str = "SHA256SUMS";
 pub const SIG_NAME: &str = "SHA256SUMS.sig";
 /// Raw Ed25519 public key of the release signing key (tools/release.ps1 signs with the private one).
@@ -23,6 +31,27 @@ pub const PUBLIC_KEY_HEX: &str = "afc64b6bbd922148d7b36deb20904c29435f6cfc155bbd
 const SMALL_FILE_MAX: usize = 64 * 1024;
 
 pub type Version = (u32, u32, u32);
+
+/// The release file this build updates itself from.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn install_name() -> &'static str {
+    SETUP_NAME
+}
+
+#[cfg(target_os = "macos")]
+pub fn install_name() -> &'static str {
+    MAC_DMG_NAME
+}
+
+/// Linux: the AppImage when running from one (`APPIMAGE` is its path), else the deb package.
+#[cfg(target_os = "linux")]
+pub fn install_name() -> &'static str {
+    if std::env::var_os("APPIMAGE").is_some() {
+        LINUX_APPIMAGE_NAME
+    } else {
+        LINUX_DEB_NAME
+    }
+}
 
 pub fn parse_version(tag: &str) -> Option<Version> {
     let s = tag.trim().trim_start_matches(['v', 'V']);
@@ -112,25 +141,40 @@ fn parse_releases(json: &str) -> anyhow::Result<Vec<Candidate>> {
     let arr = v.as_array().ok_or_else(|| anyhow!("releases: not an array"))?;
     let mut out = Vec::new();
     for r in arr {
-        if r.get("upcoming_release").and_then(|u| u.as_bool()) == Some(true) {
+        let flag = |k: &str| r.get(k).and_then(|u| u.as_bool()) == Some(true);
+        if flag("upcoming_release") || flag("draft") || flag("prerelease") {
             continue;
         }
         let tag = r.get("tag_name").and_then(|t| t.as_str()).unwrap_or("");
         let Some(version) = parse_version(tag) else { continue };
-        let links = r
-            .pointer("/assets/links")
-            .and_then(|l| l.as_array())
-            .map(|l| {
-                l.iter()
-                    .filter_map(|x| Some((x.get("name")?.as_str()?.to_string(), x.get("direct_asset_url")?.as_str()?.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // GitHub: "assets" = [{name, browser_download_url}]; GitLab: "assets.links" = [{name, direct_asset_url}]
+        let github = r.get("assets").is_some_and(|a| a.is_array());
+        let links = if github {
+            r.get("assets")
+                .and_then(|l| l.as_array())
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|x| Some((x.get("name")?.as_str()?.to_string(), x.get("browser_download_url")?.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            r.pointer("/assets/links")
+                .and_then(|l| l.as_array())
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|x| Some((x.get("name")?.as_str()?.to_string(), x.get("direct_asset_url")?.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let page = if github { r.get("html_url") } else { r.pointer("/_links/self") };
+        let notes = if github { r.get("body") } else { r.get("description") };
         out.push(Candidate {
             version,
             tag: tag.to_string(),
-            page: r.pointer("/_links/self").and_then(|s| s.as_str()).unwrap_or(RELEASES_PAGE).to_string(),
-            notes: r.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+            page: page.and_then(|s| s.as_str()).unwrap_or(RELEASES_PAGE).to_string(),
+            notes: notes.and_then(|d| d.as_str()).unwrap_or("").to_string(),
             links,
         });
     }
@@ -146,14 +190,34 @@ fn link<'a>(links: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, u)| u.as_str())
 }
 
+/// The release list: GitHub, else GitLab (a network filter may block one of them).
+fn releases_json(client: &reqwest::blocking::Client) -> anyhow::Result<String> {
+    let mut problem = None;
+    for url in [RELEASES_API_GITHUB, RELEASES_API] {
+        let r = match client.get(url).header("Accept", "application/vnd.github+json").send() {
+            Ok(r) => r,
+            Err(e) => {
+                problem = Some(anyhow!(e));
+                continue;
+            }
+        };
+        if r.status().as_u16() == 418 {
+            problem = Some(anyhow!("{}", download::blocked_message(url)));
+            continue;
+        }
+        match r.error_for_status().and_then(|r| r.text()) {
+            Ok(json) if parse_releases(&json).is_ok_and(|c| !c.is_empty()) => return Ok(json),
+            Ok(_) => problem = Some(anyhow!("{url}: no releases")),
+            Err(e) => problem = Some(anyhow!(e)),
+        }
+    }
+    Err(problem.unwrap_or_else(|| anyhow!("no release source")))
+}
+
 /// Newest signed release, compared with the running version. Blocking (~1 s online).
 pub fn check() -> anyhow::Result<AppUpdate> {
     let client = http_client()?;
-    let r = client.get(RELEASES_API).send()?;
-    if r.status().as_u16() == 418 {
-        bail!("{}", download::blocked_message(RELEASES_API));
-    }
-    let json = r.error_for_status().context("GitLab releases")?.text()?;
+    let json = releases_json(&client)?;
     let current = current_version();
     let mut last_problem: Option<String> = None;
     for c in parse_releases(&json)? {
@@ -180,8 +244,8 @@ pub fn check() -> anyhow::Result<AppUpdate> {
             last_problem = Some(format!("{}: signed version differs from tag", c.tag));
             continue;
         }
-        let setup_url = link(&c.links, SETUP_NAME).map(str::to_string);
-        if setup_url.is_none() || signed.hash_of(SETUP_NAME).is_none() {
+        let setup_url = link(&c.links, install_name()).map(str::to_string);
+        if setup_url.is_none() || signed.hash_of(install_name()).is_none() {
             last_problem = Some(format!("{}: no signed installer", c.tag));
             continue;
         }
@@ -216,11 +280,7 @@ fn sha256_file(p: &Path) -> anyhow::Result<[u8; 32]> {
 /// Download the installer of the newest signed release and verify it. Returns the file path.
 pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf> {
     let client = http_client()?;
-    let r = client.get(RELEASES_API).send()?;
-    if r.status().as_u16() == 418 {
-        bail!("{}", download::blocked_message(RELEASES_API));
-    }
-    let json = r.error_for_status()?.text()?;
+    let json = releases_json(&client)?;
     let c = parse_releases(&json)?.into_iter().find(|c| link(&c.links, SUMS_NAME).is_some() && link(&c.links, SIG_NAME).is_some()).ok_or_else(|| anyhow!("no signed release"))?;
     let sums = small_file(&client, link(&c.links, SUMS_NAME).unwrap())?;
     let sig = small_file(&client, link(&c.links, SIG_NAME).unwrap())?;
@@ -228,12 +288,12 @@ pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf
     if signed.version != c.version || signed.version <= current_version() {
         bail!("הגרסה החתומה אינה חדשה מהמותקנת");
     }
-    let expected = signed.hash_of(SETUP_NAME).ok_or_else(|| anyhow!("המתקין אינו ברשימה החתומה"))?;
-    let url = link(&c.links, SETUP_NAME).ok_or_else(|| anyhow!("no installer link"))?;
+    let expected = signed.hash_of(install_name()).ok_or_else(|| anyhow!("המתקין אינו ברשימה החתומה"))?;
+    let url = link(&c.links, install_name()).ok_or_else(|| anyhow!("no installer link"))?;
     let dir = update_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("MapsOffline_{}.{}.{}_x64-setup.exe", c.version.0, c.version.1, c.version.2));
+    let dest = dir.join(format!("MapsOffline_{}.{}.{}_{}", c.version.0, c.version.1, c.version.2, if install_name() == SETUP_NAME { "x64-setup.exe" } else { install_name() }));
     download::ensure_fresh(url, &dest, progress, cancel)?;
     progress(ProgressPhase::Finalizing, 0, 0, "מאמת את הקובץ שהורד");
     if sha256_file(&dest)? != expected {
@@ -257,14 +317,41 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     if !canon.starts_with(&dir) || canon != ok_path || sha256_file(&canon)? != ok_hash {
         bail!("UPDATE_FILE_INVALID");
     }
+    #[cfg(target_os = "linux")]
+    linux_install(&canon)?;
+    // Mac: the disk image opens in Finder (drag the new app over the old one)
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").arg(&canon).spawn().context("open")?;
     // Tauri NSIS flags, as RAF's "/VERYSILENT /RELAUNCH": /P = passive (a small progress window,
     // no pages or questions), /UPDATE = the old version's uninstaller runs in update mode, which
     // never deletes app data (the "delete app data" choice is skipped), /R = start the app again
     // when the install is done. The data folder itself is outside the install folder anyway.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     std::process::Command::new(&canon)
         .args(["/P", "/UPDATE", "/R"])
         .spawn()
         .with_context(|| format!("starting {}", canon.display()))?;
+    Ok(())
+}
+
+/// Linux: an AppImage is swapped for the new one (the running program keeps its open copy) and
+/// started again once this one has quit (single instance: an overlap would hand over and close);
+/// a deb opens in the desktop's package installer.
+#[cfg(target_os = "linux")]
+fn linux_install(file: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        Some(app) => {
+            let tmp = app.with_extension("new");
+            std::fs::copy(file, &tmp).with_context(|| format!("writing {}", tmp.display()))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::rename(&tmp, &app)?;
+            std::process::Command::new("sh").arg("-c").arg("sleep 2; exec \"$0\"").arg(&app).spawn()?;
+        }
+        None => {
+            std::process::Command::new("xdg-open").arg(file).spawn().context("xdg-open")?;
+        }
+    }
     Ok(())
 }
 
@@ -312,5 +399,21 @@ mod tests {
         assert_eq!(c[0].version, (1, 1, 0));
         assert_eq!(link(&c[0].links, SETUP_NAME), Some("u2"));
         assert_eq!(link(&c[0].links, SIG_NAME), None);
+    }
+
+    #[test]
+    fn github_releases() {
+        let json = r#"[
+          {"tag_name":"v2.1.0","draft":true,"prerelease":false,"assets":[]},
+          {"tag_name":"v2.0.6","draft":false,"prerelease":false,"html_url":"https://github.com/x/y/releases/tag/v2.0.6","body":"notes",
+           "assets":[{"name":"SHA256SUMS","browser_download_url":"https://g/s"},{"name":"MapsOffline-setup.exe","browser_download_url":"https://g/e"}]}
+        ]"#;
+        let c = parse_releases(json).unwrap();
+        assert_eq!(c.len(), 1, "drafts are skipped");
+        assert_eq!(c[0].tag, "v2.0.6");
+        assert_eq!(c[0].notes, "notes");
+        assert_eq!(c[0].page, "https://github.com/x/y/releases/tag/v2.0.6");
+        assert_eq!(link(&c[0].links, SETUP_NAME), Some("https://g/e"));
+        assert_eq!(link(&c[0].links, SUMS_NAME), Some("https://g/s"));
     }
 }

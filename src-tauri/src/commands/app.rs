@@ -199,6 +199,7 @@ fn sanitize_settings(mut s: Settings) -> Settings {
         s.nav_vehicle_color = crate::types::default_nav_vehicle_color();
     }
     s.nav_sim_speed_kmh = s.nav_sim_speed_kmh.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 300.0));
+    s.nav_sim_walk_kmh = s.nav_sim_walk_kmh.filter(|v| v.is_finite()).map(|v| v.clamp(1.0, 10.0));
     if !matches!(s.coord_format.as_str(), "dd" | "dms" | "itm" | "utm") {
         s.coord_format = crate::types::default_coord_format();
     }

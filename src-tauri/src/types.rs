@@ -868,9 +868,18 @@ pub struct Settings {
     /// The voice gets hidden niqqud on the fixed instruction words (`nav::speech`).
     #[serde(default = "default_true")]
     pub nav_voice_niqqud: bool,
+    /// Navigation shows the speedometer (current speed next to the posted limit).
+    #[serde(default = "default_true")]
+    pub nav_speedometer: bool,
+    /// Warn (red speedometer + a short tone) when driving above the posted limit.
+    #[serde(default = "default_true")]
+    pub nav_speed_alert: bool,
     /// Simulated drive speed in km/h; 0 = as the road allows (posted limits); None = by mode.
     #[serde(default)]
     pub nav_sim_speed_kmh: Option<f64>,
+    /// Simulated walk speed in km/h (1–10); None = 5.
+    #[serde(default)]
+    pub nav_sim_walk_kmh: Option<f64>,
     /// How the vehicle is drawn while navigating by car: "arrow" | "car" | "suv" | "van" |
     /// "truck" | "motorbike" | "bus".
     #[serde(default = "default_nav_vehicle")]
@@ -1011,7 +1020,10 @@ impl Default for Settings {
             kohanim_level: 0,
             nav_voice: true,
             nav_voice_niqqud: true,
+            nav_speedometer: true,
+            nav_speed_alert: true,
             nav_sim_speed_kmh: None,
+            nav_sim_walk_kmh: None,
             nav_vehicle: default_nav_vehicle(),
             nav_vehicle_color: default_nav_vehicle_color(),
             transit_reliability: true,

@@ -1,4 +1,4 @@
-import { SIM_SPEEDS } from "../lib/nav";
+import { SIM_SPEEDS, SIM_WALK_SPEEDS, isWalkMode } from "../lib/nav";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
@@ -554,7 +554,8 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
   const waypoints = useStore((s) => s.waypoints);
   const [more, setMore] = useState(false);
   const [simPick, setSimPick] = useState(false);
-  const simSaved = useStore((s) => s.settings.navSimSpeedKmh);
+  const walk = isWalkMode(route.mode);
+  const simSaved = useStore((s) => (walk ? s.settings.navSimWalkKmh : s.settings.navSimSpeedKmh));
   const name = `${waypoints[0]?.label ?? t("from")} ${routeArrow(lang)} ${waypoints[waypoints.length - 1]?.label ?? t("to")}`;
   const safe = name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
   const st = useStore.getState;
@@ -606,20 +607,20 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
           <div className="flex items-center justify-between gap-2">
             <span className="font-medium inline-flex items-center gap-1.5">
               {t("simSpeedTitle")}
-              <InfoTip text={t("simSpeedHint")} />
+              {!walk && <InfoTip text={t("simSpeedHint")} />}
             </span>
             <button className="btn btn-ghost btn-sm" onClick={() => setSimPick(false)}>
               {t("cancel")}
             </button>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {SIM_SPEEDS.map((v) => (
+            {(walk ? SIM_WALK_SPEEDS : SIM_SPEEDS).map((v) => (
               <button
                 key={v}
                 className={clsx("btn btn-sm", (simSaved ?? -1) === v && "btn-primary")}
                 onClick={() => {
                   setSimPick(false);
-                  void st().updateSettings({ navSimSpeedKmh: v });
+                  void st().updateSettings(walk ? { navSimWalkKmh: v } : { navSimSpeedKmh: v });
                   void st().startNavigation(route.id, true, v);
                 }}
               >
