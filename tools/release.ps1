@@ -87,6 +87,8 @@ Copy-Item $setup (Join-Path $dist "MapsOffline_${version}_x64-setup.exe")
 $linuxOut = "C:\MapsOffline-linux\out"
 if (-not $NoBuild -and -not $SignOnly) {
     Write-Host "building Linux (WSL)..." -ForegroundColor Cyan
+    # the AppImage runtime through the GitHub API (linuxdeploy downloads it from releases/download, which can answer 504)
+    & gh release download continuous -R AppImage/type2-runtime -p runtime-x86_64 -D "C:\MapsOffline-linux\cache" --clobber 2>$null
     $env:WSL_UTF8 = "1"
     wsl -d mapsoffline-build -u builder -- bash /mnt/c/MapsOffline-linux/build-linux.sh | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { Fail "Linux build failed" }
