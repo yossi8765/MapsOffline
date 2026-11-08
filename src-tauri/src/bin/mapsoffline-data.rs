@@ -23,6 +23,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once at start-up
 enum Cmd {
     /// Download sources and build derived data files
     Build {
