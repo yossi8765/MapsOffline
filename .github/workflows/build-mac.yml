@@ -1,0 +1,42 @@
+# The Mac version (cannot be built on Windows): a universal app (Apple silicon + Intel) in a DMG.
+# Runs for every version tag (tools/release.ps1 pushes the tag, waits for this run, takes the DMG
+# into the signed SHA256SUMS and the release) and by hand from the Actions tab.
+name: build-mac
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+jobs:
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: brew install cmake || true
+      - run: pnpm install --frozen-lockfile
+      - name: Build (universal)
+        run: pnpm tauri build --target universal-apple-darwin --bundles app,dmg
+      - name: Collect
+        run: |
+          VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          mkdir -p out
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/MapsOffline_${VER}_universal.dmg"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: out/*.dmg
+          retention-days: 30

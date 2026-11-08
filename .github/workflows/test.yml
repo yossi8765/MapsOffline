@@ -1,0 +1,45 @@
+# Tests on every push / pull request (the GitLab `test` job's twin): Rust clippy + unit tests on
+# Linux, TypeScript check + frontend tests.
+name: test
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries (Tauri, whisper.cpp)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config cmake libclang-dev clang
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # the crate embeds the frontend at compile time; tests never use it
+      - run: mkdir -p dist && echo '<!doctype html><title>MapsOffline</title>' > dist/index.html
+      - working-directory: src-tauri
+        run: |
+          cargo clippy --features cli --all-targets -- -D warnings
+          cargo test --features cli
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tsc --noEmit
+      - run: pnpm vitest run
