@@ -71,6 +71,8 @@ export interface Avoid {
   unpavedLongOnly: boolean;
   /** Avoid difficult junctions (left turns / U-turns without traffic lights). */
   hardTurns: boolean;
+  /** As few traffic lights as possible (local engine). */
+  trafficLights?: boolean;
   // ---- IMPROVEMENTS contract (R2), all optional
   /** Avoid the road nearest each point ("avoid this road" on a route step). */
   points?: LonLat[];
@@ -498,6 +500,8 @@ export interface Settings {
   avoidFerries: boolean;
   unpaved: UnpavedMode;
   avoidHardTurns: boolean;
+  /** Route panel default: as few traffic lights as possible. */
+  avoidTrafficLights: boolean;
   /** Order of public-transport results. */
   transitPreference: TransitPreference;
   /** Trains in public-transport routes. */

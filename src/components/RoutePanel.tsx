@@ -326,6 +326,7 @@ export function RoutePanel() {
             )}
             {(base === "foot" || base === "bike") && <Toggle label={t("avoidHills")} info={t("avoidHillsHint")} checked={!!avoid.hills} onChange={(v) => setAvoid({ hills: v })} />}
             {base === "car" && <Toggle label={t("avoidHardTurns")} checked={avoid.hardTurns} onChange={(v) => setAvoid({ hardTurns: v })} />}
+            {mode !== "transit" && <Toggle label={t("avoidTrafficLights")} info={t("avoidTrafficLightsHint")} checked={!!avoid.trafficLights} onChange={(v) => setAvoid({ trafficLights: v })} />}
             {mode === "transit" && (
               <>
                 <div className="row justify-between gap-2 flex-wrap">

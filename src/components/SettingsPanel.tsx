@@ -222,6 +222,7 @@ export function SettingsPanel() {
           </div>
         </Row>
         <Toggle label={t("avoidHardTurnsDefault")} checked={settings.avoidHardTurns} onChange={(v) => void update({ avoidHardTurns: v })} />
+        <Toggle label={t("avoidTrafficLightsDefault")} checked={!!settings.avoidTrafficLights} onChange={(v) => void update({ avoidTrafficLights: v })} />
         <Row label={t("avoidAreas")}>
           <div className="seg seg-sm seg-fit">
             {(["ab", "a", "none"] as const).map((m) => (

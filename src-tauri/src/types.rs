@@ -198,6 +198,10 @@ pub struct Avoid {
     /// Avoid difficult junctions: left turns and U-turns at junctions without traffic signals.
     #[serde(default)]
     pub hard_turns: bool,
+    /// As few traffic lights as possible: every signalised junction passed costs extra in the
+    /// search (not in the ETA). Local engine only (OSRM knows nothing of it).
+    #[serde(default)]
+    pub traffic_lights: bool,
     /// Avoid the road nearest each point ("avoid this road" on a route step), local engine only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<LonLat>,
@@ -216,7 +220,7 @@ pub struct Avoid {
 impl Avoid {
     /// Options only the local engine can honour (online routes ignore them).
     pub fn needs_local(&self) -> bool {
-        !self.points.is_empty() || !self.polygons.is_empty() || self.hills || self.kohanim > 0
+        !self.points.is_empty() || !self.polygons.is_empty() || self.hills || self.kohanim > 0 || self.traffic_lights
     }
 }
 
@@ -872,6 +876,9 @@ pub struct Settings {
     /// Default for the route panel: avoid difficult junctions (unsignalised left / U-turns).
     #[serde(default = "default_true")]
     pub avoid_hard_turns: bool,
+    /// Default for the route panel: as few traffic lights as possible.
+    #[serde(default)]
+    pub avoid_traffic_lights: bool,
     /// Take ready-made components from the project's weekly GitLab build when possible.
     #[serde(default = "default_true")]
     pub use_prebuilt_data: bool,
@@ -1044,6 +1051,7 @@ impl Default for Settings {
             avoid_ferries: false,
             unpaved: default_unpaved(),
             avoid_hard_turns: true,
+            avoid_traffic_lights: false,
             transit_preference: default_transit_pref(),
             transit_rail: default_transit_rail(),
             use_prebuilt_data: true,

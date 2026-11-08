@@ -144,6 +144,9 @@ enum Cmd {
         /// Use this graph file instead of the installed one
         #[arg(long)]
         graph: Option<String>,
+        /// As few traffic lights as possible
+        #[arg(long)]
+        traffic_lights: bool,
         /// Transit trains: any | prefer | avoid
         #[arg(long, default_value = "any")]
         rail: String,
@@ -500,7 +503,7 @@ fn main() -> anyhow::Result<()> {
             }
             println!("computed in {:?}", t0.elapsed());
         }
-        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns, vehicle, hills, avoid_point, graph: graph_file, rail } => {
+        Cmd::Route { from, to, mode, time, arrive, alternatives, source, osrm_url, transit_url, avoid_areas, avoid_toll, unpaved, hard_turns, vehicle, hills, avoid_point, graph: graph_file, rail, traffic_lights } => {
             let mode = parse_mode(&mode)?;
             let avoid = Avoid {
                 toll: avoid_toll,
@@ -510,6 +513,7 @@ fn main() -> anyhow::Result<()> {
                 unpaved_long_only: unpaved == "avoidLong",
                 hard_turns,
                 hills,
+                traffic_lights,
                 points: avoid_point.iter().map(|s| parse_ll(s).map(|w| [w.lon, w.lat])).collect::<anyhow::Result<Vec<_>>>()?,
                 ..Default::default()
             };
@@ -613,7 +617,7 @@ fn main() -> anyhow::Result<()> {
                     })
                     .unwrap_or_else(|| "?".into());
                 println!(
-                    "route {} tags={:?} {:.1} min, {:.2} km, {} legs, transfers={} areas: {} unpaved: {}",
+                    "route {} tags={:?} {:.1} min, {:.2} km, {} legs, transfers={} areas: {} unpaved: {} signals: {}",
                     r.id,
                     r.tags,
                     r.duration_sec / 60.0,
@@ -621,7 +625,8 @@ fn main() -> anyhow::Result<()> {
                     r.legs.len(),
                     r.transfers,
                     areas,
-                    unpaved_m
+                    unpaved_m,
+                    graph.as_ref().map(|g| g.signals_on(&r.geometry).to_string()).unwrap_or_else(|| "?".into())
                 );
                 for leg in &r.legs {
                     if let Some(t) = &leg.transit {

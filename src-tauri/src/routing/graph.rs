@@ -578,6 +578,18 @@ impl Graph {
     }
     /// Metres of `geometry` that run on unpaved roads (each segment is attributed to the road
     /// nearest to its midpoint; diagnostics only).
+    /// Traffic lights a route geometry passes (its points that are signalised vertices; the
+    /// first and last point excluded). Diagnostics (CLI).
+    pub fn signals_on(&self, geometry: &[LonLat]) -> usize {
+        let key = |p: LonLat| ((p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64);
+        let sig: std::collections::HashSet<(i64, i64)> = (0..self.vlon.len() as u32)
+            .filter(|&v| self.has_signal(v))
+            .map(|v| (self.vlon[v as usize] as i64, self.vlat[v as usize] as i64))
+            .collect();
+        let n = geometry.len();
+        geometry.iter().enumerate().filter(|(i, p)| *i > 0 && *i + 1 < n && sig.contains(&key(**p))).count()
+    }
+
     pub fn unpaved_length_m(&self, geometry: &[LonLat]) -> f64 {
         let mut total = 0.0;
         for w in geometry.windows(2) {

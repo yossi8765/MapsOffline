@@ -21,6 +21,16 @@ pub const DESTINATION_FREE_M: f32 = 500.0;
 
 /// Extra seconds for an unsignalised left turn / U-turn when avoiding difficult junctions,
 /// by the most important road involved (crossed or entered).
+/// Search penalty (seconds) for passing a junction with traffic lights when the route should have
+/// as few as possible: about half a red light – enough to take a parallel street, not a long detour.
+pub fn traffic_light_penalty(mode: Mode) -> f32 {
+    match mode {
+        Mode::Car | Mode::Truck => 30.0,
+        Mode::Bike => 25.0,
+        _ => 20.0,
+    }
+}
+
 pub fn hard_turn_penalty(class: Class) -> f32 {
     match class {
         Class::Motorway | Class::Trunk | Class::Primary => 45.0,
@@ -324,6 +334,9 @@ impl Profile {
                 _ => Some((0.0, 0.0)),
             };
         }
+        // "as few traffic lights as possible": every signalised junction passed (a preference,
+        // not time: it steers the search but stays out of the ETA)
+        let lights = if self.avoid.traffic_lights && g.has_signal(via) { traffic_light_penalty(self.mode) } else { 0.0 };
         if !pedestrian {
             let m = self.vehicle_mask();
             let (mut only_any, mut only_ok) = (false, false);
@@ -344,7 +357,7 @@ impl Profile {
             }
         }
         if pedestrian {
-            return Some((0.0, 0.0));
+            return Some((0.0, lights));
         }
         let d = turn_delta(g.bearing_in(a), g.bearing_out(b));
         let fa = g.e_flags[ea as usize];
@@ -389,7 +402,7 @@ impl Profile {
             Mode::Truck => c *= 1.5,
             _ => {}
         }
-        Some((c, pref))
+        Some((c, pref + lights))
     }
 
     /// Via-way restrictions apply to this profile?
