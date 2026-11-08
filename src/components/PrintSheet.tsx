@@ -5,6 +5,7 @@ import { Icon } from "./Icon";
 import { useStore } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { fmtDateTime, fmtDistance, fmtDuration, fmtTime, routeArrow } from "../lib/format";
+import type { TransitStopTime } from "../lib/api";
 import { DEFAULT_PRINT_OPTIONS, onPrintMapImage, setPrintOptionsAsker, type PrintOptions, type PrintScale } from "../lib/print";
 import { useDialog } from "../lib/useDialog";
 import { pinGlyph } from "../map/overlays/waypoints";
@@ -149,9 +150,20 @@ function Sheet({ mapImage, opts }: { mapImage: string | null; opts: PrintOptions
         <>
           <img src={mapImage} alt={t("printOverview")} className="block w-full max-h-[110mm] object-contain mb-1 border border-[#c9ced6] rounded" />
           <div className="print-legend text-xs mb-4 flex items-center gap-4 flex-wrap">
-            <span className="flex items-center gap-1">
-              <span className="inline-block w-6 h-1.5 rounded" style={{ background: "var(--route-car)" }} /> {t("printLegendRoute")}
-            </span>
+            {route.mode === "transit" ? (
+              <>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-6 h-1.5 rounded" style={{ background: "var(--route-car)" }} /> {t("printLegendRide")}
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-6 border-t-[3px] border-dotted" style={{ borderColor: "#6b7280" }} /> {t("printLegendWalk")}
+                </span>
+              </>
+            ) : (
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-6 h-1.5 rounded" style={{ background: "var(--route-car)" }} /> {t("printLegendRoute")}
+              </span>
+            )}
             <span className="flex items-center gap-1">
               <Pin kind="start" index={0} /> {t("printLegendStart")}
             </span>
@@ -169,28 +181,53 @@ function Sheet({ mapImage, opts }: { mapImage: string | null; opts: PrintOptions
   );
 }
 
-/** Public transport on paper: per ride only the line, where to board and where to get off. */
+/** Public transport on paper: numbered directions – walk to which stop (name and number, how
+ *  far, how long), board which line towards where and when, get off where and when. */
 function TransitSummary() {
   const t = useT();
   const routes = useStore((s) => s.routes);
   const selectedId = useStore((s) => s.selectedRouteId);
+  const units = useStore((s) => s.settings.units);
   const route = routes.find((r) => r.id === selectedId) ?? routes[0];
   if (!route) return null;
+  const stop = (st: TransitStopTime | undefined, name: string) =>
+    st?.code ? t("printStopCode").replace("{name}", st.name || name).replace("{code}", st.code) : st?.name || name;
+  const fill = (s: string, v: Record<string, string>) => Object.entries(v).reduce((a, [k, x]) => a.split(`{${k}}`).join(x), s);
+  const lines: { text: string; strong?: boolean }[] = [];
+  route.legs.forEach((l, i) => {
+    const tr = l.transit;
+    if (tr) {
+      const line =
+        tr.vehicle === "rail"
+          ? t("printLineTrain")
+          : fill(t(tr.vehicle === "light_rail" || tr.vehicle === "tram" ? "printLineLightRail" : "printLineBus"), { n: tr.routeShortName });
+      lines.push({
+        strong: true,
+        text: fill(t("printBoard"), { time: fmtTime(tr.departIso), line, agency: tr.agency, headsign: tr.headsign || tr.toStop, stop: stop(tr.stops[0], tr.fromStop) }),
+      });
+      lines.push({ text: fill(t("printAlight"), { time: fmtTime(tr.arriveIso), stop: stop(tr.stops[tr.stops.length - 1], tr.toStop), n: String(tr.numStops) }) });
+      return;
+    }
+    // a walk: to the next ride's stop, or to the destination
+    const next = route.legs.slice(i + 1).find((x) => x.transit)?.transit;
+    const transfer = route.legs.slice(0, i).some((x) => x.transit);
+    if (next && l.distanceM < 20) return; // same stop
+    const v = { d: fmtDistance(l.distanceM, t, units), t: fmtDuration(l.durationSec, t) };
+    lines.push({
+      text: next
+        ? fill(t(transfer ? "printWalkTransfer" : "printWalkToStop"), { ...v, stop: stop(next.stops[0], next.fromStop) })
+        : fill(t("printWalkToDest"), v),
+    });
+  });
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-sm font-semibold">{t("printBoardAlight")}</div>
-      <ol className="m-0 ps-5 flex flex-col gap-2">
-        {route.legs.map((l, i) =>
-          l.transit ? (
-            <li key={i}>
-              <span className="font-semibold num">{l.transit.routeShortName}</span> ({l.transit.agency}) · {fmtTime(l.transit.departIso)} {l.transit.fromStop} {routeArrow(useStore.getState().settings.language)} {fmtTime(l.transit.arriveIso)} {l.transit.toStop}
-            </li>
-          ) : (
-            <li key={i} className="text-sm">
-              {t("walking")} · {fmtDistance(l.distanceM, t)} · {fmtDuration(l.durationSec, t)}
-            </li>
-          ),
-        )}
+      <div className="text-sm font-semibold">{t("printTransitSteps")}</div>
+      <ol className="m-0 ps-5 flex flex-col gap-1.5 num">
+        {lines.map((x, i) => (
+          <li key={i} className={x.strong ? "font-semibold" : undefined}>
+            {x.text}
+          </li>
+        ))}
       </ol>
     </div>
   );

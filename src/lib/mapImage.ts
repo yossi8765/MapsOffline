@@ -13,6 +13,7 @@ import { buildStyle } from "./mapStyle";
 import { toItm } from "./coords";
 import { gridStep, itmGrid, zoomForScale } from "../map/printGrid";
 import type { PrintOptions } from "./print";
+import { legColor } from "../map/colors";
 
 const W = 1600;
 const H = 1050;
@@ -96,10 +97,34 @@ export async function renderRouteImage(route: Route, opts: PrintOptions = { scal
             paint: { "text-color": "#1f4e8c", "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
           });
         }
-        const data: FeatureCollection = { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: route.geometry } }] };
+        // public transport: each ride in its line's colour, walking dotted grey, a dot at every
+        // boarding / alighting stop; other modes: one line in the mode's colour
+        const transit = route.mode === "transit" && route.legs.some((l) => l.geometry.length >= 2);
+        const data: FeatureCollection = transit
+          ? {
+              type: "FeatureCollection",
+              features: route.legs
+                .map((l, i) => ({ l, i }))
+                .filter(({ l }) => l.geometry.length >= 2)
+                .map(({ l, i }) => ({ type: "Feature", properties: { walk: l.kind === "walk", color: l.kind === "walk" ? "#6b7280" : legColor(route, i) }, geometry: { type: "LineString", coordinates: l.geometry } })),
+            }
+          : { type: "FeatureCollection", features: [{ type: "Feature", properties: { walk: false, color }, geometry: { type: "LineString", coordinates: route.geometry } }] };
         map.addSource("print-route", { type: "geojson", data });
-        map.addLayer({ id: "print-route-casing", type: "line", source: "print-route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 10 } });
-        map.addLayer({ id: "print-route", type: "line", source: "print-route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": color, "line-width": 6 } });
+        map.addLayer({ id: "print-route-casing", type: "line", source: "print-route", filter: ["!", ["get", "walk"]], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 10 } });
+        map.addLayer({ id: "print-route", type: "line", source: "print-route", filter: ["!", ["get", "walk"]], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 6 } });
+        map.addLayer({ id: "print-route-walk", type: "line", source: "print-route", filter: ["get", "walk"], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 4, "line-dasharray": [0.2, 1.8] } });
+        if (transit) {
+          const stops: FeatureCollection = {
+            type: "FeatureCollection",
+            features: route.legs.flatMap((l, i) => {
+              const st = l.transit?.stops;
+              if (!st?.length) return [];
+              return [st[0], st[st.length - 1]].map((s) => ({ type: "Feature" as const, properties: { color: legColor(route, i) }, geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] } }));
+            }),
+          };
+          map.addSource("print-stops", { type: "geojson", data: stops });
+          map.addLayer({ id: "print-stops", type: "circle", source: "print-stops", paint: { "circle-radius": 6, "circle-color": "#ffffff", "circle-stroke-color": ["get", "color"], "circle-stroke-width": 3 } });
+        }
         // start: ring in the route colour; destination: red disc (the pins' colours on screen)
         const ends: FeatureCollection = {
           type: "FeatureCollection",
@@ -117,10 +142,20 @@ export async function renderRouteImage(route: Route, opts: PrintOptions = { scal
             "circle-stroke-width": ["case", ["==", ["get", "end"], 0], 4, 3],
           },
         });
-        map.once("idle", () => {
+        // the picture once every tile is drawn; a tile that never arrives (an online source that
+        // does not answer) must not cost the whole map: after 8 s it is taken as it is
+        let done = false;
+        const snap = () => {
+          if (done) return;
+          done = true;
           clearTimeout(timer);
           resolve(map.getCanvas().toDataURL("image/png"));
-        });
+        };
+        map.once("idle", snap);
+        setTimeout(() => {
+          if (!done) map.triggerRepaint();
+          map.once("render", snap);
+        }, 8_000);
       });
       map.on("error", (e) => console.warn("print map", e?.error?.message ?? e));
     });
