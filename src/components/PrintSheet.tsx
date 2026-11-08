@@ -222,7 +222,7 @@ function TransitSummary() {
   return (
     <div className="flex flex-col gap-2">
       <div className="text-sm font-semibold">{t("printTransitSteps")}</div>
-      <ol className="m-0 ps-5 flex flex-col gap-1.5 num">
+      <ol className="m-0 ps-6 flex flex-col gap-1.5 num list-decimal">
         {lines.map((x, i) => (
           <li key={i} className={x.strong ? "font-semibold" : undefined}>
             {x.text}
