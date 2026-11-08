@@ -1,4 +1,5 @@
-//! Ready-made data from the project's GitLab package registry.
+//! Ready-made data: GitHub (release "data-latest" of yossi8765/MapsOffline, the weekly
+//! GitHub Actions build, `.github/workflows/data.yml`), else the project's GitLab package registry.
 //!
 //! A scheduled GitLab pipeline (`.gitlab-ci.yml`, `tools/ci-data.sh`) builds every component
 //! once a week and uploads one `.mapsdata` file per component plus the data directory's
@@ -50,14 +51,70 @@ pub struct Latest {
     /// SHA-256 of each file of the package as the registry recorded it at upload (file name →
     /// hex); a downloaded file must match before it is installed.
     pub sha256: std::collections::HashMap<String, String>,
+    /// GitHub: download address of each file (GitLab's follow from the version).
+    pub urls: std::collections::HashMap<String, String>,
+    /// Where it comes from (shown in the progress line).
+    pub source: &'static str,
+}
+
+impl Latest {
+    fn url(&self, name: &str) -> String {
+        self.urls.get(name).cloned().unwrap_or_else(|| file_url(&self.version, name))
+    }
+}
+
+const GITHUB_DATA: &str = "https://api.github.com/repos/yossi8765/MapsOffline/releases/tags/data-latest";
+
+/// The weekly package on GitHub: release "data-latest", named "mapsdata <YYYY-MM-DD>", one asset
+/// per file (GitHub records each asset's SHA-256 as `digest`).
+fn latest_github(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
+    let r = client.get(GITHUB_DATA).header("Accept", "application/vnd.github+json").timeout(Duration::from_secs(15)).send().context("GitHub unreachable")?;
+    if r.status().as_u16() == 418 {
+        bail!("{}", download::blocked_message(GITHUB_DATA));
+    }
+    let rel: serde_json::Value = r.error_for_status()?.json()?;
+    let version = rel["name"].as_str().and_then(|n| n.strip_prefix("mapsdata ")).ok_or_else(|| anyhow!("data release without a version"))?.trim().to_string();
+    let mut urls = std::collections::HashMap::new();
+    let mut sha256 = std::collections::HashMap::new();
+    for a in rel["assets"].as_array().into_iter().flatten() {
+        let (Some(name), Some(url)) = (a["name"].as_str(), a["browser_download_url"].as_str()) else { continue };
+        urls.insert(name.to_string(), url.to_string());
+        if let Some(d) = a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")) {
+            sha256.insert(name.to_string(), d.to_string());
+        }
+    }
+    let age_days = chrono::NaiveDate::parse_from_str(&version, "%Y-%m-%d")
+        .map(|d| (chrono::Utc::now().date_naive() - d).num_days())
+        .unwrap_or(i64::MAX);
+    let murl = urls.get("manifest.json").ok_or_else(|| anyhow!("data release without manifest.json"))?;
+    let m = client.get(murl).timeout(Duration::from_secs(15)).send()?.error_for_status()?;
+    let manifest: Manifest = serde_json::from_slice(&m.bytes()?).context("package manifest")?;
+    Ok(Latest { version, age_days, manifest, sha256, urls, source: "GitHub" })
 }
 
 fn file_url(version: &str, name: &str) -> String {
     format!("{API}/generic/{PACKAGE}/{version}/{name}")
 }
 
-/// Newest published package and its manifest.
+/// Newest published package and its manifest: GitHub's when it is fresh, else GitLab's (the
+/// fresher of the two when both answer but GitHub's is old).
 pub fn latest(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
+    let gh = latest_github(client);
+    match &gh {
+        Ok(l) if l.age_days <= MAX_AGE_DAYS => return gh,
+        Ok(_) => {}
+        Err(e) => log::info!("no data package on GitHub: {e:#}"),
+    }
+    match latest_gitlab(client) {
+        Ok(gl) => match gh {
+            Ok(g) if g.age_days <= gl.age_days => Ok(g),
+            _ => Ok(gl),
+        },
+        Err(e) => gh.or(Err(e)),
+    }
+}
+
+fn latest_gitlab(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
     let url = format!("{API}?package_name={PACKAGE}&package_type=generic&order_by=created_at&sort=desc&per_page=5");
     let r = client.get(&url).timeout(Duration::from_secs(15)).send().context("GitLab unreachable")?;
     if r.status().as_u16() == 418 {
@@ -85,7 +142,7 @@ pub fn latest(client: &reqwest::blocking::Client) -> anyhow::Result<Latest> {
     let age_days = created.map(|c| (chrono::Utc::now() - c.with_timezone(&chrono::Utc)).num_days()).unwrap_or(i64::MAX);
     let m = client.get(file_url(&version, "manifest.json")).timeout(Duration::from_secs(15)).send()?.error_for_status()?;
     let manifest: Manifest = serde_json::from_slice(&m.bytes()?).context("package manifest")?;
-    Ok(Latest { version, age_days, manifest, sha256 })
+    Ok(Latest { version, age_days, manifest, sha256, urls: Default::default(), source: "GitLab" })
 }
 
 /// The version of `c` this program would take from the package (compatible format, the kind of
@@ -180,12 +237,12 @@ fn install_one(paths: &DataPaths, l: &Latest, c: DataComponent, version: &str, e
         let file = paths.downloads_dir().join(format!("prebuilt-{}", file_name(c)));
         let progress = |phase: ProgressPhase, d: u64, t: u64, msg: &str| -> bool {
             cancel.wait_if_paused();
-            let message = if phase == ProgressPhase::Downloading { format!("נתונים מוכנים מ-GitLab ({}) – {msg}", l.version) } else { msg.to_string() };
+            let message = if phase == ProgressPhase::Downloading { format!("נתונים מוכנים מ-{} ({}) – {msg}", l.source, l.version) } else { msg.to_string() };
             emit(DataProgress { component: c, phase, done: d, total: t, message });
             !cancel.is_cancelled_for(c)
         };
         let r = (|| -> anyhow::Result<()> {
-            download::ensure_fresh(&file_url(&l.version, &file_name(c)), &file, &progress, cancel)?;
+            download::ensure_fresh(&l.url(&file_name(c)), &file, &progress, cancel)?;
             if let Some(want) = l.sha256.get(&file_name(c)) {
                 progress(ProgressPhase::Processing, 0, 1, "מאמת את הקובץ שהורד");
                 download::check_digest::<sha2::Sha256>(&file, want)?;
@@ -241,7 +298,7 @@ mod tests {
         remote.set(DataComponent::Tiles, Some("20261101.pmtiles".into()));
         remote.set(DataComponent::Satellite, Some("s2cloudless-2025 z12".into()));
         remote.set(DataComponent::Terrain, Some("terrarium Sat, 02 Dec 2017 02:55:39 GMT".into())); // old DEM: not usable
-        let l = Latest { version: "2026-11-01".into(), age_days: 2, manifest: remote, sha256: Default::default() };
+        let l = Latest { version: "2026-11-01".into(), age_days: 2, manifest: remote, sha256: Default::default(), urls: Default::default(), source: "GitLab" };
         let all = [DataComponent::Routing, DataComponent::Transit, DataComponent::Geocode, DataComponent::Tiles, DataComponent::Satellite, DataComponent::Terrain];
         let got: Vec<DataComponent> = usable(&paths, &l, &all).into_iter().map(|x| x.0).collect();
         // satellite: the default settings ask for govmap, so the package's Sentinel-2 is skipped

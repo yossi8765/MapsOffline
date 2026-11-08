@@ -18,8 +18,11 @@ use crate::types::ProgressFn;
 
 /// Model file (whisper.cpp ggml, quantised q5_0 from ivrit-ai/whisper-large-v3-turbo-ggml).
 pub const MODEL_FILE: &str = "ggml-ivrit-large-v3-turbo-q5_0.bin";
-pub const MODEL_URL: &str =
-    "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/packages/generic/speech-model/1/ggml-ivrit-large-v3-turbo-q5_0.bin";
+/// Where the model is published: GitHub (release "speech-model-1"), else GitLab's registry.
+pub const MODEL_URLS: [&str; 2] = [
+    "https://github.com/yossi8765/MapsOffline/releases/download/speech-model-1/ggml-ivrit-large-v3-turbo-q5_0.bin",
+    "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/packages/generic/speech-model/1/ggml-ivrit-large-v3-turbo-q5_0.bin",
+];
 pub const MODEL_SHA256: &str = "6c1da92e8e41dd64b8cc402eee7eb7a433d2152567e1a4d9cf181fefcc67a572";
 pub const MODEL_BYTES: u64 = 574_041_195;
 
@@ -83,7 +86,15 @@ pub fn install(paths: &DataPaths, progress: ProgressFn) -> anyhow::Result<()> {
             std::fs::create_dir_all(dir)?;
             crate::data::disk::ensure_free(dir, MODEL_BYTES.saturating_mul(2))?;
         }
-        download::ensure_fresh(MODEL_URL, &tmp, progress, &cancel)?;
+        let mut got = Err(anyhow::anyhow!("no model source"));
+        for url in MODEL_URLS {
+            got = download::ensure_fresh(url, &tmp, progress, &cancel);
+            if got.is_ok() || cancel.is_cancelled() {
+                break;
+            }
+            log::warn!("speech model from {url}: {:#}", got.as_ref().err().map(|e| e.to_string()).unwrap_or_default());
+        }
+        got?;
         if cancel.is_cancelled() {
             bail!("בוטל");
         }

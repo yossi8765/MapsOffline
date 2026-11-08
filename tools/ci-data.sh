@@ -72,6 +72,24 @@ mkdir -p "$OUT/all"
 "$BIN" --dir "$D" export "$OUT/all/$ALL_FILE" || echo "WARNING: combined package failed"
 ls -la "$OUT" "$OUT/all"
 
+# GitHub Actions (.github/workflows/data.yml): one release "data-latest" named "mapsdata <date>",
+# replaced every week (src-tauri/src/data/prebuilt.rs reads it; GitHub keeps each file's SHA-256)
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  VERSION=$(date -u +%Y-%m-%d)
+  REL=data-latest
+  echo "== GitHub release $REL (mapsdata $VERSION)"
+  gh release delete "$REL" --yes --cleanup-tag 2>/dev/null || true
+  files=("$OUT"/*.mapsdata)
+  [ -f "$OUT/all/$ALL_FILE" ] && files+=("$OUT/all/$ALL_FILE")
+  gh release create "$REL" --title "mapsdata $VERSION" --prerelease --latest=false \
+    --notes "נתונים מוכנים מהבנייה השבועית ($VERSION). התוכנה מורידה אותם בעצמה; $ALL_FILE = כל הנתונים בקובץ אחד, להעברה למחשב בלי אינטרנט." \
+    "${files[@]}" || { echo "release upload failed"; exit 1; }
+  # manifest.json last: the app reads it to decide, so it must only appear once the files are there
+  gh release upload "$REL" "$OUT/manifest.json" || { echo "manifest upload failed"; exit 1; }
+  echo "done"
+  exit 0
+fi
+
 if [ -z "${CI_JOB_TOKEN:-}" ]; then
   echo "not in CI: packages left in $OUT"
   exit 0

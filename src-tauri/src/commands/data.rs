@@ -412,8 +412,17 @@ pub async fn data_import(app: AppHandle, state: State<'_, Arc<AppState>>, src: S
     res
 }
 
-/// The full ready-made data package of the weekly GitLab build (every component in one file).
-const FULL_PACKAGE_URL: &str = "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/packages/generic/mapsdata-all/latest/MapsOffline-data.mapsdata";
+/// The full ready-made data package of the weekly build (every component in one file): GitHub
+/// (release "data-latest"), else GitLab's registry.
+const FULL_PACKAGE_URLS: [&str; 2] = [
+    "https://github.com/yossi8765/MapsOffline/releases/download/data-latest/MapsOffline-data.mapsdata",
+    "https://gitlab.com/api/v4/projects/RecoveryAdvancedFree%2FMapsOffline/packages/generic/mapsdata-all/latest/MapsOffline-data.mapsdata",
+];
+
+/// The first source of the full package that answers.
+fn full_package_url(client: &reqwest::blocking::Client) -> &'static str {
+    FULL_PACKAGE_URLS.into_iter().find(|u| crate::data::download::probe(client, u).is_ok()).unwrap_or(FULL_PACKAGE_URLS[1])
+}
 
 /// Progress of `data_download_package`, emitted as event `package-download`.
 #[derive(Clone, serde::Serialize)]
@@ -446,7 +455,8 @@ pub async fn data_download_package(app: AppHandle, state: State<'_, Arc<AppState
                 emit(phase, d, t, msg);
                 !st2.cancel.is_cancelled()
             };
-            crate::data::download::ensure_fresh(FULL_PACKAGE_URL, &file, &progress, &st2.cancel)?;
+            let url = full_package_url(&crate::data::download::http_client()?);
+            crate::data::download::ensure_fresh(url, &file, &progress, &st2.cancel)?;
             if st2.cancel.is_cancelled() {
                 anyhow::bail!("בוטל");
             }
@@ -846,7 +856,7 @@ pub async fn map_tiles_available(state: State<'_, Arc<AppState>>) -> R<bool> {
 pub async fn package_info() -> R<Option<PackageInfo>> {
     tauri::async_runtime::spawn_blocking(|| {
         let client = crate::data::download::http_client().ok()?;
-        let m = crate::data::download::probe(&client, FULL_PACKAGE_URL).ok()?;
+        let m = FULL_PACKAGE_URLS.into_iter().find_map(|u| crate::data::download::probe(&client, u).ok())?;
         Some(PackageInfo { size_bytes: m.content_length?, version: m.version().unwrap_or_default() })
     })
     .await

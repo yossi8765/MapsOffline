@@ -1,0 +1,34 @@
+# Weekly ready-made data (the GitLab `data-package` job's twin): builds every component with the
+# data CLI and publishes them as release "data-latest" (tools/ci-data.sh), which the app reads
+# first (src-tauri/src/data/prebuilt.rs). Also started by hand from the Actions tab.
+name: data-package
+on:
+  schedule:
+    - cron: "30 1 * * 0" # Sundays 01:30 UTC
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: data-package
+jobs:
+  data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      RUST_LOG: info
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries and tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config file jq webp \
+            cmake libclang-dev clang
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bash tools/ci-data.sh
+      # tests against the freshly built data; failures are reported but never hold back the package
+      - run: bash tools/ci-test-real.sh || echo "::warning::real-data tests failed"

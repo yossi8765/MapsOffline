@@ -98,8 +98,47 @@ foreach ($ext in @("deb", "AppImage")) {
 }
 if ($linuxFiles.Count -eq 0) { Write-Host "WARNING: no Linux files for $version in $linuxOut" -ForegroundColor Yellow }
 
+# --- Mac: built by GitHub Actions (.github/workflows/build-mac.yml) when the version tag reaches
+# GitHub; wait for that run and take its DMG into the signed list
+$github = "yossi8765/MapsOffline"
+if ($Replace -and -not $SignOnly) {
+    cmd /c "glab release delete $tag -y 2>nul" | Out-Null
+    cmd /c "gh release delete $tag -R $github --yes 2>nul" | Out-Null
+    cmd /c "git tag -d $tag 2>nul" | Out-Null
+    cmd /c "git push origin :refs/tags/$tag 2>nul" | Out-Null
+    cmd /c "git push github :refs/tags/$tag 2>nul" | Out-Null
+}
+$macFiles = @()
+if (-not $SignOnly) {
+    $exists = & git tag -l $tag
+    if (-not $exists) { & git tag -a $tag -m "MapsOffline $version" }
+    cmd /c "git push github $tag 2>nul" | Out-Null
+    cmd /c "git push origin $tag 2>nul" | Out-Null
+    Write-Host "waiting for the Mac build on GitHub..." -ForegroundColor Cyan
+    $runId = $null
+    for ($i = 0; $i -lt 30 -and -not $runId; $i++) {
+        Start-Sleep -Seconds 10
+        $runId = (& gh run list -R $github --workflow build-mac.yml --branch $tag --limit 1 --json databaseId --jq ".[0].databaseId" 2>$null)
+    }
+    if ($runId) {
+        & gh run watch $runId -R $github --exit-status | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $macDir = Join-Path $env:TEMP "mapsoffline-mac-$version"
+            if (Test-Path $macDir) { Remove-Item $macDir -Recurse -Force }
+            & gh run download $runId -R $github -n mac -D $macDir
+            $dmg = Get-ChildItem $macDir -Filter *.dmg | Select-Object -First 1
+            if ($dmg) {
+                Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline-mac.dmg")
+                Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline_${version}_universal.dmg")
+                $macFiles = @("MapsOffline-mac.dmg", "MapsOffline_${version}_universal.dmg")
+            }
+        }
+    }
+    if ($macFiles.Count -eq 0) { Write-Host "WARNING: no Mac build for $version (the release goes out without it)" -ForegroundColor Yellow }
+}
+
 # --- SHA256SUMS + signature
-$files = @("MapsOffline-setup.exe", "MapsOffline_${version}_x64-setup.exe", "MapsOffline-portable.zip", "MapsOffline_${version}_portable.zip") + $linuxFiles
+$files = @("MapsOffline-setup.exe", "MapsOffline_${version}_x64-setup.exe", "MapsOffline-portable.zip", "MapsOffline_${version}_portable.zip") + $linuxFiles + $macFiles
 $lines = @("# version $version")
 foreach ($f in $files) {
     $h = (Get-FileHash (Join-Path $dist $f) -Algorithm SHA256).Hash.ToLower()
@@ -128,15 +167,7 @@ $body = $body.TrimEnd() + $table
 $notesOut = Join-Path $dist "release-notes-$version.md"
 [System.IO.File]::WriteAllText($notesOut, $body, (New-Object System.Text.UTF8Encoding $false))
 
-# --- git tag + publish
-if ($Replace) {
-    cmd /c "glab release delete $tag -y 2>nul" | Out-Null
-    cmd /c "git tag -d $tag 2>nul" | Out-Null
-    cmd /c "git push origin :refs/tags/$tag 2>nul" | Out-Null
-}
-$exists = & git tag -l $tag
-if (-not $exists) { & git tag -a $tag -m "MapsOffline $version" }
-cmd /c "git push origin $tag 2>nul" | Out-Null
+# --- publish (the tag was pushed above, before the Mac build)
 $assets = @(
     "$dist\MapsOffline_${version}_x64-setup.exe#MapsOffline_${version}_x64-setup.exe (מתקין)#package",
     "$dist\MapsOffline-setup.exe#MapsOffline-setup.exe (מתקין, שם קבוע)#package",
@@ -145,6 +176,9 @@ $assets = @(
 ) + ($linuxFiles | ForEach-Object {
     $label = if ($_ -like "*.deb") { "התקנה ללינוקס: Ubuntu / Debian / Mint" } else { "לינוקס: קובץ אחד שרץ בלי התקנה" }
     if ($_ -like "MapsOffline-linux*") { $label += ", שם קבוע" }
+    "$dist\$_#$_ ($label)#package"
+}) + ($macFiles | ForEach-Object {
+    $label = if ($_ -like "MapsOffline-mac*") { "מק: Apple silicon ו-Intel, שם קבוע" } else { "מק: Apple silicon ו-Intel" }
     "$dist\$_#$_ ($label)#package"
 }) + @(
     "$dist\SHA256SUMS#SHA256SUMS#other",
@@ -155,3 +189,9 @@ $env:GLAB_CHECK_UPDATE = "false"
 & glab release create $tag --name "MapsOffline $version" --notes-file $notesOut -R $project @assets
 if ($LASTEXITCODE -ne 0) { Fail "glab release create failed" }
 Write-Host "published https://gitlab.com/$project/-/releases/$tag" -ForegroundColor Green
+
+# --- the same release on GitHub (the project's home; the app looks there first)
+$ghAssets = $assets | ForEach-Object { $p = $_.Split("#"); "$($p[0])#$($p[1])" }
+& gh release create $tag -R $github --title "MapsOffline $version" --notes-file $notesOut @ghAssets
+if ($LASTEXITCODE -ne 0) { Fail "gh release create failed" }
+Write-Host "published https://github.com/$github/releases/tag/$tag" -ForegroundColor Green
