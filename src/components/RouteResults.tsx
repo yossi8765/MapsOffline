@@ -137,12 +137,22 @@ function RouteNotes() {
   );
 }
 
+/** One text per ticket: "קו 884: 8 ₪", "קווים 884 + 881: 8 ₪" (free transfer), "רכבת: 14.5 ₪". Line
+ *  numbers and amounts are isolated (FSI…PDI): in right-to-left text "884 8 ₪" ran together. */
+function fareTickets(r: Route, t: ReturnType<typeof useT>): string[] {
+  const iso = (s: string) => `⁨${s}⁩`;
+  return (r.fareBreakdown ?? []).map((p) => {
+    const what = p.train ? t("fareTrain") : t(p.label.includes("+") ? "fareLines" : "fareLine").replace("{n}", iso(p.label));
+    return `${what}: ${iso(`${p.ils.toFixed(p.ils % 1 ? 1 : 0)} ₪`)}`;
+  });
+}
+
 /** "כ-43 ₪" with its breakdown per ticket in a tooltip and under the card. */
 function Fare({ r }: { r: Route }) {
   const t = useT();
   if (r.fareEstimateIls == null) return null;
   const amount = t("fareApprox").replace("{n}", r.fareEstimateIls.toFixed(r.fareEstimateIls % 1 ? 1 : 0));
-  const parts = r.fareBreakdown?.map((p) => `${p.label} ${p.ils.toFixed(p.ils % 1 ? 1 : 0)} ₪`).join(" + ");
+  const parts = fareTickets(r, t).join(" · ");
   return (
     <Tip text={`${parts ? `${parts} · ` : ""}${t("fareNoteShort")}`}>
       <span className="underline decoration-dotted underline-offset-2" tabIndex={0}>
@@ -219,7 +229,7 @@ export function RouteResults() {
                     </div>
                     {r.fareBreakdown && r.fareBreakdown.length > 1 && (
                       <div className="text-xs text-subtle num">
-                        {r.fareBreakdown.map((p) => `${p.label} ${p.ils.toFixed(p.ils % 1 ? 1 : 0)} ₪`).join(" + ")}
+                        {t("fareByTicket")} {fareTickets(r, t).join(" · ")}
                       </div>
                     )}
                   </div>
