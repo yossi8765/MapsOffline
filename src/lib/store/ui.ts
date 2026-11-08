@@ -4,6 +4,21 @@ import { translate, type I18nKey } from "../i18n";
 import { parseMapLink } from "../links";
 import type { ContextMenuState, Panel, ShareTarget, SliceCreator, Toast, ToastOptions } from "./types";
 
+/** What the stop-alert bar shows. */
+export interface TransitAlertView {
+  routeId: string;
+  /** The stop to get off at (name + code) and the line. */
+  stop: string;
+  line: string;
+  /** Distance to that stop (m), when a position is known. */
+  distM: number | null;
+  /** The "get ready" alert was given for this ride. */
+  warned: boolean;
+  /** Ride n of m. */
+  ride: number;
+  rides: number;
+}
+
 export interface UiSlice {
   panel: Panel;
   sidebarCollapsed: boolean;
@@ -25,6 +40,8 @@ export interface UiSlice {
   /** Internet is reachable: navigator.onLine as a quick hint, confirmed by the backend's
    *  `connectivity` probe (WebView2 reports onLine for any network adapter). */
   online: boolean;
+  /** "Wake me before my stop" on a public-transport route (lib/transitAlert.ts). */
+  transitAlert: TransitAlertView | null;
 
   setPanel: (p: Panel) => void;
   toggleSidebar: () => void;
@@ -77,6 +94,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => {
     panel: ((typeof location !== "undefined" && (new URLSearchParams(location.search).get("panel") as Panel | null)) || "route") as Panel,
     sidebarCollapsed: false,
     contextMenu: null,
+    transitAlert: null,
     toasts: [],
     searchFocusTick: 0,
     shortcutsOpen: false,

@@ -25,7 +25,9 @@ import {
   CornerLeftDown,
   CornerRightDown,
   Car,
+  BellRing,
 } from "lucide-react";
+import { startTransitAlert, stopTransitAlert } from "../lib/transitAlert";
 import clsx from "clsx";
 import { Icon } from "./Icon";
 import { Tip } from "./Tip";
@@ -585,6 +587,7 @@ export function RouteDetails({ route, embedded = false }: { route: Route; embedd
           </button>
         </div>
       )}
+      {route.mode === "transit" && <TransitAlertButton route={route} />}
       <div className="flex items-center gap-1 no-print relative" role="toolbar" aria-label={t("routeActions")}>
         <button className="btn btn-ghost btn-sm flex-1" onClick={() => void exportRoute(`${safe}.gpx`, "gpx", routeToGpx(route, name), t)}>
           <Icon as={Download} size={14} /> GPX
@@ -703,6 +706,20 @@ function TransitDelays({ route }: { route: Route }) {
         </div>
       ))}
       <p className="m-0 text-xs text-subtle">{t("strideCredit")}</p>
+    </div>
+  );
+}
+
+/** "Wake me before my stop" for a public-transport route (lib/transitAlert.ts). */
+function TransitAlertButton({ route }: { route: Route }) {
+  const t = useT();
+  const active = useStore((s) => s.transitAlert?.routeId === route.id);
+  return (
+    <div className="flex items-center gap-2 no-print">
+      <button className={clsx("btn flex-1", !active && "btn-primary")} aria-pressed={active} onClick={() => (active ? stopTransitAlert() : startTransitAlert(route))}>
+        <Icon as={BellRing} /> {active ? t("transitAlertStop") : t("transitAlertStart")}
+      </button>
+      <InfoTip text={t("transitAlertHint")} />
     </div>
   );
 }

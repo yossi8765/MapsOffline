@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { getPrefString, setPrefString } from "../lib/prefs";
+import { TransitAlertBar } from "./TransitAlertBar";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as maplibregl from "maplibre-gl";
 import type { FeatureCollection } from "geojson";
@@ -631,6 +632,7 @@ export function MapView() {
           </InfoBar>
         </div>
       )}
+      {!navigating && !picking && <TransitAlertBar />}
       {hover && <MapHoverCard target={hover} {...cardHandlers} />}
       <CategoryPicker />
       <LocateButton />
