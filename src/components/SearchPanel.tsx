@@ -16,6 +16,7 @@ import { SearchBox, kindIcon, stopCode, type Pick } from "./SearchBox";
 import { countdown } from "./FavoritesPanel";
 import { isSynagogue } from "./MapHoverCard";
 import { MinyanimCard } from "./MinyanimCard";
+import { QuickDestinations } from "./QuickDestinations";
 import { fmtTime } from "../lib/format";
 
 /** Categories offered by "What's in <city>?" (ids of lib/poiCategories). */
@@ -64,7 +65,7 @@ export function SearchPanel() {
           useStore.getState().setMarker(null);
         }}
       />
-      {picked ? <PlaceCard key={`${picked.lon},${picked.lat},${picked.label}`} picked={picked} /> : null}
+      {picked ? <PlaceCard key={`${picked.lon},${picked.lat},${picked.label}`} picked={picked} /> : <QuickDestinations />}
     </div>
   );
 }
