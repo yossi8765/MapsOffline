@@ -59,8 +59,12 @@ Write-Host "new SHA256SUMS (signed, verified):" -ForegroundColor Green
 Get-Content $sums
 
 # GitHub
-& gh release upload $tag -R $github --clobber "$stage\$stable#$stable (מק: Apple silicon ו-Intel)" $sums $sig
-if ($LASTEXITCODE) { Fail "GitHub upload failed" }
+for ($i = 1; $i -le 3; $i++) {
+    & gh release upload $tag -R $github --clobber "$stage\$stable#$stable (מק: Apple silicon ו-Intel)" $sums $sig
+    if (-not $LASTEXITCODE) { break }
+    if ($i -eq 3) { Fail "GitHub upload failed" }
+    Start-Sleep -Seconds 15
+}
 Write-Host "GitHub: https://github.com/$github/releases/tag/$tag" -ForegroundColor Green
 
 # GitLab: links named like the new files are replaced
@@ -72,6 +76,17 @@ foreach ($l in $links) {
         }
     }
 }
-& glab release upload $tag -R $gitlab "$stage\$versioned#$versioned (מק: Apple silicon ו-Intel)#package" "$stage\$stable#$stable (מק, שם קבוע)#package" "$sums#SHA256SUMS#other" "$sig#SHA256SUMS.sig#other"
-if ($LASTEXITCODE) { Fail "GitLab upload failed - run this script again" }
+for ($i = 1; $i -le 3; $i++) {
+    & glab release upload $tag -R $gitlab "$stage\$versioned#$versioned (מק: Apple silicon ו-Intel)#package" "$stage\$stable#$stable (מק, שם קבוע)#package" "$sums#SHA256SUMS#other" "$sig#SHA256SUMS.sig#other"
+    if (-not $LASTEXITCODE) { break }
+    if ($i -eq 3) { Fail "GitLab upload failed - run this script again" }
+    # a half-finished attempt may have added some links: remove them before the next one
+    $links = (& glab api "projects/$gitlabId/releases/$tag/assets/links" 2>$null) | ConvertFrom-Json
+    foreach ($l in $links) {
+        foreach ($n in @($stable, $versioned, "SHA256SUMS", "SHA256SUMS.sig")) {
+            if ($l.name -eq $n -or $l.name.StartsWith("$n ")) { & glab api -X DELETE "projects/$gitlabId/releases/$tag/assets/links/$($l.id)" 2>&1 | Out-Null }
+        }
+    }
+    Start-Sleep -Seconds 15
+}
 Write-Host "GitLab: https://gitlab.com/$gitlab/-/releases/$tag" -ForegroundColor Green

@@ -6,6 +6,7 @@
 #   .\tools\release.ps1 -NoBuild        reuse the existing build outputs
 #   .\tools\release.ps1 -Replace        delete the existing release/tag vX.Y.Z first (overwrite)
 #   .\tools\release.ps1 -SignOnly       only write SHA256SUMS + SHA256SUMS.sig into dist\
+#   .\tools\release.ps1 -AllowMissing   publish even without a Linux / Mac build (else the release stops)
 #
 # Private key: %USERPROFILE%\.mapsoffline-signing\mapsoffline-release-ed25519.pem (never in the repo).
 # Its public half is PUBLIC_KEY_HEX in app_update.rs; the script refuses to sign with a different key.
@@ -13,6 +14,7 @@ param(
     [switch]$NoBuild,
     [switch]$Replace,
     [switch]$SignOnly,
+    [switch]$AllowMissing,
     [string]$Notes = "release-notes.md"
 )
 $ErrorActionPreference = "Stop"
@@ -52,6 +54,14 @@ $dist = Join-Path $root "dist"
 if (-not $NoBuild -and -not $SignOnly) {
     & (Join-Path $PSScriptRoot "check.ps1")
     if ($LASTEXITCODE -ne 0) { Fail "checks failed (tools\check.ps1)" }
+    # the Android adaptations (out-of-tree patch anchors) must still apply and build: checked now,
+    # not after the hour of builds (they broke two releases at the very end)
+    $apkScript = "C:\MapsOffline-android\build-apk.ps1"
+    if (Test-Path $apkScript) {
+        Write-Host "checking the Android adaptations..." -ForegroundColor Cyan
+        & powershell -ExecutionPolicy Bypass -File $apkScript -CheckOnly | Select-Object -Last 2
+        if ($LASTEXITCODE -ne 0) { Fail "the Android adaptations do not apply (C:\MapsOffline-android\patch-android.mjs)" }
+    }
     Write-Host "building..." -ForegroundColor Cyan
     if (Test-Path $exe) { Move-Item $exe "$exe.old" -Force -ErrorAction SilentlyContinue }
     # Panic messages carry source paths: map the user profile (registry sources) and the
@@ -100,7 +110,10 @@ foreach ($ext in @("deb")) {  # no AppImage since 2.0.10 (~83 MB, little gain)
         $linuxFiles += @("MapsOffline-linux.$ext", "MapsOffline_${version}_amd64.$ext")
     }
 }
-if ($linuxFiles.Count -eq 0) { Write-Host "WARNING: no Linux files for $version in $linuxOut" -ForegroundColor Yellow }
+if ($linuxFiles.Count -eq 0 -and -not $SignOnly) {
+    if ($AllowMissing) { Write-Host "WARNING: no Linux files for $version in $linuxOut" -ForegroundColor Yellow }
+    else { Fail "no Linux build for $version in $linuxOut (-AllowMissing publishes without it)" }
+}
 
 # --- Mac: built by GitHub Actions (.github/workflows/build-mac.yml) when the version tag reaches
 # GitHub; wait for that run and take its DMG into the signed list
@@ -125,20 +138,34 @@ if (-not $SignOnly) {
         $runId = (& gh run list -R $github --workflow build-mac.yml --branch $tag --limit 1 --json databaseId --jq ".[0].databaseId" 2>$null)
     }
     if ($runId) {
-        & gh run watch $runId -R $github --exit-status | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        # poll instead of "gh run watch": one dropped connection ended the wait and the release
+        # went out without the Mac build; a full rebuild of whisper.cpp takes ~40 min there
+        $conclusion = $null
+        $deadline = (Get-Date).AddMinutes(120)
+        while (-not $conclusion -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 30
+            try { $st = (& gh run view $runId -R $github --json status,conclusion 2>$null) | ConvertFrom-Json } catch { $st = $null }
+            if ($st -and $st.status -eq "completed") { $conclusion = $st.conclusion }
+        }
+        Write-Host "Mac build: $conclusion" -ForegroundColor Cyan
+        if ($conclusion -eq "success") {
             $macDir = Join-Path $env:TEMP "mapsoffline-mac-$version"
-            if (Test-Path $macDir) { Remove-Item $macDir -Recurse -Force }
-            & gh run download $runId -R $github -n mac -D $macDir
-            $dmg = Get-ChildItem $macDir -Filter *.dmg | Select-Object -First 1
-            if ($dmg) {
-                Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline-mac.dmg")
-                Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline_${version}_universal.dmg")
-                $macFiles = @("MapsOffline-mac.dmg", "MapsOffline_${version}_universal.dmg")
+            for ($i = 1; $i -le 5 -and $macFiles.Count -eq 0; $i++) {
+                if (Test-Path $macDir) { Remove-Item $macDir -Recurse -Force }
+                & gh run download $runId -R $github -n mac -D $macDir 2>$null
+                $dmg = Get-ChildItem $macDir -Filter *.dmg -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($dmg) {
+                    Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline-mac.dmg")
+                    Copy-Item $dmg.FullName (Join-Path $dist "MapsOffline_${version}_universal.dmg")
+                    $macFiles = @("MapsOffline-mac.dmg", "MapsOffline_${version}_universal.dmg")
+                } else { Start-Sleep -Seconds 20 }
             }
         }
     }
-    if ($macFiles.Count -eq 0) { Write-Host "WARNING: no Mac build for $version (the release goes out without it)" -ForegroundColor Yellow }
+    if ($macFiles.Count -eq 0) {
+        if ($AllowMissing) { Write-Host "WARNING: no Mac build for $version (the release goes out without it)" -ForegroundColor Yellow }
+        else { Fail "no Mac build for $version (see the build-mac run on GitHub; -AllowMissing publishes without it)" }
+    }
 }
 
 # --- SHA256SUMS + signature
@@ -190,13 +217,26 @@ $assets = @(
 )
 # glab prints "update available" on stderr, which $ErrorActionPreference = "Stop" turns into a failure
 $env:GLAB_CHECK_UPDATE = "false"
-& glab release create $tag --name "MapsOffline $version" --notes-file $notesOut -R $project @assets
-if ($LASTEXITCODE -ne 0) { Fail "glab release create failed" }
+# a connection dropped mid-upload is common: retry from a clean release
+for ($i = 1; $i -le 3; $i++) {
+    & glab release create $tag --name "MapsOffline $version" --notes-file $notesOut -R $project @assets
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($i -eq 3) { Fail "glab release create failed" }
+    Write-Host "GitLab upload failed - retrying ($i)" -ForegroundColor Yellow
+    cmd /c "glab release delete $tag -R $project -y 2>nul" | Out-Null
+    Start-Sleep -Seconds 15
+}
 Write-Host "published https://gitlab.com/$project/-/releases/$tag" -ForegroundColor Green
 
 # --- the same release on GitHub (the project's home; the app looks there first)
 # GitHub gets the fixed names only (the versioned copies are the same files; GitLab keeps both)
 $ghAssets = $assets | Where-Object { ($_.Split("#")[0] | Split-Path -Leaf) -notmatch "^MapsOffline_\d" } | ForEach-Object { $p = $_.Split("#"); "$($p[0])#$($p[1] -replace ', שם קבוע', '')" }
-& gh release create $tag -R $github --title "MapsOffline $version" --notes-file $notesOut @ghAssets
-if ($LASTEXITCODE -ne 0) { Fail "gh release create failed" }
+for ($i = 1; $i -le 3; $i++) {
+    & gh release create $tag -R $github --title "MapsOffline $version" --notes-file $notesOut @ghAssets
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($i -eq 3) { Fail "gh release create failed" }
+    Write-Host "GitHub upload failed - retrying ($i)" -ForegroundColor Yellow
+    cmd /c "gh release delete $tag -R $github --yes 2>nul" | Out-Null
+    Start-Sleep -Seconds 15
+}
 Write-Host "published https://github.com/$github/releases/tag/$tag" -ForegroundColor Green
