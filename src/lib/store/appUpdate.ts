@@ -1,13 +1,13 @@
 import { api, errorText, type AppUpdate } from "../api";
 import type { SliceCreator } from "./types";
 
-/** In-app program updates (signed GitLab releases, src-tauri/src/app_update.rs). */
+/** In-app program updates (signed GitHub releases, GitLab fallback, src-tauri/src/app_update.rs). */
 export interface AppUpdateSlice {
   appUpdate: AppUpdate | null;
   appUpdateBusy: "check" | "download" | null;
   appUpdateProgress: { done: number; total: number; message: string } | null;
 
-  /** Ask GitLab for a newer signed release; `quiet` = startup check: a newer version is offered
+  /** Ask GitHub (then GitLab) for a newer signed release; `quiet` = startup check: a newer version is offered
    *  with an "install now" button – nothing is installed without the user's go. */
   checkAppUpdate: (quiet?: boolean) => Promise<void>;
   /** Download, verify, start the installer (passive, update mode – data is never deleted) and quit;

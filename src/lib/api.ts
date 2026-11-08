@@ -285,7 +285,7 @@ export interface LineRef {
   color?: string;
 }
 
-/** In-app update check result (signed GitLab release vs the running version). */
+/** In-app update check result (signed GitHub release, GitLab fallback, vs the running version). */
 export interface AppUpdate {
   current: string;
   latest: string;
@@ -498,7 +498,7 @@ export interface Settings {
   avoidHardTurns: boolean;
   /** Order of public-transport results. */
   transitPreference: TransitPreference;
-  /** Take ready-made components from the weekly GitLab build when possible. */
+  /** Take ready-made components from the weekly GitHub build when possible. */
   usePrebuiltData: boolean;
   /** Maps, search and routing for Israel and every country: standard (Protomaps + Geofabrik) or OsmAnd files. */
   mapSource?: "standard" | "osmand";
@@ -1000,7 +1000,7 @@ export const api = {
   dataUsage: () => invoke<{ target: string; bytes: number }[]>("data_usage"),
   /** Delete those targets; files still in use are removed at the next start (`pending`). */
   dataDelete: (targets: string[]) => invoke<{ freedBytes: number; pending: string[] }>("data_delete", { targets }),
-  /** Download the full ready-made data package (weekly GitLab build) to `dest`; returns its size. Progress: event `package-download`. */
+  /** Download the full ready-made data package (weekly GitHub build) to `dest`; returns its size. Progress: event `package-download`. */
   dataDownloadPackage: (dest: string) => invoke<number>("data_download_package", { dest }),
   dataPreload: (transit: boolean) => invoke<void>("data_preload", { transit }),
 
