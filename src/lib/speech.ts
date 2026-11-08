@@ -37,7 +37,9 @@ export interface Listening {
 
 const RATE = 16000;
 /** Silence after speech that ends the recording. */
-const END_SILENCE_MS = 1200;
+const END_SILENCE_MS = 800;
+/** Kept after the last loud buffer (the end of the last word); the rest of the silence is not sent. */
+const TAIL_MS = 300;
 /** No speech at all within this time: give up. */
 const NO_SPEECH_MS = 7000;
 const MAX_MS = 15000;
@@ -64,6 +66,10 @@ function recordUtterance(handle: { stopped: boolean }, onStart: () => void, onLe
       let noise = Infinity;
       let heard = false;
       let lastLoud = 0;
+      // samples recorded up to the end of the last loud buffer: the silence after it is cut off
+      // (the recognizer's work grows with the length of the audio)
+      let total = 0;
+      let loudEnd = 0;
       const finish = () => {
         proc.onaudioprocess = null;
         try {
@@ -74,17 +80,18 @@ function recordUtterance(handle: { stopped: boolean }, onStart: () => void, onLe
         }
         stream.getTracks().forEach((t) => t.stop());
         void ctx.close();
-        const n = chunks.reduce((a, c) => a + c.length, 0);
+        const n = Math.min(total, loudEnd + Math.round((TAIL_MS / 1000) * RATE));
         const out = new Int16Array(heard ? n : 0);
         if (heard) {
           let o = 0;
-          for (const c of chunks) for (let i = 0; i < c.length; i++) out[o++] = Math.max(-1, Math.min(1, c[i])) * 32767;
+          for (const c of chunks) for (let i = 0; i < c.length && o < n; i++) out[o++] = Math.max(-1, Math.min(1, c[i])) * 32767;
         }
         resolve(out);
       };
       proc.onaudioprocess = (ev) => {
         const data = new Float32Array(ev.inputBuffer.getChannelData(0));
         chunks.push(data);
+        total += data.length;
         let sum = 0;
         for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
         const rms = Math.sqrt(sum / data.length);
@@ -103,6 +110,7 @@ function recordUtterance(handle: { stopped: boolean }, onStart: () => void, onLe
         if (loud) {
           heard = true;
           lastLoud = now;
+          loudEnd = total;
         }
         onLevel?.(Math.min(1, rms * 8));
         const elapsed = now - t0;

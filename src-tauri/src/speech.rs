@@ -181,7 +181,7 @@ pub fn transcribe(paths: &DataPaths, pcm_le16: &[u8]) -> anyhow::Result<String> 
     // padded to 30 s takes minutes on a phone. A window sized to the audio (+ margin) costs a
     // fraction and keeps the accuracy on short phrases.
     params.set_audio_ctx(audio_ctx(samples.len()));
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    let threads = std::env::var("MO_SPEECH_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8));
     params.set_n_threads(threads as i32);
     let t0 = std::time::Instant::now();
     state.full(params, &samples).map_err(|e| anyhow::anyhow!("speech recognition: {e}"))?;
@@ -250,6 +250,21 @@ fn clean(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Timing on real speech: `MO_SPEECH_WAV=a.wav;b.wav cargo test --release --lib speech_timing -- --ignored --nocapture`
+    /// (16 kHz mono 16-bit WAV files; the installed model).
+    #[test]
+    #[ignore]
+    fn speech_timing() {
+        let paths = crate::paths::DataPaths::new(crate::paths::DataPaths::default_root());
+        for wav in std::env::var("MO_SPEECH_WAV").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
+            let b = std::fs::read(wav).unwrap();
+            let data = b.windows(4).position(|w| w == b"data").map(|i| i + 8).unwrap_or(44);
+            let t0 = std::time::Instant::now();
+            let text = super::transcribe(&paths, &b[data..]).unwrap();
+            println!("{wav}: {:.1} s audio -> {text:?} in {:.2} s", (b.len() - data) as f32 / 32000.0, t0.elapsed().as_secs_f32());
+        }
+    }
+
     #[test]
     fn base64_roundtrip() {
         assert_eq!(super::base64_decode("SGVsbG8="), Some(b"Hello".to_vec()));

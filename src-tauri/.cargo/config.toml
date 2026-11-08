@@ -5,3 +5,10 @@
 CHRONO_TZ_TIMEZONE_FILTER = "(Asia/Jerusalem|UTC)"
 # The bundled SQLite keeps FTS5 and R*Tree (geocoder) and drops what nothing uses.
 LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_JSON1 -USQLITE_ENABLE_STAT4 -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_ENABLE_COLUMN_METADATA -USQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_JSON"
+# whisper.cpp (voice search) is built by whisper-rs-sys through cmake-rs, which on MSVC writes the
+# cc flags into CMAKE_<LANG>_FLAGS_RELEASE without /O2: the Visual Studio projects got an empty
+# <Optimization> and the model ran unoptimised (~22 s for a 3 s phrase instead of ~2 s).
+# whisper-rs-sys passes CMAKE_* variables to CMake, and cmake-rs then leaves these alone. The
+# dash forms are understood by MSVC, gcc and clang alike (Windows, Linux, macOS, Android).
+CMAKE_C_FLAGS_RELEASE = "-O2 -DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "-O2 -DNDEBUG"
