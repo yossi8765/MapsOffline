@@ -116,7 +116,7 @@ impl SignedSums {
 }
 
 fn small_file(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<Vec<u8>> {
-    let r = client.get(url).send()?;
+    let r = client.get(url).timeout(REQUEST_TIMEOUT).send()?;
     if r.status().as_u16() == 418 {
         bail!("{}", download::blocked_message(url));
     }
@@ -190,50 +190,54 @@ fn link<'a>(links: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, u)| u.as_str())
 }
 
-/// The release list: GitHub, else GitLab (a network filter may block one of them).
-fn releases_json(client: &reqwest::blocking::Client) -> anyhow::Result<String> {
-    let mut problem = None;
-    for url in [RELEASES_API_GITHUB, RELEASES_API] {
-        let r = match client.get(url).header("Accept", "application/vnd.github+json").send() {
-            Ok(r) => r,
-            Err(e) => {
-                problem = Some(anyhow!(e));
-                continue;
-            }
-        };
-        if r.status().as_u16() == 418 {
-            problem = Some(anyhow!("{}", download::blocked_message(url)));
-            continue;
-        }
-        match r.error_for_status().and_then(|r| r.text()) {
-            Ok(json) if parse_releases(&json).is_ok_and(|c| !c.is_empty()) => return Ok(json),
-            Ok(_) => problem = Some(anyhow!("{url}: no releases")),
-            Err(e) => problem = Some(anyhow!(e)),
-        }
+/// One request of the check: short, so a slow or failing server does not keep the
+/// "checking" state for minutes.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Releases tried per source when the newest ones are unsigned / incomplete.
+const MAX_CANDIDATES: usize = 3;
+
+/// The release list of one source.
+fn releases_json(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<String> {
+    let r = client.get(url).header("Accept", "application/vnd.github+json").timeout(REQUEST_TIMEOUT).send()?;
+    if r.status().as_u16() == 418 {
+        bail!("{}", download::blocked_message(url));
     }
-    Err(problem.unwrap_or_else(|| anyhow!("no release source")))
+    let json = r.error_for_status()?.text()?;
+    if !parse_releases(&json).is_ok_and(|c| !c.is_empty()) {
+        bail!("{url}: no releases");
+    }
+    Ok(json)
 }
 
-/// Newest signed release, compared with the running version. Blocking (~1 s online).
+/// Newest signed release, compared with the running version: GitHub, else GitLab (a network
+/// filter or an outage may hit one of them). Blocking (~1 s online, at most ~2 min worst case).
 pub fn check() -> anyhow::Result<AppUpdate> {
     let client = http_client()?;
-    let json = releases_json(&client)?;
+    let mut problem: Option<anyhow::Error> = None;
+    for url in [RELEASES_API_GITHUB, RELEASES_API] {
+        match releases_json(&client, url).and_then(|json| check_source(&client, &json)) {
+            Ok(u) => return Ok(u),
+            Err(e) => {
+                log::warn!("update check {url}: {e:#}");
+                problem = Some(e);
+            }
+        }
+    }
+    Err(problem.unwrap_or_else(|| anyhow!("no release source")).context("לא נמצא שחרור חתום"))
+}
+
+fn check_source(client: &reqwest::blocking::Client, json: &str) -> anyhow::Result<AppUpdate> {
     let current = current_version();
     let mut last_problem: Option<String> = None;
-    for c in parse_releases(&json)? {
+    for c in parse_releases(json)?.into_iter().take(MAX_CANDIDATES) {
         let (Some(sums_url), Some(sig_url)) = (link(&c.links, SUMS_NAME), link(&c.links, SIG_NAME)) else {
             last_problem = Some(format!("{}: unsigned release", c.tag));
             continue;
         };
-        // a transient failure on one release must not end the whole check (5.30)
-        let (sums, sig) = match (small_file(&client, sums_url), small_file(&client, sig_url)) {
-            (Ok(a), Ok(b)) => (a, b),
-            (Err(e), _) | (_, Err(e)) => {
-                log::warn!("release {}: {e:#}", c.tag);
-                last_problem = Some(format!("{}: {e}", c.tag));
-                continue;
-            }
-        };
+        // a network failure goes to the other source (not to older releases of this one: they
+        // sit on the same server, and an older release would hide the newest one)
+        let sums = small_file(client, sums_url).with_context(|| c.tag.clone())?;
+        let sig = small_file(client, sig_url).with_context(|| c.tag.clone())?;
         let Some(signed) = verify_sums(&sums, &sig, PUBLIC_KEY_HEX) else {
             log::warn!("release {}: signature check failed", c.tag);
             last_problem = Some(format!("{}: bad signature", c.tag));
@@ -262,7 +266,7 @@ pub fn check() -> anyhow::Result<AppUpdate> {
             error: None,
         });
     }
-    Err(anyhow!("{}", last_problem.unwrap_or_else(|| "no signed release found".into())).context("לא נמצא שחרור חתום"))
+    Err(anyhow!("{}", last_problem.unwrap_or_else(|| "no signed release found".into())))
 }
 
 /// Download folder: %LOCALAPPDATA%\MapsOffline\update (recreated on every download).
@@ -280,11 +284,22 @@ fn sha256_file(p: &Path) -> anyhow::Result<[u8; 32]> {
 /// Download the installer of the newest signed release and verify it. Returns the file path.
 pub fn download(progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<PathBuf> {
     let client = http_client()?;
-    let json = releases_json(&client)?;
-    let c = parse_releases(&json)?.into_iter().find(|c| link(&c.links, SUMS_NAME).is_some() && link(&c.links, SIG_NAME).is_some()).ok_or_else(|| anyhow!("no signed release"))?;
-    let sums = small_file(&client, link(&c.links, SUMS_NAME).unwrap())?;
-    let sig = small_file(&client, link(&c.links, SIG_NAME).unwrap())?;
-    let signed = verify_sums(&sums, &sig, PUBLIC_KEY_HEX).ok_or_else(|| anyhow!("חתימת השחרור אינה תקינה"))?;
+    // the newest signed release: GitHub, else GitLab
+    let newest = |url: &str| -> anyhow::Result<(Candidate, SignedSums)> {
+        let json = releases_json(&client, url)?;
+        let c = parse_releases(&json)?.into_iter().find(|c| link(&c.links, SUMS_NAME).is_some() && link(&c.links, SIG_NAME).is_some()).ok_or_else(|| anyhow!("no signed release"))?;
+        let sums = small_file(&client, link(&c.links, SUMS_NAME).unwrap())?;
+        let sig = small_file(&client, link(&c.links, SIG_NAME).unwrap())?;
+        let signed = verify_sums(&sums, &sig, PUBLIC_KEY_HEX).ok_or_else(|| anyhow!("חתימת השחרור אינה תקינה"))?;
+        Ok((c, signed))
+    };
+    let (c, signed) = match newest(RELEASES_API_GITHUB) {
+        Ok(x) => x,
+        Err(e) => {
+            log::warn!("update download (GitHub): {e:#}");
+            newest(RELEASES_API)?
+        }
+    };
     if signed.version != c.version || signed.version <= current_version() {
         bail!("הגרסה החתומה אינה חדשה מהמותקנת");
     }

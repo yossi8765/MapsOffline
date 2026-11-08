@@ -72,7 +72,11 @@ Copy-Item $exe (Join-Path $portableDir "MapsOffline.exe")
 "portable" | Set-Content (Join-Path $portableDir "portable.txt") -Encoding ascii
 Copy-Item (Join-Path $root "README.md") $portableDir
 $portableZip = Join-Path $dist "MapsOffline_${version}_portable.zip"
-Compress-Archive -Path $portableDir -DestinationPath $portableZip -Force
+# the antivirus may still hold the fresh copy of the exe: retry
+for ($i = 1; $i -le 6; $i++) {
+    try { Compress-Archive -Path $portableDir -DestinationPath $portableZip -Force -ErrorAction Stop; break }
+    catch { if ($i -eq 6) { Fail "zip failed: $_" }; Start-Sleep -Seconds 5 }
+}
 Remove-Item $portableDir -Recurse -Force
 # stable names (what permalink/latest and the updater download)
 Copy-Item $setup (Join-Path $dist "MapsOffline-setup.exe")
