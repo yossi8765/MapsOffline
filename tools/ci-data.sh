@@ -78,11 +78,23 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   VERSION=$(date -u +%Y-%m-%d)
   REL=data-latest
   echo "== GitHub release $REL (mapsdata $VERSION)"
+  # the Android 4.4 app (separate repository): its Mapsforge map, mirrored here (some content
+  # filters block download.mapsforge.org), and all its data in one file for phones without internet
+  A44="MapsOffline-android-4.4-data.zip"
+  if curl -fsSL --retry 3 -o "$OUT/israel.map" https://download.mapsforge.org/maps/v5/asia/israel-and-palestine.map; then
+    python3 tools/android44-data.py "$OUT/all/$A44" --map "$OUT/israel.map" \
+      "$OUT/routing.mapsdata" "$OUT/geocode.mapsdata" "$OUT/transit.mapsdata" || { echo "WARNING: Android 4.4 data failed"; rm -f "$OUT/all/$A44"; }
+  else
+    echo "WARNING: the Mapsforge map could not be downloaded"
+    rm -f "$OUT/israel.map"
+  fi
   gh release delete "$REL" --yes --cleanup-tag 2>/dev/null || true
   files=("$OUT"/*.mapsdata)
   [ -f "$OUT/all/$ALL_FILE" ] && files+=("$OUT/all/$ALL_FILE")
+  [ -f "$OUT/israel.map" ] && files+=("$OUT/israel.map")
+  [ -f "$OUT/all/$A44" ] && files+=("$OUT/all/$A44")
   gh release create "$REL" --title "mapsdata $VERSION" --prerelease --latest=false \
-    --notes "נתונים מוכנים מהבנייה השבועית ($VERSION). התוכנה מורידה אותם בעצמה; $ALL_FILE = כל הנתונים בקובץ אחד, להעברה למחשב בלי אינטרנט." \
+    --notes "נתונים מוכנים מהבנייה השבועית ($VERSION). התוכנה מורידה אותם בעצמה; $ALL_FILE = כל הנתונים בקובץ אחד, להעברה למחשב בלי אינטרנט; $A44 = כל הנתונים של האפליקציה לאנדרואיד 4.4 בקובץ אחד, להעברה לטלפון בלי אינטרנט." \
     "${files[@]}" || { echo "release upload failed"; exit 1; }
   # manifest.json last: the app reads it to decide, so it must only appear once the files are there
   gh release upload "$REL" "$OUT/manifest.json" || { echo "manifest upload failed"; exit 1; }
