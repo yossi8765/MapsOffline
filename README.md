@@ -1,3 +1,8 @@
+> **הפרויקט עבר ל-GitHub.** מעכשיו כל הגרסאות החדשות (Windows, אנדרואיד, לינוקס ומק) יוצאות רק שם:
+> **https://github.com/yossi8765/MapsOffline/releases**
+>
+> MapsOffline has moved to GitHub; new versions are published there only.
+
 # MapsOffline · מפות אופליין
 
 תוכנת מפות וניווט לישראל שפועלת **ללא אינטרנט**, ל-Windows. מתקין של ‎5 MB, הנתונים (כ-0.6 GB) יורדים פעם אחת או מועברים בחבילה למחשב לא מקוון.
