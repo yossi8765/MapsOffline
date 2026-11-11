@@ -19,6 +19,7 @@ export type CreditUse =
   | "creditUseImagery"
   | "creditUseElevation"
   | "creditUseMinyanim"
+  | "creditUseKohanim"
   | "creditUseDelays"
   | "creditUseOnlineRouting"
   | "creditUseLogos"
@@ -35,6 +36,7 @@ export const CREDITS: Credit[] = [
   { id: "mapterhorn", name: "Mapterhorn", use: "creditUseElevation", licence: "CC BY 4.0 / per source", url: "https://mapterhorn.com" },
   { id: "copernicus", name: "Copernicus GLO-30 (© DLR / Airbus)", use: "creditUseElevation", licence: "Copernicus licence", url: "https://spacedata.copernicus.eu" },
   { id: "nedarim", name: "נדרים פלוס – זמני תפילות", use: "creditUseMinyanim", licence: "באישור המקור", url: "https://www.nedarimplus.co.il" },
+  { id: "hakohanim", name: "התאחדות טהרת כהנים", use: "creditUseKohanim", licence: "לפי תנאי ההתאחדות", url: "https://gps.hakohanim.org" },
   { id: "stride", name: "Open Bus Stride – הסדנא לידע ציבורי", use: "creditUseDelays", licence: "CC BY-SA 4.0", url: "https://open-bus-stride-api.hasadna.org.il" },
   { id: "osrm", name: "OSRM · FOSSGIS", use: "creditUseOnlineRouting", licence: "שירות ללא תשלום, שימוש לא מסחרי", url: "https://routing.openstreetmap.de" },
   { id: "transitous", name: "Transitous (MOTIS)", use: "creditUseOnlineRouting", licence: "שימוש לא מסחרי", url: "https://transitous.org" },

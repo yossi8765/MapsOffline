@@ -4,19 +4,24 @@
 //! opinions (ג); a route at level N avoids every area of level ≤ N. Their file also carries the
 //! Oslo Area A polygons (level "A"), which the app has on its own – those are left out.
 //!
-//! The list is kept in `kohanim/areas.json` and refreshed from the site when it is older than
-//! three days (only when going online is allowed); without a connection the kept copy is used.
+//! The list is kept in `kohanim/areas.json`, a data component like the others (Data panel row,
+//! weekly ready-made package, `.mapsdata` transfer to offline computers). It is also refreshed
+//! from the site when a route needs it and it is older than three days (only when going online is
+//! allowed); without a connection the kept copy is used. Manifest version `hakohanim YYYY-MM-DD`.
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use serde::Serialize;
 
+use super::Cancel;
 use crate::paths::{atomic_replace, DataPaths};
-use crate::types::LonLat;
+use crate::types::{DataComponent, LonLat, ProgressFn, ProgressPhase};
 
 pub const AREAS_URL: &str = "https://gps.hakohanim.org/api/areas";
 const REFRESH_AFTER: Duration = Duration::from_secs(3 * 24 * 3600);
+/// The Data panel offers an update once the installed list is this old.
+const STALE_DAYS: i64 = 3;
 
 /// One area to avoid.
 #[derive(Debug, Clone, Serialize)]
@@ -93,8 +98,45 @@ pub fn refresh(paths: &DataPaths) -> anyhow::Result<Vec<Area>> {
     let tmp = f.with_extension("json.tmp");
     std::fs::write(&tmp, body.as_bytes())?;
     atomic_replace(&f, &tmp)?;
+    if let Err(e) = super::manifest::Manifest::record(paths, DataComponent::Kohanim, Some(version_today())) {
+        log::warn!("kohanim areas: manifest not updated: {e:#}");
+    }
     log::info!("kohanim areas: {} from the site", areas.len());
     Ok(areas)
+}
+
+fn today() -> chrono::NaiveDate {
+    chrono::Utc::now().with_timezone(&chrono_tz::Asia::Jerusalem).date_naive()
+}
+
+fn version_today() -> String {
+    format!("hakohanim {}", today().format("%Y-%m-%d"))
+}
+
+fn fetched_on(version: Option<&str>) -> Option<chrono::NaiveDate> {
+    version.and_then(|v| v.strip_prefix("hakohanim ")).and_then(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
+}
+
+/// Is the installed list older than [`STALE_DAYS`] (or missing / of unknown age)?
+pub fn is_stale(version: Option<&str>) -> bool {
+    fetched_on(version).is_none_or(|d| (today() - d).num_days() >= STALE_DAYS)
+}
+
+/// Update-flow job (Data panel, CLI `build --kohanim`, weekly CI): fetch the list unless it was
+/// already fetched today.
+pub fn update_kohanim(paths: &DataPaths, progress: ProgressFn, cancel: &Cancel) -> anyhow::Result<Option<String>> {
+    let installed = super::manifest::Manifest::load(paths).entry(DataComponent::Kohanim).and_then(|e| e.version.clone());
+    if file(paths).exists() && fetched_on(installed.as_deref()) == Some(today()) {
+        progress(ProgressPhase::Processing, 1, 1, "רשימת האזורים לכהנים כבר מעודכנת");
+        return Ok(installed);
+    }
+    if cancel.is_cancelled() {
+        bail!("cancelled");
+    }
+    progress(ProgressPhase::Downloading, 0, 0, "מוריד את רשימת האזורים לכהנים");
+    let areas = refresh(paths)?;
+    progress(ProgressPhase::Finalizing, 1, 1, &format!("{} אזורים", areas.len()));
+    Ok(Some(version_today()))
 }
 
 /// The areas: the kept copy, refreshed first when it is old (or missing) and `online` allows.

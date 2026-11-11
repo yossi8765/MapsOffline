@@ -16,7 +16,7 @@ pub struct Spec {
     pub deflate: bool,
 }
 
-pub const TABLE: [Spec; 9] = [
+pub const TABLE: [Spec; 10] = [
     Spec { component: DataComponent::Tiles, key: "tiles", dir: "tiles", file: "israel.pmtiles", deflate: false },
     Spec { component: DataComponent::World, key: "world", dir: "world", file: "world.pmtiles", deflate: false },
     Spec { component: DataComponent::Satellite, key: "satellite", dir: "satellite", file: "israel-s2.pmtiles", deflate: false },
@@ -26,6 +26,7 @@ pub const TABLE: [Spec; 9] = [
     Spec { component: DataComponent::Transit, key: "transit", dir: "transit", file: "transit.bin", deflate: true },
     Spec { component: DataComponent::Trails, key: "trails", dir: "trails", file: "trails.geojson", deflate: true },
     Spec { component: DataComponent::Minyanim, key: "minyanim", dir: "minyanim", file: "minyanim.json", deflate: true },
+    Spec { component: DataComponent::Kohanim, key: "kohanim", dir: "kohanim", file: "areas.json", deflate: true },
 ];
 
 pub fn spec(c: DataComponent) -> &'static Spec {

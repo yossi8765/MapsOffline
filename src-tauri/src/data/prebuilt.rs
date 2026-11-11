@@ -24,7 +24,7 @@ pub const PACKAGE: &str = "mapsdata";
 const MAX_AGE_DAYS: i64 = 10;
 
 /// Components the pipeline publishes.
-pub const PUBLISHED: [DataComponent; 9] = [
+pub const PUBLISHED: [DataComponent; 10] = [
     DataComponent::Tiles,
     DataComponent::Satellite,
     DataComponent::World,
@@ -34,6 +34,7 @@ pub const PUBLISHED: [DataComponent; 9] = [
     DataComponent::Transit,
     DataComponent::Trails,
     DataComponent::Minyanim,
+    DataComponent::Kohanim,
 ];
 
 pub fn file_name(c: DataComponent) -> String {

@@ -704,10 +704,12 @@ pub enum DataComponent {
     Trails,
     /// Synagogue prayer times (Nedarim Plus)
     Minyanim,
+    /// Areas a kohen must not pass (Tahara of Kohanim association, gps.hakohanim.org)
+    Kohanim,
 }
 
 impl DataComponent {
-    pub const ALL: [DataComponent; 9] = [
+    pub const ALL: [DataComponent; 10] = [
         DataComponent::Tiles,
         DataComponent::World,
         DataComponent::Satellite,
@@ -717,6 +719,7 @@ impl DataComponent {
         DataComponent::Transit,
         DataComponent::Trails,
         DataComponent::Minyanim,
+        DataComponent::Kohanim,
     ];
 }
 
@@ -762,6 +765,8 @@ pub struct DataCheck {
     pub trails: UpdateCheck,
     #[serde(default)]
     pub minyanim: UpdateCheck,
+    #[serde(default)]
+    pub kohanim: UpdateCheck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,6 +784,8 @@ pub struct DataStatus {
     pub trails: ComponentStatus,
     #[serde(default)]
     pub minyanim: ComponentStatus,
+    #[serde(default)]
+    pub kohanim: ComponentStatus,
     pub updating: bool,
     /// The running update is paused (resumes with `data_pause(false)`).
     #[serde(default)]

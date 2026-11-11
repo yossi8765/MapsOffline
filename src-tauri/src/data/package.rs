@@ -32,7 +32,14 @@ pub struct PackageInfo {
     pub format: u32,
     pub app_version: String,
     pub created_iso: String,
+    /// Components known to program versions up to 2.0.12 (their package.json reader rejects a
+    /// name it does not know, so newer components go in `newer_components`). Unknown names are
+    /// skipped when reading.
+    #[serde(deserialize_with = "known_components")]
     pub components: Vec<DataComponent>,
+    /// Components added after 2.0.12 (`inspect` merges them into `components`).
+    #[serde(default, deserialize_with = "known_components", skip_serializing_if = "Vec::is_empty")]
+    pub newer_components: Vec<DataComponent>,
     pub graph_version: u32,
     pub transit_version: u32,
     /// Other countries packed under `regions/<folder>/` (ids as in their region.json).
@@ -43,6 +50,14 @@ pub struct PackageInfo {
     /// (an import adds them to Settings).
     #[serde(default)]
     pub areas: Vec<SatelliteArea>,
+}
+
+/// Components older program versions do not know (see `PackageInfo::components`).
+const NEWER: [DataComponent; 1] = [DataComponent::Kohanim];
+
+fn known_components<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<DataComponent>, D::Error> {
+    let raw: Vec<serde_json::Value> = Deserialize::deserialize(d)?;
+    Ok(raw.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
 
 /// What a package carries besides the components: other countries and sharp-imagery areas.
@@ -257,7 +272,8 @@ pub fn export_with(
             format: PACKAGE_FORMAT,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             created_iso: chrono::Local::now().to_rfc3339(),
-            components: present.clone(),
+            components: present.iter().copied().filter(|c| !NEWER.contains(c)).collect(),
+            newer_components: present.iter().copied().filter(|c| NEWER.contains(c)).collect(),
             graph_version: crate::routing::graph::VERSION,
             transit_version: crate::transit::model::VERSION,
             regions: found.regions.clone(),
@@ -282,7 +298,13 @@ pub fn inspect(src: &Path) -> anyhow::Result<PackageInfo> {
         .context("הקובץ אינו חבילת נתונים תקינה של MapsOffline")?;
     let mut s = String::new();
     zip.by_name("package.json").context("הקובץ אינו חבילת נתונים של MapsOffline (חסר package.json)")?.read_to_string(&mut s)?;
-    let info: PackageInfo = serde_json::from_str(&s).context("package.json פגום")?;
+    let mut info: PackageInfo = serde_json::from_str(&s).context("package.json פגום")?;
+    let newer = std::mem::take(&mut info.newer_components);
+    for c in newer {
+        if !info.components.contains(&c) {
+            info.components.push(c);
+        }
+    }
     if info.format > PACKAGE_FORMAT {
         bail!("החבילה נוצרה בגרסה חדשה יותר של התוכנה ({}); יש לעדכן את התוכנה", info.app_version);
     }
@@ -613,5 +635,30 @@ mod tests {
         assert!(none.regions.is_empty() && none.areas.is_empty());
         assert!(!one.region_dir(id).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn newer_components_stay_readable_for_older_versions() {
+        // what 2.0.12 can parse: `components` holds only names it knows
+        let info = PackageInfo {
+            format: PACKAGE_FORMAT,
+            app_version: "x".into(),
+            created_iso: "x".into(),
+            components: vec![DataComponent::Routing],
+            newer_components: vec![DataComponent::Kohanim],
+            graph_version: 0,
+            transit_version: 0,
+            regions: vec![],
+            areas: vec![],
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["components"], serde_json::json!(["routing"]));
+        assert_eq!(v["newer_components"], serde_json::json!(["kohanim"]));
+        // and this version skips names it does not know
+        let mut v = v;
+        v["components"] = serde_json::json!(["routing", "something_new"]);
+        let back: PackageInfo = serde_json::from_value(v).unwrap();
+        assert_eq!(back.components, vec![DataComponent::Routing]);
+        assert_eq!(back.newer_components, vec![DataComponent::Kohanim]);
     }
 }

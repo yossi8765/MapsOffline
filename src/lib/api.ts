@@ -368,8 +368,8 @@ export interface LineShape {
 }
 
 // ------------------------------------------------------------- data
-export type DataComponent = "tiles" | "world" | "satellite" | "terrain" | "routing" | "geocode" | "transit" | "trails" | "minyanim";
-export const DATA_COMPONENTS: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit", "trails", "minyanim"];
+export type DataComponent = "tiles" | "world" | "satellite" | "terrain" | "routing" | "geocode" | "transit" | "trails" | "minyanim" | "kohanim";
+export const DATA_COMPONENTS: DataComponent[] = ["tiles", "world", "satellite", "terrain", "routing", "geocode", "transit", "trails", "minyanim", "kohanim"];
 
 /** One prayer of a synagogue's weekly timetable (Nedarim Plus). */
 export interface Minyan {
@@ -437,6 +437,7 @@ export interface DataCheck {
   transit: UpdateCheck;
   trails: UpdateCheck;
   minyanim: UpdateCheck;
+  kohanim: UpdateCheck;
 }
 
 export interface DataStatus {
@@ -452,6 +453,7 @@ export interface DataStatus {
   transit: ComponentStatus;
   trails: ComponentStatus;
   minyanim: ComponentStatus;
+  kohanim: ComponentStatus;
   updating: boolean;
   /** Components being updated now (several jobs may run side by side). */
   active?: DataComponent[];

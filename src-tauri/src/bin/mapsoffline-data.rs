@@ -49,6 +49,9 @@ enum Cmd {
         /// synagogue prayer times (Nedarim Plus, ~10-15 min of polite requests)
         #[arg(long)]
         minyanim: bool,
+        /// areas a kohen must not pass (Tahara of Kohanim association, one small request)
+        #[arg(long)]
+        kohanim: bool,
     },
     /// Re-encode the installed satellite archive's tiles to WebP with the `cwebp` tool (CI:
     /// smaller ready-made package). `cwebp` must be on PATH (Debian/Ubuntu package "webp").
@@ -405,7 +408,7 @@ fn main() -> anyhow::Result<()> {
             let _ = std::fs::remove_dir_all(&dir);
             println!("satellite tiles {:.1} MB -> {:.1} MB ({:+.0} %)", before as f64 / 1e6, after as f64 / 1e6, (after as f64 / before.max(1) as f64 - 1.0) * 100.0);
         }
-        Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit, trails, minyanim } => {
+        Cmd::Build { all, tiles, world, satellite, terrain, routing, geocode, transit, trails, minyanim, kohanim } => {
             let mut comps = vec![];
             if all || tiles {
                 comps.push(DataComponent::Tiles);
@@ -433,6 +436,9 @@ fn main() -> anyhow::Result<()> {
             }
             if all || minyanim {
                 comps.push(DataComponent::Minyanim);
+            }
+            if all || kohanim {
+                comps.push(DataComponent::Kohanim);
             }
             if comps.is_empty() {
                 anyhow::bail!("nothing selected; use --all or component flags");

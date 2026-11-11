@@ -54,11 +54,13 @@ else
 fi
 # weekly snapshot of the synagogue prayer times (~10-15 min of paced requests)
 "$BIN" --dir "$D" build --minyanim || echo "WARNING: minyanim failed"
+# areas a kohen must not pass (Tahara of Kohanim association, one request, ~1.5 MB)
+"$BIN" --dir "$D" build --kohanim || echo "WARNING: kohanim failed"
 "$BIN" --dir "$D" status || true
 
 echo "== packing"
 built=0
-for c in tiles world satellite terrain routing geocode transit trails minyanim; do
+for c in tiles world satellite terrain routing geocode transit trails minyanim kohanim; do
   if "$BIN" --dir "$D" export "$OUT/$c.mapsdata" --only "$c"; then
     built=$((built + 1))
   else

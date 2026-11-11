@@ -150,6 +150,7 @@ pub fn status(paths: &DataPaths) -> DataStatus {
         transit: comp(DataComponent::Transit),
         trails: comp(DataComponent::Trails),
         minyanim: comp(DataComponent::Minyanim),
+        kohanim: comp(DataComponent::Kohanim),
         updating: false,
         paused: false,
         active: Vec::new(),
@@ -257,6 +258,8 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             remote_version: None,
             error: None,
         },
+        // a small list refreshed every few days: only the age of what is installed
+        kohanim: UpdateCheck { available: kohanim::is_stale(local(DataComponent::Kohanim).as_deref()), remote_version: None, error: None },
     };
     let settings = crate::state::load_settings(paths);
     // OsmAnd as the map source: map, search and routing follow the date of OsmAnd's Israel file
@@ -288,6 +291,7 @@ pub fn check(paths: &DataPaths) -> DataCheck {
                 (DataComponent::Transit, &mut out.transit),
                 (DataComponent::Trails, &mut out.trails),
                 (DataComponent::Minyanim, &mut out.minyanim),
+                (DataComponent::Kohanim, &mut out.kohanim),
             ] {
                 if settings.osmand_source() && OSMAND_COMPONENTS.contains(&c) {
                     continue;
@@ -313,6 +317,7 @@ pub fn check(paths: &DataPaths) -> DataCheck {
             (DataComponent::Transit, &mut out.transit),
             (DataComponent::Trails, &mut out.trails),
             (DataComponent::Minyanim, &mut out.minyanim),
+            (DataComponent::Kohanim, &mut out.kohanim),
         ] {
             if !wanted.contains(&c) {
                 u.available = false;
@@ -511,7 +516,7 @@ fn update_rest(
     std::thread::scope(|s| {
         // --- self-contained jobs: download + finalize in one go
         type Job = fn(&DataPaths, ProgressFn, &Cancel) -> anyhow::Result<Option<String>>;
-        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job), (DataComponent::Minyanim, minyanim::update_minyanim as Job)] {
+        for (c, job) in [(DataComponent::Tiles, tiles::update_tiles as Job), (DataComponent::World, tiles::update_world as Job), (DataComponent::Satellite, satellite::update_satellite as Job), (DataComponent::Terrain, terrain::update_terrain as Job), (DataComponent::Minyanim, minyanim::update_minyanim as Job), (DataComponent::Kohanim, kohanim::update_kohanim as Job)] {
             if !wants(c) || from_osmand(c) {
                 continue;
             }
