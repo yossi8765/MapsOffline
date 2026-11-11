@@ -23,11 +23,14 @@ jobs:
         # the runner's Azure Ubuntu mirror sometimes does not resolve and apt then hangs for hours
         timeout-minutes: 20
         run: |
+          # (2026-11-11 the whole ubuntu.com zone was unresolvable): fall back to kernel.org's
+          # Ubuntu mirror, same packages, still verified with Ubuntu's signing keys
           if ! getent hosts azure.archive.ubuntu.com > /dev/null; then
-            echo "::warning::azure.archive.ubuntu.com does not resolve; using archive.ubuntu.com"
-            sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+            if getent hosts archive.ubuntu.com > /dev/null; then M="http://archive.ubuntu.com/ubuntu/"; else M="https://mirrors.edge.kernel.org/ubuntu/"; fi
+            echo "::warning::azure.archive.ubuntu.com does not resolve; using $M"
+            echo "$M" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+            sudo sed -i -E "s#https?://(azure\.archive|archive|security)\.ubuntu\.com/ubuntu/?#$M#g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
           fi
-          getent hosts archive.ubuntu.com github.com || echo "::warning::DNS looks broken on this runner"
           APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
           sudo apt-get $APT update -qq
           sudo apt-get $APT install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
