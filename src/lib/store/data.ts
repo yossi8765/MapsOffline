@@ -57,6 +57,15 @@ export const createDataSlice: SliceCreator<DataSlice> = (set, get) => ({
   },
   setProgress: (p) => {
     set((s) => ({ progress: { ...s.progress, [p.component]: p } }));
+    // A finished component is now current. The panel re-checks the servers only when the whole
+    // update ends, and the aerial imagery can run for hours after the others are done: without
+    // this the elevation (or any finished) row kept "update available" next to "done".
+    if (p.phase === "done") {
+      set((s) => {
+        const chk = s.dataCheck?.[p.component];
+        return chk?.available ? { dataCheck: { ...s.dataCheck!, [p.component]: { ...chk, available: false } } } : {};
+      });
+    }
     if (p.phase === "done" || p.phase === "failed" || p.phase === "cancelled") void get().refreshDataStatus();
   },
   startUpdate: async (components) => {

@@ -736,7 +736,10 @@
   :root[data-theme="dark"] .switch {
     background: rgba(255, 255, 255, 0.18);
   }
-  .switch[aria-checked="true"] {
+  /* the dark rule above outranks a plain .switch[aria-checked] (one more selector part), so the
+     "on" colour is repeated with the same weight – otherwise a dark-mode switch is grey both ways */
+  .switch[aria-checked="true"],
+  :root[data-theme="dark"] .switch[aria-checked="true"] {
     background: var(--accent);
   }
   .switch::after {
@@ -869,7 +872,8 @@
   .infobar {
     border: 1px solid ButtonText;
   }
-  .switch[aria-checked="true"] {
+  .switch[aria-checked="true"],
+  :root[data-theme="dark"] .switch[aria-checked="true"] {
     background: Highlight;
   }
   .switch::after {

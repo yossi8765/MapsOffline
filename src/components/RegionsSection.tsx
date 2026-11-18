@@ -885,7 +885,7 @@ function ProgressBlock({ title, prog, onCancel }: { title?: string; prog?: PartP
         return (
           <div key={p.part}>
             <div className="flex justify-between gap-2 text-xs mb-1.5">
-              <span className={clsx(p.phase === "failed" ? "text-danger whitespace-normal break-words" : "text-muted truncate")}>
+              <span className={clsx(p.phase === "failed" ? "text-danger whitespace-normal break-words" : "text-muted min-w-0 break-words")}>
                 {p.parts.length > 1 ? `${t("sharedDownloadOf")} ${p.parts.map((x) => t(PART_LABEL[x])).join(", ")}` : t(PART_LABEL[p.part])}
                 {": "}
                 {p.phase === "failed" ? `${t("phaseFailed")}${p.message ? ` - ${p.message}` : ""}` : p.message || t(p.phase === "queued" ? "phaseQueued" : "phaseDownloading")}

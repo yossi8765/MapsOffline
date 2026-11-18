@@ -168,7 +168,7 @@ export function SatelliteAreas() {
                     <div className="h-1 rounded-full bg-surface-2 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined} aria-label={a.name}>
                       <div className={clsx("h-full bg-accent rounded-full transition-[width] duration-300", pct === null && "animate-pulse w-1/3")} style={pct === null ? undefined : { width: `${pct}%` }} />
                     </div>
-                    {p.message && <div className="text-xs text-muted truncate-dir">{p.message}</div>}
+                    {p.message && <div className="text-xs text-muted break-words">{p.message}</div>}
                   </div>
                 )}
                 {p?.phase === "failed" && (

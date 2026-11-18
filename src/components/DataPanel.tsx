@@ -722,7 +722,7 @@ function ComponentCard({
           ) : (
             <>
               <div className="flex justify-between gap-2 text-xs mb-1.5">
-                <span className={clsx("truncate", prog.phase === "done" ? "text-success" : "text-muted")}>{active
+                <span className={clsx("min-w-0 break-words", prog.phase === "done" ? "text-success" : "text-muted")}>{active
                     ? showPaused
                       ? t("phasePaused")
                       : waiting
