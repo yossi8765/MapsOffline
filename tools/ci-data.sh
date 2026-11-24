@@ -36,7 +36,11 @@ cd "$ROOT"
 
 # pmtiles CLI (Linux build) where the data tool looks for it
 if [ ! -x "$D/downloads/pmtiles.exe" ]; then
-  url=$(curl -fsSL https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
+  # authenticated when a token is there: the runners' shared IPs often exhaust GitHub's anonymous
+  # API limit (2026-11-24: 403, so no map, world or terrain was built)
+  AUTH=()
+  [ -n "${GH_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GH_TOKEN")
+  url=$(curl -fsSL --retry 3 "${AUTH[@]}" https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
     | jq -r '.assets[] | select(.name | test("Linux_x86_64\\.tar\\.gz$")) | .browser_download_url' | head -1)
   curl -fsSL "$url" | tar -xz -C "$D/downloads" pmtiles && mv "$D/downloads/pmtiles" "$D/downloads/pmtiles.exe"
 fi
@@ -79,6 +83,12 @@ ls -la "$OUT" "$OUT/all"
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   VERSION=$(date -u +%Y-%m-%d)
   REL=data-latest
+  # The release is replaced as a whole and the app trusts a fresh one, so never publish one that
+  # lacks a core component (2026-11-24: a Geofabrik outage + API limit left only transit and the
+  # small parts, and the previous full release had already been deleted).
+  for c in tiles routing geocode transit; do
+    [ -f "$OUT/$c.mapsdata" ] || { echo "::error::$c was not built; keeping the published release"; exit 1; }
+  done
   echo "== GitHub release $REL (mapsdata $VERSION)"
   # the Android 4.4 app (separate repository): its Mapsforge map, mirrored here (some content
   # filters block download.mapsforge.org), and all its data in one file for phones without internet
