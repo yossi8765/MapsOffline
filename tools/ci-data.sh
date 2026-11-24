@@ -45,6 +45,19 @@ if [ ! -x "$D/downloads/pmtiles.exe" ]; then
   curl -fsSL "$url" | tar -xz -C "$D/downloads" pmtiles && mv "$D/downloads/pmtiles" "$D/downloads/pmtiles.exe"
 fi
 
+# Geofabrik refuses GitHub's runners at times (2026-11-24: connection refused, so no routing,
+# search or trails). Then take the extract from the "osm-source" release (uploaded by hand from a
+# machine that reaches Geofabrik); with Geofabrik unreachable the data tool keeps a complete
+# local copy and reads its version from the PBF header.
+PBF="$D/downloads/israel-and-palestine-latest.osm.pbf"
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && ! curl -fsSI -m 20 -o /dev/null https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf; then
+  echo "::warning::download.geofabrik.de unreachable; using the osm-source release"
+  gh release download osm-source -D "$D/downloads" --clobber \
+    -p israel-and-palestine-latest.osm.pbf -p israel-and-palestine-latest.osm.pbf.meta.json \
+    || echo "::warning::no osm-source release either"
+  ls -la "$PBF" 2>/dev/null || true
+fi
+
 echo '{"satelliteSource":"sentinel","satelliteQuality":"low","usePrebuiltData":false}' > "$D/settings.json"
 
 echo "== building the components"
