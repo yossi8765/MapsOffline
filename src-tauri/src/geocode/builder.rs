@@ -24,7 +24,8 @@ pub const SCHEMA_VERSION: &str = "3";
 /// (squares, attractions) as places, alternative / brand names and phones in the search index,
 /// OSM `addr:interpolation` ways (`addresses.src` = 1), the energy ministry fuel register and
 /// offline Wikipedia summaries (`wiki`, `wiki_qid`).
-pub const BUILD_REV: u32 = 4;
+/// 5 = regional councils (admin_level 8 boundary relations) as places of kind `region`.
+pub const BUILD_REV: u32 = 5;
 thread_local! {
     /// cos(reference latitude) for the flat-earth distances of one build (the build runs on one
     /// thread; countries are built concurrently on different threads). Israel: cos(31.5°).
@@ -376,6 +377,120 @@ struct PoiRaw {
     info: PoiInfo,
     alt: String,
 }
+/// A regional council ("מועצה אזורית עמק חפר"): an `admin_level=8` boundary relation. In Israel
+/// these exist only as boundaries – no `place` node – so without them a council's name fell to
+/// any street of the same name ("עמק חפר" → a street in Netanya).
+struct CouncilRaw {
+    /// short names ("עמק חפר" / "Emek Hefer")
+    names: Names,
+    /// the full names, indexed as alternative names
+    full: String,
+    /// member ways (outer and inner: rings are told apart by even-odd containment)
+    ways: Vec<i64>,
+    info: PoiInfo,
+}
+
+const COUNCIL_HE: &str = "מועצה אזורית";
+
+/// Short names of a regional-council boundary relation, or None for any other relation.
+fn council_names<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<(Names, String, PoiInfo)> {
+    let (mut boundary, mut level, mut name, mut he, mut en, mut ar, mut wikipedia, mut wikidata) = ("", "", "", "", "", "", "", "");
+    for (k, v) in tags {
+        match k {
+            "boundary" => boundary = v,
+            "admin_level" => level = v,
+            "name" => name = v,
+            "name:he" => he = v,
+            "name:en" => en = v,
+            "name:ar" => ar = v,
+            "wikipedia" => wikipedia = v,
+            "wikidata" => wikidata = v,
+            _ => {}
+        }
+    }
+    if boundary != "administrative" || level != "8" {
+        return None;
+    }
+    let he_full = [he, name].into_iter().find(|n| n.trim_start().starts_with(COUNCIL_HE))?.trim();
+    let short_he = he_full[COUNCIL_HE.len()..].trim().trim_start_matches(['-', '–']).trim();
+    if short_he.is_empty() {
+        return None;
+    }
+    let short_en = en.trim().strip_suffix("Regional Council").map(str::trim).unwrap_or("");
+    let mut full = vec![he_full];
+    if !en.is_empty() {
+        full.push(en.trim());
+    }
+    let info = PoiInfo {
+        wikipedia: first_value(wikipedia, 200).filter(|w| w.contains(':')),
+        wikidata: first_value(wikidata, 24).filter(|q| q.starts_with('Q')),
+        ..Default::default()
+    };
+    Some((Names { he: short_he.to_string(), en: short_en.to_string(), ar: ar.trim().to_string() }, full.join(" "), info))
+}
+
+/// Even-odd point-in-polygon over all rings (1e-7° coordinates).
+fn in_rings(rings: &[Vec<[i32; 2]>], p: (f64, f64)) -> bool {
+    let (x, y) = (p.0 * E7, p.1 * E7);
+    let mut inside = false;
+    for r in rings {
+        for w in r.windows(2) {
+            let (ax, ay, bx, by) = (w[0][0] as f64, w[0][1] as f64, w[1][0] as f64, w[1][1] as f64);
+            if (ay > y) != (by > y) && x < ax + (y - ay) / (by - ay) * (bx - ax) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Area-weighted centroid of the rings (holes count negative with even-odd orientation ignored:
+/// the outer rings dominate, which is all a label point needs).
+fn rings_centroid(rings: &[Vec<[i32; 2]>]) -> Option<(f64, f64)> {
+    let (mut a, mut cx, mut cy) = (0f64, 0f64, 0f64);
+    for r in rings {
+        let (ox, oy) = (r[0][0] as f64, r[0][1] as f64);
+        let (mut ra, mut rx, mut ry) = (0f64, 0f64, 0f64);
+        for w in r.windows(2) {
+            let (x0, y0, x1, y1) = (w[0][0] as f64 - ox, w[0][1] as f64 - oy, w[1][0] as f64 - ox, w[1][1] as f64 - oy);
+            let c = x0 * y1 - x1 * y0;
+            ra += c;
+            rx += (x0 + x1) * c;
+            ry += (y0 + y1) * c;
+        }
+        if ra.abs() < 1.0 {
+            continue;
+        }
+        // orient every ring positive: separate outer rings add up instead of cancelling
+        let s = ra.signum();
+        a += ra * s;
+        cx += (rx / (3.0 * ra) + ox) * ra * s;
+        cy += (ry / (3.0 * ra) + oy) * ra * s;
+    }
+    (a > 0.0).then(|| (cx / a / E7, cy / a / E7))
+}
+
+/// A point inside the rings near `c`: the middle of the widest inside stretch of the horizontal
+/// line through `c` (a concave council's centroid can fall outside it).
+fn interior_point(rings: &[Vec<[i32; 2]>], c: (f64, f64)) -> Option<(f64, f64)> {
+    let y = c.1 * E7;
+    let mut xs: Vec<f64> = Vec::new();
+    for r in rings {
+        for w in r.windows(2) {
+            let (ax, ay, bx, by) = (w[0][0] as f64, w[0][1] as f64, w[1][0] as f64, w[1][1] as f64);
+            if (ay > y) != (by > y) {
+                xs.push(ax + (y - ay) / (by - ay) * (bx - ax));
+            }
+        }
+    }
+    xs.sort_by(f64::total_cmp);
+    xs.as_chunks::<2>()
+        .0
+        .iter()
+        .max_by(|a, b| (a[1] - a[0]).total_cmp(&(b[1] - b[0])))
+        .map(|p| ((p[0] + p[1]) / 2.0 / E7, c.1))
+}
+
 /// An OSM `addr:interpolation` way: numbers between its address nodes, `step` 2 (even / odd) or 1.
 struct InterpRaw {
     step: u8,
@@ -394,6 +509,7 @@ struct State {
     /// node id -> index in `addrs` (address nodes; the ends of interpolation ways)
     addr_nodes: FxHashMap<i64, u32>,
     interps: Vec<InterpRaw>,
+    councils: Vec<CouncilRaw>,
 }
 
 impl State {
@@ -734,8 +850,38 @@ pub fn build_at(
                     st.add(r, None, &refs, None);
                 }
             }
-            Element::Relation(_) => {}
+            Element::Relation(r) => {
+                if let Some((names, full, info)) = council_names(r.tags()) {
+                    let ways = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| m.member_id).collect();
+                    st.councils.push(CouncilRaw { names, full, ways, info });
+                }
+            }
         })?;
+    }
+    // ---- pass 1b: node lists of the council boundaries' ways (relations come after the ways,
+    // so their members are only known now)
+    let mut council_ways: FxHashMap<i64, Span> = FxHashMap::default();
+    if !st.councils.is_empty() {
+        let wanted: FxHashSet<i64> = st.councils.iter().flat_map(|c| c.ways.iter().copied()).collect();
+        let mut found: Vec<(i64, Vec<i64>)> = Vec::new();
+        for blob in BlobReader::from_path(pbf)? {
+            let blob = blob?;
+            if let BlobDecode::OsmData(block) = blob.decode()? {
+                for g in block.groups() {
+                    for w in g.ways() {
+                        if wanted.contains(&w.id()) {
+                            found.push((w.id(), w.refs().collect()));
+                        }
+                    }
+                }
+            }
+        }
+        for (id, refs) in found {
+            let s = st.arena.len() as u32;
+            st.arena.extend_from_slice(&refs);
+            council_ways.insert(id, (s, refs.len() as u32));
+        }
+        log::info!("geocode pass1b {:?}: {} councils, {} boundary ways", t0.elapsed(), st.councils.len(), council_ways.len());
     }
     log::info!(
         "geocode pass1 {:?}: places {} streets {} addrs {} pois {}",
@@ -837,6 +983,44 @@ pub fn build_at(
         }
         cities.tree = RTree::bulk_load(pts);
     }
+    // regional councils: at the council offices when mapped, else at the settlement nearest the
+    // middle of the council, else at a point inside the boundary
+    {
+        let settlements: FxHashSet<String> =
+            pfs.iter().filter(|p| matches!(p.kind, "city" | "town" | "village" | "hamlet")).map(|p| canon(p.names.primary())).collect();
+        let mut added = 0usize;
+        for c in &st.councils {
+            let segs: Vec<Vec<[i32; 2]>> = c
+                .ways
+                .iter()
+                .filter_map(|w| council_ways.get(w))
+                .map(|s| resolve(*s, &st.arena, &needed, &coords).into_iter().map(|(x, y)| [x, y]).collect())
+                .collect();
+            let (rings, _) = crate::routing::areas::stitch(segs);
+            let Some(mid) = rings_centroid(&rings) else { continue };
+            let offices = st
+                .pois
+                .iter()
+                .filter(|p| matches!(st.strs.vec[p.cat as usize].as_str(), "townhall" | "government"))
+                .filter(|p| p.names.he.contains(COUNCIL_HE) && p.names.he.contains(c.names.he.as_str()))
+                .filter_map(|p| p.pos.or_else(|| centroid(&resolve(p.refs, &st.arena, &needed, &coords))))
+                .find(|p| in_rings(&rings, *p));
+            let dist = |p: (f64, f64)| ((p.0 - mid.0) * COS_LAT()).hypot(p.1 - mid.1);
+            let town = || {
+                pfs.iter()
+                    .filter(|p| matches!(p.kind, "city" | "town" | "village" | "hamlet") && in_rings(&rings, (p.lon, p.lat)))
+                    .map(|p| (p.lon, p.lat))
+                    .min_by(|a, b| dist(*a).total_cmp(&dist(*b)))
+            };
+            let inside = || if in_rings(&rings, mid) { Some(mid) } else { interior_point(&rings, mid) };
+            let Some((lon, lat)) = offices.or_else(town).or_else(inside) else { continue };
+            // a settlement of the same name ("גזר", "מגידו") ranks before its council
+            let pop = if settlements.contains(&canon(&c.names.he)) { 100 } else { 8_000 };
+            pfs.push(PlaceFinal { names: c.names.clone(), kind: "region", pop, lon, lat, info: c.info.clone(), alt: c.full.clone() });
+            added += 1;
+        }
+        log::info!("geocode regional councils: {added} of {}", st.councils.len());
+    }
     let city_name = |c: Option<usize>| -> String { c.map(|i| cities.names[i].clone()).unwrap_or_default() };
     let city_pop = |c: Option<usize>| -> i64 { c.map(|i| cities.pops[i]).unwrap_or(0) };
     // landmarks rank by the size of their town ("כיכר רבין" in Tel Aviv before a street in Eilat)
@@ -928,6 +1112,9 @@ pub fn build_at(
             let id = i as i64 + 1;
             let city = if matches!(pl.kind, "city" | "town" | "village" | "hamlet") {
                 String::new()
+            } else if pl.kind == "region" {
+                // shown as "עמק חפר, מועצה אזורית"; never the town nearest its label point
+                COUNCIL_HE.to_string()
             } else {
                 city_name(cities.nearest(pl.lon, pl.lat))
             };
@@ -1253,12 +1440,52 @@ mod real_data {
         super::build_at(&pbf, &out, 31.5, &[], &syn, false, &|_, _, _, _| true).unwrap();
         println!("built in {:?}, {} MB", t0.elapsed(), std::fs::metadata(&out).unwrap().len() / 1_000_000);
         let g = crate::geocode::open(&out).unwrap();
-        for q in ["כביש 6", "כביש 443", "דרך 1", "כביש 90", "הרצל 12 תל אביב"] {
+        for q in ["כביש 6", "כביש 443", "דרך 1", "כביש 90", "הרצל 12 תל אביב", "עמק חפר", "מועצה אזורית עמק חפר", "מטה יהודה", "גזר", "מגידו", "Emek Hefer"] {
             let r = g.search(q, Some([34.78, 32.08]), 5).unwrap();
             println!("== {q}");
             for x in &r {
-                println!("  {:?} {} {:?} ({:.5},{:.5})", x.kind, x.name, x.city, x.lon, x.lat);
+                println!("  {:?} {} {:?} {:?} ({:.5},{:.5})", x.kind, x.name, x.city, x.category, x.lon, x.lat);
             }
         }
+        // a regional council's name must not fall to a same-named street in some town
+        let r = g.search("עמק חפר", Some([35.04, 31.93]), 5).unwrap();
+        assert_eq!(r[0].category.as_deref(), Some("region"), "{:?}", r[0].name);
+    }
+}
+
+#[cfg(test)]
+mod council_tests {
+    use super::*;
+
+    fn tags<'a>(v: &'a [(&'a str, &'a str)]) -> impl Iterator<Item = (&'a str, &'a str)> {
+        v.iter().copied()
+    }
+
+    #[test]
+    fn council_names_strip_the_prefix() {
+        let t = [("boundary", "administrative"), ("admin_level", "8"), ("name", "מועצה אזורית עמק חפר"), ("name:en", "Emek Hefer Regional Council")];
+        let (n, full, _) = council_names(tags(&t)).unwrap();
+        assert_eq!(n.he, "עמק חפר");
+        assert_eq!(n.en, "Emek Hefer");
+        assert!(full.contains("מועצה אזורית עמק חפר"));
+        // Hebrew name only in name:he (Arabic `name`)
+        let t = [("boundary", "administrative"), ("admin_level", "8"), ("name", "مجلس إقليمي"), ("name:he", "מועצה אזורית אל-קסום")];
+        assert_eq!(council_names(tags(&t)).unwrap().0.he, "אל-קסום");
+        // cities / local councils and other levels are not councils
+        assert!(council_names(tags(&[("boundary", "administrative"), ("admin_level", "8"), ("name", "נתניה")])).is_none());
+        assert!(council_names(tags(&[("boundary", "administrative"), ("admin_level", "6"), ("name", "מועצה אזורית גולן")])).is_none());
+    }
+
+    #[test]
+    fn interior_point_of_a_concave_ring() {
+        // a "U": its centroid lies in the notch, outside the ring
+        let s = |x: f64, y: f64| [(x * E7) as i32, (y * E7) as i32];
+        let ring = vec![s(0.0, 0.0), s(3.0, 0.0), s(3.0, 3.0), s(2.0, 3.0), s(2.0, 1.0), s(1.0, 1.0), s(1.0, 3.0), s(0.0, 3.0), s(0.0, 0.0)];
+        let rings = vec![ring];
+        let c = rings_centroid(&rings).unwrap();
+        assert!(!in_rings(&rings, c), "{c:?}");
+        let p = interior_point(&rings, c).unwrap();
+        assert!(in_rings(&rings, p), "{p:?}");
+        assert!(in_rings(&rings, (0.5, 0.5)) && !in_rings(&rings, (1.5, 2.0)));
     }
 }
