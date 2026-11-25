@@ -995,6 +995,11 @@ const he = {
   batchOnMap: "הכתובות נוספו כשכבה במפה",
 
   // ===== [F2] =====
+  layerKohanim: "אזורים בעייתיים לכהנים",
+  layerKohanimHint: "מסמן על המפה את המקומות שאסור לכהנים לעבור בהם (קברים מתחת לכביש או לצדו), לפי המפה של התאחדות טהרת כהנים (gps.hakohanim.org). בזום רחוק כל אזור מסומן בנקודה, ומקרוב רואים את האזור עצמו. ורוד = בסיסי, חום = התאחדות טהרת כהנים, כתום = יש מחמירים. לחיצה על אזור מציגה את פרטיו. הנתונים בהרצה ניסיונית אצל ההתאחדות – לשאלות הלכתיות: 08-313-2020.",
+  kohanimArea: "אזור בעייתי לכהנים",
+  kohanimLevelOf: "רמה",
+  flavorGoogle: "קלאסי",
   satRoads: "כבישים על התצלום",
   satLabels: "שמות על התצלום",
   shortcutFullscreen: "מסך מלא",
@@ -2147,6 +2152,11 @@ const en: Record<I18nKey, string> = {
   batchOnMap: "The addresses were added as a map layer",
 
   // ===== [F2] =====
+  layerKohanim: "Areas forbidden to kohanim",
+  layerKohanimHint: "Marks the places a kohen must not pass (graves under or beside the road), from the Tahara of Kohanim association's map (gps.hakohanim.org). Zoomed out each area is a dot; closer in you see the area itself. Pink = basic, brown = Tahara of Kohanim, orange = stricter opinions. Click an area for its details. The association's data is in beta – halachic questions: 08-313-2020.",
+  kohanimArea: "Area forbidden to kohanim",
+  kohanimLevelOf: "Level",
+  flavorGoogle: "Classic",
   satRoads: "Roads over the imagery",
   satLabels: "Names over the imagery",
   shortcutFullscreen: "Full screen",

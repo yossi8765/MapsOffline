@@ -158,7 +158,7 @@ export interface MapSlice {
   setMapPopover: (p: MapPopover) => void;
 }
 
-export const DEFAULT_LAYERS: MapLayers = { satellite: false, satelliteRoads: true, satelliteLabels: true, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard", contours: false, trails: false };
+export const DEFAULT_LAYERS: MapLayers = { satellite: false, satelliteRoads: true, satelliteLabels: true, hillshade: false, roadShields: true, terrain3d: false, poiCats: [], buildings3d: false, poi: true, transitStops: false, flavor: "auto", labelLang: "he", theme: "standard", contours: false, trails: false, kohanim: false, kohanimLevel: 2 };
 
 /** Saved layers checked key by key against the defaults (type and array-ness); undefined when
  *  the value is not an object at all. */

@@ -24,6 +24,7 @@ import { hexColor, mapColors } from "../map/colors";
 import { BUS_ICON, drawBusIcon, loadPoiIcons } from "../map/icons";
 import { addAll, favorites as favOverlay, kohanim as kohanimOverlay, linePreview as lineOverlay, myLocation as meOverlay, pois as poiOverlay, routes as routeOverlay, transitStops as stopsOverlay, tools, waypoints as wpOverlay } from "../map/overlays";
 import { bindTrailPopup } from "../map/popups";
+import { HOVER_LAYERS } from "../map/useHoverCard";
 import { toolActive, useHoverCard } from "../map/useHoverCard";
 import { useMapInstance } from "../map/useMapInstance";
 import { useViewportFetch } from "../map/useViewportFetch";
@@ -139,6 +140,11 @@ export function MapView() {
       routeOverlay.bindClicks(map, { onSelect: (id) => !toolActive() && useStore.getState().selectRoute(id), showPopup: (p) => !toolActive() && showPopup(map, p) });
       bindHover(map, () => popupRef.current?.remove());
       bindTrailPopup(map, (p) => !toolActive() && showPopup(map, p));
+      kohanimOverlay.bindPopup(
+        map,
+        (p) => showPopup(map, p),
+        (e) => toolActive() || map.queryRenderedFeatures(e.point, { layers: [...HOVER_LAYERS, "trails", "trails-bike"].filter((l) => map.getLayer(l)) }).length > 0,
+      );
       // map tools take the clicks: a measure point, a drawing vertex
       map.on("click", (e) => {
         const s = useStore.getState();
@@ -231,7 +237,10 @@ export function MapView() {
   }, [routes, selectedRouteId, mapReady, styleLoads]);
 
   // ---- route for kohanim: the areas the route avoids (loaded once, on first use)
-  const kohanimLevel = useStore((s) => s.avoid.kohanim ?? 0);
+  const routeKohanim = useStore((s) => s.avoid.kohanim ?? 0);
+  const hasRoutes = useStore((s) => s.routes.length > 0);
+  // the layer at its own level; a route for kohanim on the map adds the areas it avoided
+  const kohanimLevel = Math.max(layers.kohanim ? layers.kohanimLevel : 0, hasRoutes ? routeKohanim : 0);
   const [kohanimAreas, setKohanimAreas] = useState<KohanimArea[] | null>(null);
   useEffect(() => {
     if (kohanimLevel === 0 || kohanimAreas) return;

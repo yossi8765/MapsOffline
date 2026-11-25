@@ -64,7 +64,7 @@ export interface MapLayers {
   buildings3d: boolean;
   poi: boolean;
   transitStops: boolean;
-  flavor: "auto" | "light" | "dark" | "grayscale";
+  flavor: "auto" | "light" | "dark" | "grayscale" | "google";
   labelLang: "he" | "en" | "ar";
   /** Thematic map: standard, cycling, public transport, topographic (hiking). */
   theme: "standard" | "cycle" | "transit" | "topo";
@@ -72,6 +72,10 @@ export interface MapLayers {
   contours: boolean;
   /** Marked hiking / cycling trails (always on in the topographic theme; needs trails data). */
   trails: boolean;
+  /** Areas a kohen must not pass (association's map), at `kohanimLevel`; a route for kohanim on the map shows its own areas too. */
+  kohanim: boolean;
+  /** The layer's own level (1 basic, 2 association, 3 strict) – apart from the route's `settings.kohanimLevel`, whose non-zero value switches the route for kohanim on. */
+  kohanimLevel: number;
 }
 
 export interface HighlightState {

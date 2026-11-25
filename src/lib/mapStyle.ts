@@ -10,7 +10,7 @@ export const MAX_BOUNDS: [[number, number], [number, number]] = [
 export const DEFAULT_CENTER: [number, number] = [34.78, 32.08];
 export const DEFAULT_ZOOM = 8;
 
-export type FlavorName = "light" | "dark" | "grayscale";
+export type FlavorName = "light" | "dark" | "grayscale" | "google";
 
 export interface StyleOptions {
   tilesUrl: string | null;
@@ -316,7 +316,89 @@ export const DARK_ROADS = {
   buildings: "#18191b",
 } as const;
 
+/** "Google-like" colours over the light flavour: pale grey land, white streets with a grey casing,
+ *  yellow-orange highways, soft green parks, light-blue water, pale buildings. Only colours – the
+ *  layers and widths are the standard ones. */
+const GOOGLE_CASING = "#d5d8dc";
+const GOOGLE_HIGHWAY = "#fbd26a";
+const GOOGLE_HIGHWAY_CASING = "#e9ac2f";
+export const GOOGLE_COLORS: Partial<Flavor> = {
+  background: "#e8eaed",
+  earth: "#f1f3f4",
+  park_a: "#d4eedb",
+  park_b: "#c1e6cb",
+  wood_a: "#d4eedb",
+  wood_b: "#bfe3c7",
+  scrub_a: "#dcefdd",
+  scrub_b: "#cbe8cf",
+  hospital: "#fbe4e2",
+  school: "#ebeef3",
+  industrial: "#e9eaee",
+  pedestrian: "#f6f6f4",
+  sand: "#f3eedd",
+  beach: "#f6efd6",
+  aerodrome: "#e3e6ea",
+  runway: "#d9dce0",
+  zoo: "#d4eedb",
+  military: "#e6e6e6",
+  water: "#9fd0f3",
+  buildings: "#e3e4e8",
+  pier: "#ffffff",
+  other: "#ffffff",
+  minor_service: "#ffffff",
+  minor_a: "#ffffff",
+  minor_b: "#ffffff",
+  link: "#ffffff",
+  major: "#ffffff",
+  highway: GOOGLE_HIGHWAY,
+  minor_service_casing: GOOGLE_CASING,
+  minor_casing: GOOGLE_CASING,
+  link_casing: GOOGLE_CASING,
+  major_casing_early: "#c8ccd1",
+  major_casing_late: "#c8ccd1",
+  highway_casing_early: GOOGLE_HIGHWAY_CASING,
+  highway_casing_late: GOOGLE_HIGHWAY_CASING,
+  bridges_other_casing: GOOGLE_CASING,
+  bridges_minor_casing: GOOGLE_CASING,
+  bridges_link_casing: GOOGLE_CASING,
+  bridges_major_casing: "#c8ccd1",
+  bridges_highway_casing: GOOGLE_HIGHWAY_CASING,
+  bridges_other: "#ffffff",
+  bridges_minor: "#ffffff",
+  bridges_link: "#ffffff",
+  bridges_major: "#ffffff",
+  bridges_highway: GOOGLE_HIGHWAY,
+  tunnel_other: "#f1f3f4",
+  tunnel_minor: "#f1f3f4",
+  tunnel_link: "#f1f3f4",
+  tunnel_major: "#f1f3f4",
+  tunnel_highway: "#fde7a8",
+  railway: "#b4b9bf",
+  boundaries: "#9aa0a6",
+  roads_label_minor: "#6f7378",
+  roads_label_major: "#5f6368",
+  city_label: "#3c4043",
+  city_label_halo: "#ffffff",
+  subplace_label: "#70757a",
+  subplace_label_halo: "#ffffff",
+  state_label: "#9aa0a6",
+  state_label_halo: "#ffffff",
+  country_label: "#80868b",
+  address_label: "#80868b",
+  ocean_label: "#4c86c6",
+  landcover: {
+    grassland: "rgba(214, 238, 216, 1)",
+    barren: "rgba(245, 241, 229, 1)",
+    urban_area: "rgba(236, 238, 240, 1)",
+    farmland: "rgba(226, 240, 220, 1)",
+    glacier: "rgba(255, 255, 255, 1)",
+    scrub: "rgba(222, 238, 214, 1)",
+    forest: "rgba(197, 230, 205, 1)",
+  },
+};
+
 export function flavorFor(name: FlavorName): Flavor {
+  if (name === "google") return { ...namedFlavor("light"), ...GOOGLE_COLORS } as Flavor;
   const f = namedFlavor(name);
   // design: the stock light-flavor cyan sea is loud next to the neutral UI; use a calmer blue.
   if (name === "light") return { ...f, water: "#aacbe0" };

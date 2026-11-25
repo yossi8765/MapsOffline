@@ -44,6 +44,7 @@ export function LayersPanel() {
   const terrainUrl = useStore((s) => s.terrainUrl);
   const trailsInstalled = useStore((s) => s.dataStatus?.trails?.present ?? true);
   const transitInstalled = useStore((s) => s.dataStatus?.transit?.present ?? true);
+  const kohanimInstalled = useStore((s) => s.dataStatus?.kohanim?.present ?? true);
   const userCount = useStore((s) => s.userLayers.length);
   const customCount = useStore((s) => (s.settings.customLayers ?? []).filter((c) => c.visible).length);
   const recording = useStore((s) => s.track.recording);
@@ -76,6 +77,24 @@ export function LayersPanel() {
           <LayerToggle label={t("layerRoadShields")} checked={layers.roadShields} onChange={(v) => setLayers({ roadShields: v })} />
           <LayerToggle label={t("contours")} checked={layers.contours} missing={noTerrain} onChange={(v) => setLayers({ contours: v })} />
           <LayerToggle label={t("trails")} checked={layers.trails} missing={!trailsInstalled && !onlineOk} onChange={(v) => setLayers({ trails: v })} />
+          <LayerToggle label={t("layerKohanim")} info={t("layerKohanimHint")} checked={layers.kohanim} missing={!kohanimInstalled && !onlineOk} onChange={(v) => setLayers({ kohanim: v })} />
+          {layers.kohanim && (
+            <div className="ps-8 pb-1 flex flex-wrap gap-1.5 fade-in" role="radiogroup" aria-label={t("kohanimLevel")}>
+              {([1, 2, 3] as const).map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  role="radio"
+                  className="choice"
+                  aria-checked={layers.kohanimLevel === l}
+                  aria-pressed={layers.kohanimLevel === l}
+                  onClick={() => setLayers({ kohanimLevel: l })}
+                >
+                  {t(l === 1 ? "kohanimBasic" : l === 2 ? "kohanimAssociation" : "kohanimStrict")}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* a state, not an explanation: stays visible */}
         {layers.transitStops && transitInstalled && stopsUnavailable && <p className="m-0 text-xs text-muted px-0.5 fade-in">{t("layerTransitHint")}</p>}
@@ -103,12 +122,12 @@ export function LayersPanel() {
       </section>
 
       <section className="flex flex-col gap-2">
-        {/* light / dark follow the app theme (Settings); the map only adds a grey variant */}
+        {/* light / dark follow the app theme (Settings); "classic" (Google-like colours) and grey are always light */}
         <h2 className="section-label m-0">{t("mapFlavor")}</h2>
         <div className="seg">
-          {(["auto", "grayscale"] as MapLayers["flavor"][]).map((f) => (
-            <button key={f} aria-pressed={f === "grayscale" ? layers.flavor === "grayscale" : layers.flavor !== "grayscale"} onClick={() => setLayers({ flavor: f })}>
-              <span>{t(f === "auto" ? "mapFlavorNormal" : "flavorGrayscale")}</span>
+          {(["auto", "google", "grayscale"] as MapLayers["flavor"][]).map((f) => (
+            <button key={f} aria-pressed={f === "auto" ? layers.flavor !== "grayscale" && layers.flavor !== "google" : layers.flavor === f} onClick={() => setLayers({ flavor: f })}>
+              <span>{t(f === "auto" ? "mapFlavorNormal" : f === "google" ? "flavorGoogle" : "flavorGrayscale")}</span>
             </button>
           ))}
         </div>
